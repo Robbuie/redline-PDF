@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.3.0. See `README.md` for user-facing behaviour and
+PDF. Current version 0.4.0. See `README.md` for user-facing behaviour and
 `PLAN.md` for the roadmap and known engineering debt.
 
 ## Commands

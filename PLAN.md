@@ -1,6 +1,6 @@
 # Roadmap
 
-## Done — v0.4 (in progress)
+## Done — v0.4
 
 - **Tabs.** Several drawings open at once, each with its own store, undo
   history, page order, search index, comparison and remembered view. Tab strip
@@ -65,7 +65,7 @@
 - Recents, per-document autosave/crash recovery, optional tray-resident fast open
 - Dark CAD-pro UI with a light theme, custom title bar, drag-and-drop open
 
-## Next — v0.4
+## Next — v0.5
 
 **View modes** *(the one architectural item left in this batch)*
 Continuous scroll is still the only layout. Wanted: single-page, facing/spread
@@ -113,7 +113,7 @@ stored as embedded images so they export cleanly.
 - Import/export a markup-only file (`.rpmk`) to send comments without the drawing
 - Merge two reviewers' markup files onto the same drawing
 
-## Later — v0.4+
+## Later — v0.5+
 
 - OCR (Tesseract) so scanned sheets get a text layer for search and true highlight
 - Sheet-set awareness: open a folder of drawings, jump between sheets, search all
