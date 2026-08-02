@@ -1,0 +1,33 @@
+# The cheap guard rail: test/verify.js covers the export path, re-save
+# idempotency and the page/print maths — the parts that quietly corrupt
+# someone's drawing rather than throwing. It needs pdf-lib and nothing else,
+# so this runs on ubuntu in well under a minute with the Electron binary
+# download skipped.
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+        env:
+          # verify.js never launches Electron; downloading ~120MB of it would
+          # be most of the job's runtime.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Headless checks
+        run: node test/verify.js

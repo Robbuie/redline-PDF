@@ -1,0 +1,56 @@
+# Tag a version, get an installer.
+#
+#   npm version patch     (bumps package.json and creates the v0.3.1 tag)
+#   git push --follow-tags
+#
+# electron-builder publishes the NSIS installer, the portable exe, the
+# .blockmap files that make updates differential, and latest.yml — which is
+# the file electron-updater in the shipped app reads. The GitHub provider
+# infers owner/repo from the origin remote, so there is nothing to configure
+# here; the default GITHUB_TOKEN is enough because the repo is public.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # A tag that disagrees with package.json ships an installer whose
+      # version the updater will never match. Fail here rather than in the
+      # wild.
+      - name: Tag must match package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      # Never publish a build that fails the checks.
+      - name: Headless checks
+        run: node test/verify.js
+
+      - name: Build and publish
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

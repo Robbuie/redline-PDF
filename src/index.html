@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:;" />
+  <title>Redline PDF</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body class="theme-dark" data-tool="select">
+
+<!-- ===================== icon sprite =====================
+     Every symbol is stroke-only on a 24x24 grid so the whole set reads the same
+     way at small sizes. Stroke styling is inherited from the host <svg> (see
+     app.css); solid shapes must therefore set fill/stroke as presentation
+     ATTRIBUTES here, because stylesheet rules cannot reach inside the shadow
+     tree that <use> creates. -->
+<svg class="sprite" aria-hidden="true">
+  <defs>
+    <symbol id="i-open" viewBox="0 0 24 24">
+      <path d="M3 19V6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.5h7A1.5 1.5 0 0 1 19 9v1"/>
+      <path d="M3 19l2.4-7.1A1.5 1.5 0 0 1 6.8 11H21l-2.4 6.9a1.5 1.5 0 0 1-1.4 1.1z"/>
+    </symbol>
+    <symbol id="i-save" viewBox="0 0 24 24">
+      <path d="M4.5 5.5A1 1 0 0 1 5.5 4.5h10L19.5 8.5V18.5a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1z"/>
+      <path d="M8.5 4.5v4h6v-4"/>
+      <rect x="7.5" y="12.5" width="9" height="7"/>
+    </symbol>
+    <symbol id="i-saveas" viewBox="0 0 24 24">
+      <path d="M4.5 5.5A1 1 0 0 1 5.5 4.5h9L18 8v3.5"/>
+      <path d="M4.5 5.5v13a1 1 0 0 0 1 1h6"/>
+      <path d="M8 4.5v3.5h5"/>
+      <path d="M14.5 20.5l5.4-5.4a1.5 1.5 0 0 0-2.1-2.1L12.4 18.4l-.6 2.7z"/>
+    </symbol>
+    <symbol id="i-export" viewBox="0 0 24 24">
+      <path d="M12 15V3.5"/><path d="M8.4 7.1L12 3.5l3.6 3.6"/>
+      <path d="M4.5 14v5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-5"/>
+    </symbol>
+    <symbol id="i-report" viewBox="0 0 24 24">
+      <path d="M6 3.5h8.5L19 8v12.5H6z"/>
+      <path d="M14 3.5V8h4.5"/>
+      <path d="M9 12h6M9 15.5h6M9 18h3.5"/>
+    </symbol>
+    <symbol id="i-print" viewBox="0 0 24 24">
+      <path d="M7 8.5V3.5h10v5"/>
+      <path d="M7 17.5H5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 5 9.5h14a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5h-2"/>
+      <path d="M7 14h10v6.5H7z"/>
+    </symbol>
+
+    <symbol id="i-select" viewBox="0 0 24 24">
+      <path fill="currentColor" stroke="none" d="M6 3.6l12.2 7.7-5.2 1 2.9 5.4-2.6 1.4-2.9-5.4-4.3 3.9z"/>
+    </symbol>
+    <symbol id="i-highlight" viewBox="0 0 24 24">
+      <path d="M6.5 13.8l6.6-6.6 3.7 3.7-6.6 6.6H6.5z"/>
+      <path d="M14.1 6.1l1.6-1.6a1.6 1.6 0 0 1 2.3 0l1.5 1.5a1.6 1.6 0 0 1 0 2.3l-1.6 1.6z"/>
+      <path fill="currentColor" stroke="none" d="M4 20.4h16v2.2H4z"/>
+    </symbol>
+    <symbol id="i-note" viewBox="0 0 24 24">
+      <path d="M4 6.2A1.7 1.7 0 0 1 5.7 4.5h12.6A1.7 1.7 0 0 1 20 6.2v8.1a1.7 1.7 0 0 1-1.7 1.7H10l-4.6 3.5V16h-.7a1.7 1.7 0 0 1-1.7-1.7z"/>
+      <path d="M7.5 8.6h9M7.5 11.9h5.5"/>
+    </symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24">
+      <path d="M3 21c2.3-.5 3.1-2 4-3.9"/>
+      <path d="M7 17.1l10.3-10.3a2.1 2.1 0 0 0-3-3L4 14.1z"/>
+      <path d="M13.6 4.3l3.1 3.1"/>
+    </symbol>
+    <symbol id="i-line" viewBox="0 0 24 24">
+      <path d="M6.4 17.6L17.6 6.4"/>
+      <circle cx="5" cy="19" r="1.9"/><circle cx="19" cy="5" r="1.9"/>
+    </symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24">
+      <path d="M4.5 19.5L18 6"/>
+      <path fill="currentColor" stroke="none" d="M20.2 3.8l-1.5 6.6-5.1-5.1z"/>
+    </symbol>
+    <symbol id="i-rect" viewBox="0 0 24 24"><rect x="3.5" y="6" width="17" height="12" rx="1"/></symbol>
+    <symbol id="i-ellipse" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8.5" ry="6.4"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24">
+      <path d="M4.6 13.4a2.9 2.9 0 0 1 1.5-4.6 3 3 0 0 1 4-2.7 3 3 0 0 1 5 0 3 3 0 0 1 4 2.7 2.9 2.9 0 0 1 1.5 4.6 3 3 0 0 1-3.4 4 3 3 0 0 1-3.6 1.6 3 3 0 0 1-2.4 0 3 3 0 0 1-3.6-1.6 3 3 0 0 1-3-4z"/>
+    </symbol>
+    <symbol id="i-text" viewBox="0 0 24 24">
+      <path d="M5 7.5V5h14v2.5"/><path d="M12 5.2v13.6"/><path d="M8.6 19h6.8"/>
+    </symbol>
+    <symbol id="i-callout" viewBox="0 0 24 24">
+      <rect x="8.5" y="4" width="12" height="9" rx="1.3"/>
+      <path d="M11.5 13.2L3.5 20.5l5.4-2.6"/>
+      <path d="M11.5 7h6M11.5 10h4"/>
+    </symbol>
+    <symbol id="i-measure" viewBox="0 0 24 24">
+      <path d="M2.9 14.9L14.9 2.9l6.2 6.2-12 12z"/>
+      <path d="M6.6 11.2l1.8 1.8M9.5 8.3l1.8 1.8M12.4 5.4l1.8 1.8"/>
+    </symbol>
+
+    <symbol id="i-hand" viewBox="0 0 24 24">
+      <path d="M8.4 12.4V5.6a1.5 1.5 0 0 1 3 0v5.2"/>
+      <path d="M11.4 10.8V4.4a1.5 1.5 0 0 1 3 0v6.4"/>
+      <path d="M14.4 11V6.4a1.5 1.5 0 0 1 3 0v8.2a5.6 5.6 0 0 1-5.6 5.6h-1.2a5.4 5.4 0 0 1-3.8-1.6l-3.3-3.3a1.5 1.5 0 0 1 2.1-2.1l1.9 1.9"/>
+      <path d="M8.4 12.4v-1.2a1.5 1.5 0 0 0-3 0v3"/>
+    </symbol>
+    <symbol id="i-zoom-rect" viewBox="0 0 24 24">
+      <path d="M3.5 7.5v-4h4M20.5 7.5v-4h-4M3.5 16.5v4h4M20.5 16.5v4h-4"/>
+      <circle cx="11" cy="11" r="3.7"/>
+      <path d="M13.7 13.7l3.1 3.1"/>
+    </symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6.6"/><path d="M15.6 15.6L21 21"/>
+      <path d="M7.8 10.5h5.4M10.5 7.8v5.4"/>
+    </symbol>
+    <symbol id="i-zoom-out" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6.6"/><path d="M15.6 15.6L21 21"/><path d="M7.8 10.5h5.4"/>
+    </symbol>
+    <symbol id="i-fit-width" viewBox="0 0 24 24">
+      <path d="M3.5 5v14M20.5 5v14"/>
+      <path d="M7 12h10M7 12l2.6-2.6M7 12l2.6 2.6M17 12l-2.6-2.6M17 12l-2.6 2.6"/>
+    </symbol>
+    <symbol id="i-fit-page" viewBox="0 0 24 24">
+      <rect x="4" y="3.5" width="16" height="17" rx="1.2"/>
+      <path d="M7.5 10V7h3M16.5 14v3h-3"/>
+    </symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24">
+      <path d="M20.2 12a8.2 8.2 0 1 1-2.7-6.1"/><path d="M20.5 3.6v4.9h-4.9"/>
+    </symbol>
+    <symbol id="i-night" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8.5"/>
+      <path fill="currentColor" stroke="none" d="M12 3.5a8.5 8.5 0 0 1 0 17z"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.6"/><path d="M15.6 15.6L21 21"/></symbol>
+    <symbol id="i-thumbs" viewBox="0 0 24 24">
+      <rect x="3.5" y="4" width="7.5" height="16" rx="1"/>
+      <rect x="13" y="4" width="7.5" height="7" rx="1"/>
+      <rect x="13" y="13" width="7.5" height="7" rx="1"/>
+    </symbol>
+    <symbol id="i-list" viewBox="0 0 24 24">
+      <circle cx="5" cy="7" r="1.4"/><circle cx="5" cy="12" r="1.4"/><circle cx="5" cy="17" r="1.4"/>
+      <path d="M9.5 7h11M9.5 12h11M9.5 17h7.5"/>
+    </symbol>
+    <symbol id="i-bookmarks" viewBox="0 0 24 24">
+      <path d="M4.5 4.2h6.2v9.1L7.6 11l-3.1 2.3z"/>
+      <path d="M13.5 6.4h6.5M13.5 11h6.5M8 16.4h12M8 20h12"/>
+    </symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="9" height="14" rx="1"/>
+      <rect x="12" y="5" width="9" height="14" rx="1"/>
+      <path d="M12 2.8v18.4"/>
+    </symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M4 9.5h10.5a5 5 0 0 1 0 10H8.5"/><path d="M7.6 5.6L3.7 9.5l3.9 3.9"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M20 9.5H9.5a5 5 0 0 0 0 10h6"/><path d="M16.4 5.6l3.9 3.9-3.9 3.9"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24">
+      <path d="M4.5 6.6h15"/><path d="M9.6 6.6V4.3h4.8v2.3"/>
+      <path d="M6.6 6.6l.9 13.1h9l.9-13.1"/><path d="M10.4 10v6M13.6 10v6"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.1"/>
+      <path d="M19.4 14.6a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1h-.2a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5v-.2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+    </symbol>
+    <symbol id="i-bug" viewBox="0 0 24 24">
+      <rect x="7.5" y="8" width="9" height="11" rx="4.5"/>
+      <path d="M9.2 8.4a2.8 2.8 0 0 1 5.6 0"/>
+      <path d="M7.5 11.5H4M7.5 15.5H4.5M7.5 18.5l-2.6 2M16.5 11.5H20M16.5 15.5h3M16.5 18.5l2.6 2M12 8v11"/>
+    </symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9.5 4.5l7.5 7.5-7.5 7.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M5.5 5.5l13 13M18.5 5.5l-13 13"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24"><path d="M4.5 12h15"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="1.2"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24">
+      <rect x="4" y="8" width="12" height="11.5" rx="1.2"/>
+      <path d="M8 8V5.7A1.2 1.2 0 0 1 9.2 4.5h9.6A1.2 1.2 0 0 1 20 5.7v9.6a1.2 1.2 0 0 1-1.2 1.2H16"/>
+    </symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24">
+      <path d="M12 3.8L21.5 20.2H2.5z"/><path d="M12 9.8v4.6"/>
+      <circle fill="currentColor" stroke="none" cx="12" cy="17.4" r="1.1"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24">
+      <rect x="8.5" y="8.5" width="11" height="11" rx="1.4"/>
+      <path d="M15.5 8.5v-3a1.4 1.4 0 0 0-1.4-1.4H5.9A1.4 1.4 0 0 0 4.5 5.5v8.2a1.4 1.4 0 0 0 1.4 1.4h2.6"/>
+    </symbol>
+    <symbol id="i-page-add" viewBox="0 0 24 24">
+      <path d="M13.6 3.5H6.4A1.4 1.4 0 0 0 5 4.9v14.2a1.4 1.4 0 0 0 1.4 1.4h6.4"/>
+      <path d="M13.6 3.5L19 8.9v3.2"/>
+      <path d="M17.5 15v6M14.5 18h6"/>
+    </symbol>
+    <symbol id="i-rot-ccw" viewBox="0 0 24 24">
+      <path d="M3.8 12a8.2 8.2 0 1 0 2.7-6.1"/><path d="M3.5 3.6v4.9h4.9"/>
+    </symbol>
+    <symbol id="i-rot-cw" viewBox="0 0 24 24">
+      <path d="M20.2 12a8.2 8.2 0 1 1-2.7-6.1"/><path d="M20.5 3.6v4.9h-4.9"/>
+    </symbol>
+    <symbol id="i-extract" viewBox="0 0 24 24">
+      <path d="M13.6 3.5H6.4A1.4 1.4 0 0 0 5 4.9v14.2a1.4 1.4 0 0 0 1.4 1.4h9.2a1.4 1.4 0 0 0 1.4-1.4v-4.2"/>
+      <path d="M13.6 3.5L19 8.9h-5.4z"/>
+      <path d="M20.5 4.5l-7 7M20.5 4.5h-4.4M20.5 4.5v4.4"/>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- ===================== title bar ===================== -->
+<header class="titlebar">
+  <div class="tb-brand">
+    <span class="logo-mark"></span>
+    <span class="logo-text">Redline<span class="logo-accent">PDF</span></span>
+  </div>
+  <div class="tb-doc" id="tbDoc">
+    <span class="tb-doc-name" id="tbDocName">No document</span>
+    <span class="tb-dirty" id="tbDirty" title="Unsaved changes" hidden>•</span>
+  </div>
+  <div class="tb-actions no-drag">
+    <button class="tb-btn" id="btnDiag" title="Diagnostics &amp; log  (Ctrl+Shift+D)"><svg><use href="#i-bug"/></svg></button>
+    <button class="tb-btn" id="btnSettings" title="Settings"><svg><use href="#i-settings"/></svg></button>
+    <span class="tb-sep"></span>
+    <button class="win-btn" id="winMin" title="Minimise"><svg><use href="#i-min"/></svg></button>
+    <button class="win-btn" id="winMax" title="Maximise"><svg><use href="#i-max"/></svg></button>
+    <button class="win-btn danger" id="winClose" title="Close"><svg><use href="#i-close"/></svg></button>
+  </div>
+</header>
+
+<!-- ===================== toolbar row 1: file / view ===================== -->
+<div class="toolbar row-actions no-drag">
+  <div class="tgroup">
+    <button class="tbtn wide-btn" id="btnOpen" title="Open PDF  (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Open</span></button>
+    <button class="tbtn icon-only" id="btnOpenRecent" title="Open a recent drawing"><svg class="caret-down"><use href="#i-chev"/></svg></button>
+    <button class="tbtn wide-btn" id="btnSave" title="Save  (Ctrl+S)"><svg><use href="#i-save"/></svg><span>Save</span></button>
+    <button class="tbtn wide-btn" id="btnSaveAs" title="Save a copy…  (Ctrl+Shift+S)"><svg><use href="#i-saveas"/></svg><span>Save As</span></button>
+    <button class="tbtn wide-btn" id="btnPrint" title="Print  (Ctrl+P)"><svg><use href="#i-print"/></svg><span>Print</span></button>
+    <button class="tbtn wide-btn" id="btnExport" title="Export a markup summary report"><svg><use href="#i-report"/></svg><span>Report</span></button>
+  </div>
+
+  <div class="tsep"></div>
+
+  <div class="tgroup">
+    <button class="tbtn icon-only" id="btnUndo" title="Undo  (Ctrl+Z)"><svg><use href="#i-undo"/></svg></button>
+    <button class="tbtn icon-only" id="btnRedo" title="Redo  (Ctrl+Y)"><svg><use href="#i-redo"/></svg></button>
+    <button class="tbtn icon-only" id="btnDelete" title="Delete selected markup  (Del)"><svg><use href="#i-trash"/></svg></button>
+  </div>
+
+  <div class="tspacer"></div>
+
+  <!-- Navigation tools. They live with the zoom controls rather than in the
+       markup row because that is what they are, but they carry `data-tool`
+       and are armed by RP.tools.setTool like any other tool. The group is
+       deliberately not `.tools`: that class is the tall labelled treatment
+       used by the markup row and would not fit here. -->
+  <div class="tgroup">
+    <button class="tbtn tool icon-only" data-tool="pan" title="Pan the drawing — or hold Space / drag with the middle button from any tool  (G)"><svg><use href="#i-hand"/></svg></button>
+    <button class="tbtn tool icon-only" data-tool="zoomrect" title="Zoom to a box you drag  (Z)"><svg><use href="#i-zoom-rect"/></svg></button>
+  </div>
+
+  <div class="tsep"></div>
+
+  <div class="tgroup">
+    <button class="tbtn icon-only" id="btnZoomOut" title="Zoom out  (Ctrl+-)"><svg><use href="#i-zoom-out"/></svg></button>
+    <div class="zoom-box">
+      <input id="zoomInput" value="100" spellcheck="false" /><span>%</span>
+      <button class="zoom-caret" id="zoomPresets" title="Zoom presets"><svg><use href="#i-chev"/></svg></button>
+    </div>
+    <button class="tbtn icon-only" id="btnZoomIn" title="Zoom in  (Ctrl++)"><svg><use href="#i-zoom-in"/></svg></button>
+    <button class="tbtn icon-only" id="btnFitWidth" title="Fit width  (Ctrl+1)"><svg><use href="#i-fit-width"/></svg></button>
+    <button class="tbtn icon-only" id="btnFitPage" title="Fit page  (Ctrl+2)"><svg><use href="#i-fit-page"/></svg></button>
+    <button class="tbtn icon-only" id="btnRotate" title="Rotate view"><svg><use href="#i-rotate"/></svg></button>
+    <button class="tbtn icon-only" id="btnNight" title="Night mode — inverts the drawing, not your markups  (Ctrl+Shift+N)"><svg><use href="#i-night"/></svg></button>
+  </div>
+
+  <div class="tsep"></div>
+
+  <div class="tgroup">
+    <button class="tbtn wide-btn" id="btnCompare" title="Compare two revisions"><svg><use href="#i-compare"/></svg><span>Compare</span></button>
+    <button class="tbtn wide-btn" id="btnSearch" title="Find in document  (Ctrl+F)"><svg><use href="#i-search"/></svg><span>Find</span></button>
+  </div>
+</div>
+
+<!-- ===================== toolbar row 2: markup tools ===================== -->
+<div class="toolbar row-tools no-drag">
+  <div class="tgroup tools" id="toolGroup">
+    <button class="tbtn tool active" data-tool="select" title="Select, move and edit markups  (V)"><svg><use href="#i-select"/></svg><b>Select</b></button>
+    <button class="tbtn tool" data-tool="highlight" title="Highlight text — hold Shift for area highlight  (H)"><svg><use href="#i-highlight"/></svg><b>Highlight</b></button>
+    <button class="tbtn tool" data-tool="note" title="Sticky note  (N)"><svg><use href="#i-note"/></svg><b>Note</b></button>
+    <button class="tbtn tool" data-tool="pen" title="Freehand redline  (P)"><svg><use href="#i-pen"/></svg><b>Pen</b></button>
+    <button class="tbtn tool" data-tool="line" title="Straight line — Shift constrains to 45°  (L)"><svg><use href="#i-line"/></svg><b>Line</b></button>
+    <button class="tbtn tool" data-tool="arrow" title="Arrow  (A)"><svg><use href="#i-arrow"/></svg><b>Arrow</b></button>
+    <button class="tbtn tool" data-tool="rect" title="Rectangle — Shift for a square  (R)"><svg><use href="#i-rect"/></svg><b>Box</b></button>
+    <button class="tbtn tool" data-tool="ellipse" title="Ellipse  (E)"><svg><use href="#i-ellipse"/></svg><b>Oval</b></button>
+    <button class="tbtn tool" data-tool="cloud" title="Revision cloud  (C)"><svg><use href="#i-cloud"/></svg><b>Cloud</b></button>
+    <button class="tbtn tool" data-tool="text" title="Typewriter text  (T)"><svg><use href="#i-text"/></svg><b>Text</b></button>
+    <button class="tbtn tool" data-tool="callout" title="Callout — press on the detail to pin the arrow, drag to place the box  (O)"><svg><use href="#i-callout"/></svg><b>Callout</b></button>
+    <button class="tbtn tool" data-tool="measure" title="Measure a distance  (M)"><svg><use href="#i-measure"/></svg><b>Measure</b></button>
+  </div>
+
+  <div class="tsep"></div>
+
+  <div class="tgroup tool-opts" id="hlModeGroup" hidden>
+    <span class="opt-label">Highlight</span>
+    <button class="chip active" data-hlmode="text" title="Drag across text to highlight the words themselves">Text</button>
+    <button class="chip" data-hlmode="area" title="Drag a rectangle — for scans and drawings with no text layer">Area</button>
+    <span class="opt-hint">Hold Shift to flip</span>
+  </div>
+
+  <div class="tsep" id="hlModeSep" hidden></div>
+
+  <div class="tgroup style-group">
+    <div class="swatches" id="swatches"></div>
+    <label class="mini-field" title="Line width">
+      <span>Width</span>
+      <input type="range" id="widthRange" min="1" max="12" step="0.5" value="2" />
+      <output id="widthOut">2</output>
+    </label>
+    <label class="mini-field" title="Opacity">
+      <span>Opacity</span>
+      <input type="range" id="opacityRange" min="10" max="100" step="5" value="100" />
+      <output id="opacityOut">100</output>
+    </label>
+  </div>
+</div>
+
+<!-- ===================== startup error banner ===================== -->
+<div class="banner" id="errorBanner" hidden>
+  <svg class="banner-icon"><use href="#i-warn"/></svg>
+  <div class="banner-text"><strong id="bannerTitle"></strong><span id="bannerBody"></span></div>
+  <button class="ghost-btn small" id="bannerDetails">Diagnostics</button>
+  <button class="np-close" id="bannerClose"><svg><use href="#i-close"/></svg></button>
+</div>
+
+<!-- ===================== body ===================== -->
+<main class="workspace">
+  <aside class="sidebar" id="sidebar">
+    <nav class="side-tabs">
+      <button class="side-tab active" data-panel="thumbs" title="Pages"><svg><use href="#i-thumbs"/></svg></button>
+      <button class="side-tab" data-panel="outline" title="Bookmarks" hidden><svg><use href="#i-bookmarks"/></svg></button>
+      <button class="side-tab" data-panel="markups" title="Markups"><svg><use href="#i-list"/></svg></button>
+      <button class="side-tab" data-panel="search" title="Search"><svg><use href="#i-search"/></svg></button>
+      <button class="side-tab" data-panel="compare" title="Compare"><svg><use href="#i-compare"/></svg></button>
+      <span class="side-tabs-fill"></span>
+      <button class="side-tab collapse" id="sideCollapse" title="Collapse panel"><svg><use href="#i-chev"/></svg></button>
+    </nav>
+
+    <section class="side-panel active" data-panel="thumbs">
+      <div class="side-head"><h2>Pages</h2><span class="side-count" id="thumbCount"></span></div>
+      <div class="page-tools" id="pageTools">
+        <button class="ghost-btn icon-btn" id="pgInsert" title="Insert a blank page after the selection" disabled><svg><use href="#i-page-add"/></svg></button>
+        <button class="ghost-btn icon-btn" id="pgDuplicate" title="Duplicate the selected pages" disabled><svg><use href="#i-copy"/></svg></button>
+        <button class="ghost-btn icon-btn" id="pgRotateCcw" title="Rotate left" disabled><svg><use href="#i-rot-ccw"/></svg></button>
+        <button class="ghost-btn icon-btn" id="pgRotateCw" title="Rotate right" disabled><svg><use href="#i-rot-cw"/></svg></button>
+        <button class="ghost-btn icon-btn" id="pgExtract" title="Extract the selected pages to a new PDF" disabled><svg><use href="#i-extract"/></svg></button>
+        <button class="ghost-btn icon-btn danger" id="pgDelete" title="Delete the selected pages" disabled><svg><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="thumb-list" id="thumbList"></div>
+      <div class="side-hint">Drag thumbnails to reorder · Ctrl or Shift click to pick several · right-click for more</div>
+    </section>
+
+    <section class="side-panel" data-panel="outline">
+      <div class="side-head">
+        <h2>Bookmarks</h2><span class="side-count" id="outlineCount"></span>
+      </div>
+      <div class="side-filters ol-tools">
+        <button class="ghost-btn" id="outlineExpand">Expand all</button>
+        <button class="ghost-btn" id="outlineCollapse">Collapse all</button>
+      </div>
+      <div class="outline-list" id="outlineList"></div>
+      <div class="side-hint">The document's own bookmarks. Read-only — they are part of the file, not your markups.</div>
+    </section>
+
+    <section class="side-panel" data-panel="markups">
+      <div class="side-head">
+        <h2>Markups</h2><span class="side-count" id="markupCount">0</span>
+      </div>
+      <div class="side-filters">
+        <input type="search" id="markupFilter" placeholder="Filter markups…" spellcheck="false" />
+        <select id="markupSort">
+          <option value="page">Page order</option>
+          <option value="created">Newest first</option>
+          <option value="type">By type</option>
+        </select>
+      </div>
+      <div class="markup-list" id="markupList"></div>
+      <div class="side-foot">
+        <button class="ghost-btn" id="btnExportCsv">Export CSV</button>
+        <button class="ghost-btn" id="btnExportReport">PDF report</button>
+      </div>
+    </section>
+
+    <section class="side-panel" data-panel="search">
+      <div class="side-head"><h2>Search</h2><span class="side-count" id="searchCount"></span></div>
+      <div class="side-filters">
+        <input type="search" id="searchInput" placeholder="Find in document…" spellcheck="false" />
+      </div>
+      <div class="search-opts">
+        <label><input type="checkbox" id="searchCase" /> Match case</label>
+        <label><input type="checkbox" id="searchWhole" /> Whole words</label>
+      </div>
+      <div class="search-list" id="searchList"></div>
+    </section>
+
+    <section class="side-panel" data-panel="compare">
+      <div class="side-head"><h2>Compare revisions</h2></div>
+      <div class="cmp-setup">
+        <div class="cmp-slot">
+          <label>Baseline (old revision)</label>
+          <button class="ghost-btn wide" id="btnPickBaseline">Choose PDF…</button>
+          <div class="cmp-file" id="cmpBaselineName">— none —</div>
+        </div>
+        <div class="cmp-slot">
+          <label>Current (this document)</label>
+          <div class="cmp-file" id="cmpCurrentName">— none —</div>
+        </div>
+        <div class="cmp-opts">
+          <label class="row"><span>Ignore shift</span>
+            <input type="checkbox" id="cmpAutoAlign" checked />
+          </label>
+          <label class="row"><span>Tolerance</span>
+            <input type="range" id="cmpTolerance" min="0" max="6" step="1" value="2" />
+            <output id="cmpToleranceOut">2 px</output>
+          </label>
+          <label class="row"><span>Min change size</span>
+            <input type="range" id="cmpMinSize" min="1" max="40" step="1" value="6" />
+            <output id="cmpMinSizeOut">6 px</output>
+          </label>
+        </div>
+        <button class="primary-btn wide" id="btnRunCompare" disabled>Run comparison</button>
+        <div class="cmp-progress" id="cmpProgress" hidden><div class="bar"><i></i></div><span></span></div>
+      </div>
+      <div class="cmp-results" id="cmpResults"></div>
+    </section>
+  </aside>
+
+  <div class="viewer-wrap">
+    <!-- One or two panes, each with its own tab strip and scroll container.
+       RP.tabs builds what goes in here; nothing is hard-coded because a pane
+         is created and destroyed as the view is split and rejoined. -->
+    <div class="panes" id="panes"></div>
+
+    <div class="empty-state" id="emptyState">
+      <div class="empty-card">
+        <div class="empty-icon"><svg><use href="#i-open"/></svg></div>
+        <h1>Open a drawing to start marking up</h1>
+        <p>Drop a PDF anywhere in this window, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>.</p>
+        <button class="primary-btn" id="btnOpenEmpty">Open PDF…</button>
+        <div class="recents" id="recentList"></div>
+      </div>
+    </div>
+
+    <div class="compare-overlay" id="compareOverlay" hidden>
+      <div class="cmp-toolbar">
+        <span class="cmp-title">Revision compare</span>
+        <div class="cmp-legend">
+          <span class="key removed"></span> Removed
+          <span class="key added"></span> Added
+          <span class="key same"></span> Unchanged
+        </div>
+        <div class="cmp-view-modes">
+          <button class="chip active" data-mode="overlay">Overlay</button>
+          <button class="chip" data-mode="side">Side by side</button>
+          <button class="chip" data-mode="swipe">Swipe</button>
+        </div>
+        <button class="tbtn wide-btn" id="cmpCloud" title="Draw a revision cloud around every change on the live drawing"><svg><use href="#i-cloud"/></svg><span>Cloud changes</span></button>
+        <div class="cmp-pager">
+          <button class="tbtn icon-only" id="cmpPrev"><svg class="flip"><use href="#i-chev"/></svg></button>
+          <span id="cmpPageLabel">1 / 1</span>
+          <button class="tbtn icon-only" id="cmpNext"><svg><use href="#i-chev"/></svg></button>
+        </div>
+        <button class="tbtn icon-only" id="cmpClose" title="Close compare"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="cmp-stage" id="cmpStage"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ===================== status bar ===================== -->
+<footer class="statusbar">
+  <!-- Page is an input, not a label: typing a sheet number is the fastest way
+       through a large set, and Ctrl+G focuses it. -->
+  <span class="st-item st-page" id="stPage">
+    <label for="pageInput">Page</label>
+    <input id="pageInput" value="" spellcheck="false" disabled title="Go to page  (Ctrl+G)" />
+    <span class="st-of" id="stPageOf">of —</span>
+  </span>
+  <span class="st-sep"></span>
+  <span class="st-item" id="stZoom">100%</span>
+  <span class="st-sep"></span>
+  <span class="st-item" id="stScale" title="Click to reset the measurement scale">Scale: not calibrated</span>
+  <span class="st-sep"></span>
+  <span class="st-item" id="stDims" title="Size of the current sheet"></span>
+  <span class="st-fill"></span>
+  <span class="st-item" id="stSel"></span>
+  <span class="st-item st-msg" id="stMsg"></span>
+  <span class="st-sep"></span>
+  <button class="st-toggle" id="stSaveMode" title="Click to change how Save behaves">Save → new copy</button>
+</footer>
+
+<!-- ===================== floating editors ===================== -->
+<div class="note-popup" id="notePopup" hidden>
+  <header>
+    <span class="np-title">Sticky note</span>
+    <button class="np-close" id="noteClose"><svg><use href="#i-close"/></svg></button>
+  </header>
+  <textarea id="noteText" placeholder="Type a comment…"></textarea>
+  <footer>
+    <span class="np-meta" id="noteMeta"></span>
+    <button class="ghost-btn small" id="noteDelete">Delete</button>
+  </footer>
+</div>
+
+<textarea class="inline-text-editor" id="inlineText" hidden spellcheck="false"></textarea>
+
+<!-- ===================== settings modal ===================== -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal">
+    <header>
+      <h2>Settings</h2>
+      <button class="np-close" id="settingsClose"><svg><use href="#i-close"/></svg></button>
+    </header>
+    <div class="modal-body">
+      <section>
+        <h3>Saving</h3>
+        <label class="opt">
+          <input type="radio" name="saveMode" value="copy" />
+          <div><strong>Save to a new copy</strong><span>Ctrl+S writes <code>drawing-markup.pdf</code> and never touches the original.</span></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="saveMode" value="overwrite" />
+          <div><strong>Overwrite the original</strong><span>Ctrl+S writes straight back to the source file.</span></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="saveMode" value="ask" />
+          <div><strong>Ask me each time</strong><span>Prompt on the first save of every document.</span></div>
+        </label>
+        <label class="opt inline">
+          <input type="checkbox" id="optBackup" />
+          <div><strong>Keep a <code>.bak.pdf</code> before the first overwrite</strong><span>Cheap insurance. Written once per file.</span></div>
+        </label>
+        <label class="opt inline">
+          <input type="checkbox" id="optAutosave" />
+          <div><strong>Autosave markups for crash recovery</strong><span>Stores markups locally every minute; never writes to your PDF.</span></div>
+        </label>
+      </section>
+      <section>
+        <h3>Startup</h3>
+        <label class="opt inline">
+          <input type="checkbox" id="optResident" />
+          <div><strong>Stay resident in the tray</strong><span>Keeps the app warm so double-clicking a PDF opens it instantly.</span></div>
+        </label>
+        <label class="opt inline">
+          <input type="checkbox" id="optRestoreView" />
+          <div><strong>Reopen drawings where you left them</strong><span>Remembers the page and zoom of every recent drawing. Window size and position are always remembered.</span></div>
+        </label>
+        <label class="opt field">
+          <span>Markup author name</span>
+          <input type="text" id="optAuthor" placeholder="Your name" />
+        </label>
+      </section>
+      <section>
+        <h3>Appearance</h3>
+        <label class="opt field">
+          <span>Theme</span>
+          <select id="optTheme">
+            <option value="dark">Dark (CAD pro)</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+      </section>
+      <section>
+        <h3>Updates</h3>
+        <label class="opt inline">
+          <input type="checkbox" id="optAutoUpdate" />
+          <div><strong>Check for new versions at startup</strong><span>The only time this app talks to the network. Nothing is downloaded without asking, and no drawing ever leaves your machine.</span></div>
+        </label>
+        <div class="opt field">
+          <span id="appVersionLabel">Version —</span>
+          <div><button class="ghost-btn small" id="btnCheckUpdates" type="button">Check now</button></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== print modal ===================== -->
+<div class="modal-backdrop" id="printModal" hidden>
+  <div class="modal">
+    <header>
+      <h2>Print</h2>
+      <button class="np-close" id="printClose"><svg><use href="#i-close"/></svg></button>
+    </header>
+    <div class="modal-body">
+      <section>
+        <h3>Pages</h3>
+        <label class="opt">
+          <input type="radio" name="printRange" value="all" checked />
+          <div><strong>All pages</strong></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="printRange" value="current" />
+          <div><strong>Current page only</strong></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="printRange" value="visible" />
+          <div><strong>Pages on screen now</strong><span>Whatever the viewer is showing.</span></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="printRange" value="custom" />
+          <div>
+            <strong>Range</strong>
+            <input type="text" id="printCustom" class="range-input" placeholder="e.g. 1-3, 7, 11-" spellcheck="false" />
+          </div>
+        </label>
+      </section>
+      <section>
+        <h3>Content</h3>
+        <label class="opt inline">
+          <input type="checkbox" id="printMarkups" checked />
+          <div><strong>Include markups</strong><span>Prints the stamped drawing, not the screen — full plotter resolution either way.</span></div>
+        </label>
+      </section>
+      <section>
+        <h3>Scale</h3>
+        <label class="opt">
+          <input type="radio" name="printScale" value="actual" checked />
+          <div><strong>Actual size</strong><span>Sheet goes to the printer untouched, so a scaled drawing still measures true.</span></div>
+        </label>
+        <label class="opt">
+          <input type="radio" name="printScale" value="fit" />
+          <div><strong>Fit to paper</strong><span>Rescales each sheet onto a chosen size.</span></div>
+        </label>
+        <label class="opt field" id="printPaperRow" hidden>
+          <span>Paper</span>
+          <select id="printPaper"></select>
+        </label>
+        <p class="print-warn" id="printWarn" hidden>
+          <svg><use href="#i-warn"/></svg>
+          Fitting changes the drawing scale. Do not measure off a fitted print.
+        </p>
+      </section>
+    </div>
+    <footer class="modal-foot">
+      <span class="print-summary" id="printSummary"></span>
+      <span class="spacer"></span>
+      <button class="ghost-btn small" id="printCancel">Cancel</button>
+      <button class="primary-btn small" id="printGo"><svg><use href="#i-print"/></svg> Preview &amp; print</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ===================== diagnostics modal ===================== -->
+<div class="modal-backdrop" id="diagModal" hidden>
+  <div class="modal wide-modal">
+    <header>
+      <h2>Diagnostics</h2>
+      <div class="modal-head-actions">
+        <button class="ghost-btn small" id="diagCopy"><svg><use href="#i-copy"/></svg> Copy all</button>
+        <button class="ghost-btn small" id="diagSave">Save log…</button>
+        <button class="ghost-btn small" id="diagReveal">Show log folder</button>
+        <button class="np-close" id="diagClose"><svg><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+    <div class="modal-body">
+      <p class="diag-hint">Everything the app knows about this session. <strong>Copy all</strong> puts it on the clipboard so you can paste it straight into a bug report.</p>
+      <pre class="diag-pre" id="diagText"></pre>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+<div class="drop-veil" id="dropVeil" hidden><div>Drop PDF to open</div></div>
+
+<!-- ===================== scripts =====================
+     pdf-lib ships a UMD build, so a classic tag is fine. pdf.js is ESM from
+     v4 onward, so it is loaded by pdfjs-loader.js, which handles both. -->
+<script src="../node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
+<script src="js/util.js"></script>
+<script src="js/diag.js"></script>
+<script src="js/menu.js"></script>
+<script src="js/pdfjs-loader.js"></script>
+<script src="js/store.js"></script>
+<script src="js/render.js"></script>
+<script src="js/viewer.js"></script>
+<script src="js/annots.js"></script>
+<script src="js/clip.js"></script>
+<script src="js/props.js"></script>
+<script src="js/keys.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/search.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/outline.js"></script>
+<script src="js/compare.js"></script>
+<script src="js/exporter.js"></script>
+<script src="js/pages.js"></script>
+<script src="js/print.js"></script>
+<script src="js/tabs.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

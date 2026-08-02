@@ -1,0 +1,15 @@
+# Normalise to LF in the repository and in the working tree. The build runs on
+# both ubuntu (test/verify.js) and windows (electron-builder), and mixed line
+# endings would show every file as modified on one of them.
+* text=auto eol=lf
+
+# Windows shell scripts have to keep CRLF or cmd.exe mis-parses them.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Never touched.
+*.pdf  binary
+*.png  binary
+*.ico  binary
+*.icns binary
