@@ -80,7 +80,7 @@
       "fileAssociations": [
         {
           "ext": "pdf",
-          "name": "PDF Document",
+          "name": "RedlinePDF.Document",
           "description": "PDF Document",
           "role": "Editor"
         }
