@@ -852,16 +852,25 @@
     openInlineText(record, pdf, existing) {
       const editor = this.inlineText;
       this.inlineEdit = { record, pdf, annot: existing || null };
-      const view = record.viewport.convertToViewportPoint(pdf[0], pdf[1]);
+
+      // A callout box is *drawn* as the axis-aligned `vpRect` of its four
+      // corners, so the editor has to be placed from that same rect. Converting
+      // the single top-left PDF corner instead only agrees on an unrotated
+      // page: on a sheet with its own /Rotate — which is most plotted landscape
+      // drawings — that corner lands somewhere else entirely and the editor
+      // opens away from the box it belongs to, usually below it.
+      const rect = existing && existing.type === 'callout'
+        ? RP.render.vpRect(record.viewport, RP.render.calloutBox(existing))
+        : null;
+      const view = rect ? [rect.x, rect.y] : record.viewport.convertToViewportPoint(pdf[0], pdf[1]);
+
       const box = record.container.getBoundingClientRect();
       const size = (existing ? existing.fontSize : this.style.fontSize) * RP.viewer.zoom;
       editor.hidden = false;
       editor.style.left = (box.left + view[0]) + 'px';
       editor.style.top = (box.top + view[1]) + 'px';
       editor.style.fontSize = size + 'px';
-      editor.style.width = existing && existing.type === 'callout'
-        ? (RP.render.vpRect(record.viewport, existing).w) + 'px'
-        : '220px';
+      editor.style.width = (rect ? rect.w : 220) + 'px';
       editor.value = existing ? (existing.text || '') : '';
       editor.style.height = 'auto';
       setTimeout(() => {

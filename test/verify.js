@@ -648,6 +648,46 @@ function testCalloutText() {
   check('a second paragraph makes the box taller', twoLines > oneLine,
     `${oneLine} -> ${twoLines}`);
 
+  // The inline editor is placed over the box, so it has to be placed from the
+  // same rotation-aware rect the box is *drawn* from. Converting the single
+  // top-left PDF corner agrees only at /Rotate 0; on a plotted landscape sheet
+  // it lands on a different corner and the editor opens away from its box.
+  const rotations = [0, 90, 180, 270];
+  const sheet = { w: 612, h: 792 };
+  const cal = { type: 'callout', x: 100, y: 600, w: 200, h: 56, tipX: 60, tipY: 560, text: 'x', fontSize: 11 };
+  const mismatched = [];
+  const strayCorner = [];
+  for (const rotation of rotations) {
+    const s = 1;
+    const transforms = {
+      0: [s, 0, 0, -s, 0, sheet.h * s],
+      90: [0, s, s, 0, 0, 0],
+      180: [-s, 0, 0, s, sheet.w * s, 0],
+      270: [0, -s, -s, 0, sheet.h * s, sheet.w * s]
+    };
+    const t = transforms[rotation];
+    const viewport = {
+      scale: s,
+      convertToViewportPoint: (x, y) => [t[0] * x + t[2] * y + t[4], t[1] * x + t[3] * y + t[5]]
+    };
+    const drawn = [];
+    RP.render.drawAnnotation(measuringContext(drawn), cal, viewport, {});
+    const painted = drawn.find((d) => d.kind === 'box');
+    const rect = RP.render.vpRect(viewport, RP.render.calloutBox(cal));
+    if (Math.abs(rect.x - painted.x) > 0.01 || Math.abs(rect.y - painted.y) > 0.01) {
+      mismatched.push('rotate ' + rotation);
+    }
+    // The old single-corner anchor: kept here so the reason the rect is needed
+    // stays visible — it must diverge everywhere except /Rotate 0.
+    const corner = viewport.convertToViewportPoint(cal.x, cal.y + cal.h);
+    const agrees = Math.abs(corner[0] - painted.x) < 0.01 && Math.abs(corner[1] - painted.y) < 0.01;
+    if (rotation !== 0 && agrees) strayCorner.push('rotate ' + rotation);
+  }
+  check('the inline editor rect matches the painted callout box at every rotation',
+    mismatched.length === 0, mismatched.join(', '));
+  check('a single-corner anchor really does miss on a rotated sheet',
+    strayCorner.length === 0, strayCorner.join(', '));
+
   // Refitting keeps the top edge put, which is what stops a callout walking up
   // the sheet every time its text is edited.
   const box = { type: 'callout', x: 100, y: 600, w: 200, h: 80, text: 'Panel LP-1', fontSize: 11 };
