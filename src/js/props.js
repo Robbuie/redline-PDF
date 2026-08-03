@@ -151,7 +151,14 @@
       });
       area.value = (isText ? annot.text : annot.note) || '';
       area.addEventListener('input', RP.debounce(() => {
-        this.patch(isText ? { text: area.value } : { note: area.value });
+        if (!isText) { this.patch({ note: area.value }); return; }
+        // A callout's box is sized to its text, so editing it here has to refit
+        // the box too or the overflow draws below it.
+        if (annot.type !== 'callout') { this.patch({ text: area.value }); return; }
+        const live = RP.store.get(this.annotId);
+        if (!live) return;
+        const fit = RP.render.fitCallout(Object.assign({}, live, { text: area.value }));
+        this.patch(Object.assign({ text: area.value }, fit));
       }, 300));
 
       return RP.el('section', {}, [

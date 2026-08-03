@@ -20,6 +20,29 @@
   const MAX_ZOOM = 8;
   const THUMB_WIDTH = 190;
 
+  /* Canvas retention.
+
+     Nothing frees a page canvas on its own: a page that scrolls out of range
+     keeps its bitmap at full resolution. An E-size sheet at fit-width on a
+     1600px pane is ~13 megapixels per canvas and there are two per page, so a
+     77-sheet set scrolled end to end is well over a gigabyte of live backing
+     store. Chromium starts evicting under that and every subsequent render
+     crawls — which reads as "pages take forever to load", getting worse the
+     longer the document has been open.
+
+     So retained pages are capped by a pixel budget (counting both canvases) and
+     the ones furthest from the viewport are released first. Releasing costs
+     nothing lasting: pdf.js still holds the parsed page proxy, so coming back
+     is a re-raster, not a re-parse. MIN_RETAINED_PAGES is the floor for sheets
+     large enough that a single page blows the whole budget. */
+  const CANVAS_BUDGET_PX = 64e6;   // ~256 MB of backing store at 4 bytes/px
+  const MIN_RETAINED_PAGES = 3;
+
+  /* pdf.js has one worker. Letting a 600px scroll burst start six full-page
+     renders at once only makes the sheet you are looking at wait behind five
+     you are not. */
+  const MAX_PAGE_RENDERS = 2;
+
   /**
    * @param {HTMLElement} root a `.pane` element holding `.viewer > .pages`
    * @param {object} store the document store this pane is currently showing
@@ -35,6 +58,14 @@
     pages: [],          // page records, index 0-based
     currentPage: 0,
     dpr: Math.min(window.devicePixelRatio || 1, 2),
+
+    renderQueue: [],    // page indices waiting on a raster slot
+    activeRenders: 0,
+    thumbQueue: [],
+    activeThumbs: 0,
+    pageTops: null,     // cached container offsets; null means re-measure
+    thumbCurrent: -1,
+    badgeFrame: 0,
 
     els: {},
 
@@ -59,14 +90,20 @@
           const record = this.pages[index];
           if (!record) continue;
           record.visible = entry.isIntersecting;
-          if (entry.isIntersecting) this.renderPage(index);
+          if (!entry.isIntersecting) continue;
+          // A page that was released while off-screen, or whose markups changed
+          // behind your back, comes back through here rather than being kept
+          // painted the whole time.
+          if (record.rendered) { if (record.annotDirty) this.redrawPage(index); }
+          else this.requestPage(index);
         }
+        this.retainCanvases();
       }, { root: this.els.viewer, rootMargin: '600px 0px' });
 
       this.thumbObserver = new IntersectionObserver((entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
-          this.renderThumb(Number(entry.target.dataset.page));
+          this.requestThumb(Number(entry.target.dataset.page));
         }
       }, { root: this.els.thumbs, rootMargin: '400px 0px' });
 
@@ -193,6 +230,7 @@
           inkLayer,
           rendered: false,
           renderTask: null,
+          annotDirty: false,      // markups changed while this page was off-screen
           textContent: null,
           nativeAnnots: null,     // parsed once, the DOM is rebuilt per zoom
           nativeLayerObj: null,
@@ -203,6 +241,7 @@
 
       this.pages = records;
       this.currentPage = 0;
+      this.thumbCurrent = -1;
       this.layout();
       for (const record of records) this.pageObserver.observe(record.container);
       this.buildThumbs();
@@ -216,6 +255,10 @@
         if (record.nativeLayerObj) { try { record.nativeLayerObj.destroy(); } catch (err) { /* ignore */ } }
         this.pageObserver.unobserve(record.container);
       }
+      this.renderQueue = [];
+      this.thumbQueue = [];
+      this.pageTops = null;
+      this.thumbCurrent = -1;
       this.pages = [];
       this.els.pages.innerHTML = '';
       if (this.els.thumbs) this.els.thumbs.innerHTML = '';
@@ -231,6 +274,7 @@
     /** Drop everything this pane holds, including its observers. */
     destroy() {
       this.destroyPages();
+      if (this.badgeFrame) { cancelAnimationFrame(this.badgeFrame); this.badgeFrame = 0; }
       if (this.pageObserver) this.pageObserver.disconnect();
       if (this.thumbObserver) this.thumbObserver.disconnect();
       if (this.root && this.root.parentNode) this.root.parentNode.removeChild(this.root);
@@ -249,6 +293,9 @@
     },
 
     layout() {
+      // Every queued raster is for the old scale and would be thrown away.
+      this.renderQueue = [];
+      this.pageTops = null;
       for (const record of this.pages) {
         const viewport = record.pageProxy.getViewport({
           scale: this.zoom, rotation: this.rotationOf(record.pageProxy)
@@ -270,11 +317,17 @@
           canvas.style.height = h + 'px';
         }
         record.rendered = false;
+        record.annotDirty = true;
         if (record.renderTask) { try { record.renderTask.cancel(); } catch (err) { /* ignore */ } }
         record.renderTask = null;
+        // A zoom invalidates every bitmap. The off-screen ones are not being
+        // repainted this pass, so hand their memory back now rather than
+        // carrying a document's worth of stale full-resolution canvases into
+        // the next eviction sweep.
+        if (!record.visible) this.releasePage(record);
       }
       for (const record of this.pages) {
-        if (record.visible) this.renderPage(record.index);
+        if (record.visible) this.requestPage(record.index);
       }
       this.redrawAll();
       this.emit('zoom:changed', this.zoom);
@@ -353,6 +406,135 @@
     },
 
     // -- rendering ---------------------------------------------------------
+
+    /**
+     * Ask for a page to be rastered. Goes through the queue rather than
+     * straight to `renderPage` so a burst of observer callbacks cannot start
+     * more work than the single pdf.js worker can usefully carry.
+     */
+    requestPage(index) {
+      const record = this.pages[index];
+      if (!record || record.rendered || record.renderTask) return;
+      if (this.renderQueue.indexOf(index) === -1) this.renderQueue.push(index);
+      this.pumpRenders();
+    },
+
+    /** The queue is a priority list, not a FIFO: nearest the viewport wins. */
+    pumpRenders() {
+      while (this.activeRenders < MAX_PAGE_RENDERS && this.renderQueue.length) {
+        this.renderQueue.sort((a, b) =>
+          Math.abs(a - this.currentPage) - Math.abs(b - this.currentPage));
+        const index = this.renderQueue.shift();
+        const record = this.pages[index];
+        // Scrolled back out, or already dealt with, between queue and slot.
+        if (!record || !record.visible || record.rendered || record.renderTask) continue;
+        this.activeRenders += 1;
+        this.renderPage(index).then(() => {
+          this.activeRenders -= 1;
+          this.retainCanvases();
+          this.pumpRenders();
+          this.pumpThumbs();
+        });
+      }
+      if (!this.activeRenders && !this.renderQueue.length) this.pumpThumbs();
+    },
+
+    requestThumb(index) {
+      const record = this.pages[index];
+      if (!record || record.thumbRendered || !record.thumbCanvas) return;
+      if (this.thumbQueue.indexOf(index) === -1) this.thumbQueue.push(index);
+      this.pumpThumbs();
+    },
+
+    /**
+     * Thumbnails queue *behind* pages, never alongside them. They share the one
+     * pdf.js worker, and opening the panel on a 77-sheet set otherwise fires a
+     * burst of thumb rasters that the page you are actually reading has to wait
+     * out. One at a time, and only when nothing real is pending.
+     */
+    pumpThumbs() {
+      if (this.activeRenders || this.renderQueue.length) return;
+      while (this.activeThumbs < 1 && this.thumbQueue.length) {
+        const index = this.thumbQueue.shift();
+        const record = this.pages[index];
+        if (!record || record.thumbRendered || !record.thumbCanvas) continue;
+        this.activeThumbs += 1;
+        this.renderThumb(index).then(() => {
+          this.activeThumbs -= 1;
+          this.pumpThumbs();
+        });
+      }
+    },
+
+    /**
+     * Drop a page's bitmaps and layers, keeping its box in the scroll column.
+     *
+     * Zeroing both canvas dimensions is what actually returns the backing
+     * store — `clearRect` leaves it allocated. The CSS width/height set by
+     * `layout()` stay, so the page keeps its size and nothing reflows. The
+     * parsed page proxy and extracted `textContent` are kept, so coming back is
+     * a re-raster rather than a re-parse.
+     */
+    releasePage(record) {
+      if (!record) return;
+      if (record.renderTask) { try { record.renderTask.cancel(); } catch (err) { /* ignore */ } }
+      record.renderTask = null;
+      record.rendered = false;
+      record.annotDirty = true;
+      for (const canvas of [record.pdfCanvas, record.annotCanvas]) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      if (record.nativeLayerObj) { try { record.nativeLayerObj.destroy(); } catch (err) { /* ignore */ } }
+      record.nativeLayerObj = null;
+      // `nativeAnnots` is parsed data, not DOM — keeping it is the whole point
+      // of the cache. Only the rendered layer goes.
+      if (record.nativeLayer) {
+        record.nativeLayer.innerHTML = '';
+        record.nativeLayer.hidden = true;
+      }
+      if (record.textLayer) record.textLayer.innerHTML = '';
+      record.textDivs = [];
+      record.annotCanvasMap = null;
+    },
+
+    /** What the retention budget is currently holding. Reported by diag.js. */
+    rasterStats() {
+      let held = 0;
+      let pixels = 0;
+      for (const record of this.pages) {
+        if (!record.pdfCanvas || !record.pdfCanvas.width) continue;
+        held += 1;
+        pixels += record.pdfCanvas.width * record.pdfCanvas.height * 2;
+      }
+      return {
+        pages: this.pages.length,
+        rastered: held,
+        approxMB: Math.round(pixels * 4 / 1e6),
+        budgetMB: Math.round(CANVAS_BUDGET_PX * 4 / 1e6),
+        queued: this.renderQueue.length,
+        active: this.activeRenders,
+        thumbsQueued: this.thumbQueue.length
+      };
+    },
+
+    /** Release rastered pages furthest from the viewport until under budget. */
+    retainCanvases() {
+      const live = this.pages.filter((record) => record.rendered || record.renderTask);
+      if (live.length <= MIN_RETAINED_PAGES) return;
+      live.sort((a, b) =>
+        Math.abs(a.index - this.currentPage) - Math.abs(b.index - this.currentPage));
+
+      let budget = CANVAS_BUDGET_PX;
+      for (let i = 0; i < live.length; i += 1) {
+        const record = live[i];
+        // Two canvases per page, always the same size as each other.
+        budget -= record.pdfCanvas.width * record.pdfCanvas.height * 2;
+        if (budget >= 0 || i < MIN_RETAINED_PAGES) continue;
+        if (record.visible || record.renderTask) continue;
+        this.releasePage(record);
+      }
+    },
 
     async renderPage(index) {
       const record = this.pages[index];
@@ -441,7 +623,8 @@
       const record = this.pages[index];
       if (!record || !record.viewport) return;
       const canvas = record.annotCanvas;
-      if (!canvas.width) return;
+      if (!canvas.width) return;   // released, or not rastered yet
+      record.annotDirty = false;
       const ctx = canvas.getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -459,26 +642,50 @@
       }
     },
 
+    /**
+     * Repaint the markup layer of the pages actually on screen, and mark the
+     * rest so they repaint when they come back.
+     *
+     * `selection:changed` fires on every click. The old version repainted every
+     * page still holding a raster, so once a long document had been scrolled
+     * through that was 77 canvas clears and redraws per click.
+     */
     redrawAll() {
       for (const record of this.pages) {
-        if (record.visible || record.rendered) this.redrawPage(record.index);
+        if (record.visible && record.rendered) this.redrawPage(record.index);
+        else record.annotDirty = true;
       }
       this.updateThumbBadges();
     },
 
     // -- navigation --------------------------------------------------------
 
+    /**
+     * Page tops only move when `layout()` runs, so they are measured once and
+     * cached. Asking all 77 containers for a bounding rect on every scroll
+     * frame forced a layout per page per frame, which is most of the jank on a
+     * long sheet set.
+     */
+    measurePages() {
+      this.pageTops = this.pages.map((record) => record.container.offsetTop);
+    },
+
     onScroll() {
       if (!this.pages.length) return;
-      const viewerRect = this.els.viewer.getBoundingClientRect();
-      const probe = viewerRect.top + Math.min(140, viewerRect.height * 0.3);
-      let current = this.currentPage;
-      for (const record of this.pages) {
-        const rect = record.container.getBoundingClientRect();
-        if (rect.top <= probe && rect.bottom >= probe) { current = record.index; break; }
-        if (rect.top > probe) { current = Math.max(0, record.index - 1); break; }
-        current = record.index;
+      if (!this.pageTops || this.pageTops.length !== this.pages.length) this.measurePages();
+
+      const viewer = this.els.viewer;
+      const probe = viewer.scrollTop + Math.min(140, viewer.clientHeight * 0.3);
+      // Last page whose top is at or above the probe line.
+      let lo = 0;
+      let hi = this.pages.length - 1;
+      let current = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (this.pageTops[mid] <= probe) { current = mid; lo = mid + 1; }
+        else hi = mid - 1;
       }
+
       if (current !== this.currentPage) {
         this.currentPage = current;
         this.highlightThumb();
@@ -527,6 +734,16 @@
     pxToPdf(px) { return px / this.zoom; },
 
     pageAt(clientX, clientY) {
+      /* O(1) in the common case. The `parentNode` check matters in a split:
+         `elementFromPoint` happily returns the *other* pane's page, and the
+         loop below is still needed for points in the gutter between pages or
+         under an overlay that is not part of one. */
+      const hit = document.elementFromPoint(clientX, clientY);
+      const container = hit && hit.closest ? hit.closest('.page') : null;
+      if (container && container.parentNode === this.els.pages) {
+        const record = this.pages[Number(container.dataset.page)];
+        if (record) return record;
+      }
       for (const record of this.pages) {
         const rect = record.container.getBoundingClientRect();
         if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
@@ -542,6 +759,8 @@
       const host = this.els.thumbs;
       if (!host || !this.isActive()) return;
       host.innerHTML = '';
+      this.thumbQueue = [];
+      this.thumbCurrent = -1;
       for (const record of this.pages) {
         const base = record.pageProxy.getViewport({ scale: 1, rotation: this.rotationOf(record.pageProxy) });
         const scale = THUMB_WIDTH / base.width;
@@ -590,14 +809,16 @@
       }
     },
 
+    /** Only the two buttons that changed, not a class write per page. */
     highlightThumb() {
       if (!this.isActive()) return;
-      for (const record of this.pages) {
-        if (!record.thumbButton) continue;
-        record.thumbButton.classList.toggle('current', record.index === this.currentPage);
-      }
+      const previous = this.pages[this.thumbCurrent];
+      if (previous && previous.thumbButton) previous.thumbButton.classList.remove('current');
+      this.thumbCurrent = this.currentPage;
+
       const current = this.pages[this.currentPage];
       if (current && current.thumbButton) {
+        current.thumbButton.classList.add('current');
         const host = this.els.thumbs;
         const top = current.thumbButton.offsetTop;
         if (top < host.scrollTop || top > host.scrollTop + host.clientHeight - 60) {
@@ -606,7 +827,17 @@
       }
     },
 
+    /* Badges are recounted from the whole annotation list, and `redrawAll` asks
+       for them on every selection change. Coalesced to one pass per frame. */
     updateThumbBadges() {
+      if (!this.isActive() || this.badgeFrame) return;
+      this.badgeFrame = requestAnimationFrame(() => {
+        this.badgeFrame = 0;
+        this.paintThumbBadges();
+      });
+    },
+
+    paintThumbBadges() {
       if (!this.isActive()) return;
       const counts = new Map();
       for (const annot of this.store.annotations) {

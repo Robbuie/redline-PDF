@@ -25,11 +25,38 @@ function check(label, condition, detail) {
 // (a vm context would give pdf-lib objects from a different realm, which breaks
 //  its `instanceof` argument checks, so we run the sources in-process instead)
 
+/**
+ * A 2D context stub good enough to lay text out with: `measureText` models a
+ * proportional font at half an em per character, so it scales with `font` the
+ * way a real one does. That is what makes the callout fitting checks below
+ * mean anything — the bug they cover was measuring and drawing disagreeing.
+ */
+function measuringContext(record) {
+  let fontSize = 11;
+  const noop = () => {};
+  return {
+    get font() { return fontSize + 'px sans-serif'; },
+    set font(value) { fontSize = parseFloat(value) || fontSize; },
+    measureText: (text) => ({ width: String(text).length * 0.5 * fontSize }),
+    fillText(text, x, y) { if (record) record.push({ kind: 'text', text, x, y, size: fontSize }); },
+    strokeRect(x, y, w, h) { if (record) record.push({ kind: 'box', x, y, w, h }); },
+    fillRect: noop,
+    save: noop, restore: noop, beginPath: noop, closePath: noop,
+    moveTo: noop, lineTo: noop, quadraticCurveTo: noop, arc: noop, ellipse: noop,
+    stroke: noop, fill: noop, setLineDash: noop, rect: noop,
+    fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: '', lineJoin: '',
+    globalAlpha: 1, textBaseline: '', globalCompositeOperation: ''
+  };
+}
+
 global.window = global;
 global.window.PDFLib = PDFLib;
 global.requestAnimationFrame = (fn) => setTimeout(() => fn(Date.now()), 0);
 global.document = {
-  createElement: () => ({ style: {}, appendChild() {}, setAttribute() {}, addEventListener() {} }),
+  createElement: () => ({
+    style: {}, appendChild() {}, setAttribute() {}, addEventListener() {},
+    getContext: () => measuringContext()
+  }),
   createElementNS: () => ({ setAttribute() {}, appendChild() {} }),
   querySelector: () => null,
   querySelectorAll: () => [],
@@ -439,6 +466,95 @@ function testCompareMaths() {
   check('dilation radius 2 grows one pixel to a 5x5 block', grownCount === 25, grownCount + ' px');
 }
 
+/* The failure this guards against: a comparison where the second file did not
+   render, and every page came back "completely different" with no hint that
+   anything had gone wrong. A render that fails must be reported as a failure,
+   never as a wholesale change. */
+function testCompareGuards() {
+  console.log('\nRevision compare guards');
+  const {
+    fitOntoGrid, maskHealth, judgePair, inkBBox, fitCorrection,
+    cropRect, regionAt, bestOffset
+  } = RP.compare.internals;
+
+  // --- fitting a differently sized sheet onto the reference grid ------------
+  const fit = fitOntoGrid(400, 600, 800, 600);   // portrait page, landscape grid
+  check('a mismatched sheet is fitted to the grid', Math.abs(fit.scale - 1) < 1e-9, 'scale ' + fit.scale);
+  check('and centred, not pinned to a corner',
+    Math.abs(fit.offsetX - 200) < 1e-9 && Math.abs(fit.offsetY) < 1e-9,
+    'offset ' + fit.offsetX + ',' + fit.offsetY);
+
+  // --- render health -------------------------------------------------------
+  const blank = maskHealth({ ink: 0, width: 100, height: 100, coverage: 0 });
+  const flooded = maskHealth({ ink: 9900, width: 100, height: 100, coverage: 0.99 });
+  const normal = maskHealth({ ink: 2000, width: 100, height: 100, coverage: 0.2 });
+  check('a page that rendered white is flagged blank', !blank.ok && blank.reason === 'blank');
+  check('a page that rendered solid black is flagged flooded', !flooded.ok && flooded.reason === 'flooded');
+  check('an ordinary page passes', normal.ok);
+
+  const side = (coverage) => ({ ink: Math.round(coverage * 10000), width: 100, height: 100, coverage });
+  const pair = (a, b) => ({ reference: a, other: b, hasCurrent: true, hasBase: true });
+
+  const floodedVerdict = judgePair(pair(side(0.2), side(0.99)), true);
+  check('a flooded pair is never accepted, even on the last attempt',
+    !floodedVerdict.ok && floodedVerdict.reason === 'flooded');
+  check('two genuinely empty pages compare as empty, not as a change',
+    judgePair(pair(side(0), side(0)), true).ok === true &&
+    judgePair(pair(side(0), side(0)), true).empty === true);
+  check('one blank side is retried before it is believed',
+    judgePair(pair(side(0.2), side(0)), false).ok === false);
+  check('and is flagged when it survives the retry',
+    judgePair(pair(side(0.2), side(0)), true).oneBlank === true);
+  check('a good pair is accepted', judgePair(pair(side(0.2), side(0.21)), false).ok === true);
+
+  // --- coarse alignment from the sheet border ------------------------------
+  const W = 300;
+  const H = 200;
+  const refBox = { x: 20, y: 20, w: 200, h: 120 };
+
+  const shifted = fitCorrection(refBox, { x: 60, y: 20, w: 200, h: 120 }, W, H);
+  check('a 40px plot shift is recovered — the old ±24px search could not',
+    shifted.usableShift && shifted.dx === -40 && shifted.dy === 0, JSON.stringify(shifted));
+  check('and is not mistaken for a scale change', shifted.rescale === false);
+
+  const rescaled = fitCorrection(refBox, { x: 22, y: 21, w: 196, h: 118 }, W, H);
+  check('a re-plotted sheet is detected as a scale change',
+    rescaled.rescale === true && rescaled.scale > 1.01 && rescaled.scale < 1.03,
+    'scale ' + rescaled.scale.toFixed(4));
+
+  const tiny = fitCorrection(refBox, { x: 10, y: 10, w: 30, h: 20 }, W, H);
+  check('a lone note is not allowed to drive the alignment',
+    tiny.usableShift === false && tiny.rescale === false);
+
+  const stretched = fitCorrection(refBox, { x: 20, y: 20, w: 160, h: 120 }, W, H);
+  check('a non-uniform size difference is left alone rather than guessed at',
+    stretched.rescale === false);
+
+  const bbox = inkBBox(makeMask(40, 30, (set) => { set(5, 6); set(20, 25); }), 40, 30);
+  check('ink bounding box', bbox.x === 5 && bbox.y === 6 && bbox.w === 16 && bbox.h === 20 && bbox.ink === 2);
+  check('an empty mask has no bounding box', inkBBox(new Uint8Array(1200), 40, 30) === null);
+
+  // --- correlation overlap guard -------------------------------------------
+  const a = new Float32Array(100);
+  const b = new Float32Array(100);
+  for (let i = 0; i < 10; i += 1) { a[i] = 1; b[90 + i] = 1; }
+  check('a shift that throws away most of the page is refused',
+    bestOffset(a, b, 95) === 0, 'chose ' + bestOffset(a, b, 95));
+
+  // --- inspector crop maths ------------------------------------------------
+  const crop = cropRect({ x: 2, y: 2, w: 10, h: 10 }, 100, 100, 26);
+  check('the inspector crop is clamped at the page edge',
+    crop.x === 0 && crop.y === 0 && crop.w === 38 && crop.h === 38, JSON.stringify(crop));
+  const wide = cropRect({ x: 90, y: 90, w: 20, h: 20 }, 100, 100, 26);
+  check('and never runs off the far edge',
+    wide.x + wide.w <= 100 && wide.y + wide.h <= 100, JSON.stringify(wide));
+
+  const regions = [{ x: 0, y: 0, w: 100, h: 100 }, { x: 10, y: 10, w: 20, h: 20 }];
+  check('clicking a change picks the tightest region under the pointer',
+    regionAt(regions, 15, 15, 8) === 1);
+  check('clicking empty paper picks nothing', regionAt(regions, 400, 400, 8) === -1);
+}
+
 function testGeometry() {
   console.log('\nGeometry / model');
   const annot = { type: 'rect', x: 10, y: 20, w: 100, h: 50, width: 2 };
@@ -481,6 +597,62 @@ function testGeometry() {
   check('calibrated measurement formatting', RP.store.formatLength(144) === '6.00 m', RP.store.formatLength(144));
   RP.store.scale = null;
   check('uncalibrated falls back to paper inches', RP.store.formatLength(72).startsWith('1.00 in'));
+}
+
+/**
+ * A callout's box is sized from its text, so the sizing and the drawing have
+ * to wrap identically. They did not: the box was measured in points against a
+ * 4pt inset while the canvas wrapped in pixels against a *fixed* 4px one, so
+ * at some zooms the drawn text needed a line the box had not been sized for
+ * and the overflow landed under the box instead of inside it.
+ */
+function testCalloutText() {
+  console.log('\nCallout text fitting');
+  const text = 'Replace this 20A breaker with a 30A per revised load calc and update the panel schedule';
+
+  const escaped = [];
+  for (const zoom of [0.2, 0.35, 0.5, 0.75, 1, 1.5, 2, 3]) {
+    // Boxes are drawn at a fixed on-screen size, so their point size is a
+    // function of the zoom they were drawn at — which is exactly the axis the
+    // old mismatch varied along.
+    const annot = {
+      type: 'callout', page: 0, text, fontSize: 11, width: 2,
+      x: 100, y: 600, w: 200 / zoom, h: 56 / zoom, tipX: 60, tipY: 560
+    };
+    Object.assign(annot, RP.render.fitCallout(annot));
+
+    const drawn = [];
+    const pageHeight = 792;
+    const viewport = {
+      scale: zoom,
+      convertToViewportPoint: (x, y) => [x * zoom, (pageHeight - y) * zoom]
+    };
+    RP.render.drawAnnotation(measuringContext(drawn), annot, viewport, {});
+
+    const box = drawn.find((d) => d.kind === 'box');
+    const lines = drawn.filter((d) => d.kind === 'text');
+    const bottom = box.y + box.h;
+    const spilled = lines.filter((l) => l.y < box.y - 0.01 || l.y + l.size > bottom + 0.01);
+    if (!lines.length || spilled.length) escaped.push(`zoom ${zoom} (${spilled.length}/${lines.length})`);
+  }
+  check('callout text stays inside its box at every zoom', escaped.length === 0, escaped.join(', '));
+
+  // Hard newlines are part of the text: the box has to allow for them, and
+  // they must not be flattened into a single run on the way to the canvas.
+  const wrapped = RP.render.wrapLines('Panel LP-1\nSee note 4', 400, (s) => s.length * 5.5);
+  check('callout wrapping honours hard newlines', wrapped.length === 2 && wrapped[1] === 'See note 4',
+    JSON.stringify(wrapped));
+
+  const oneLine = RP.render.measureCalloutHeight('Panel LP-1', 200, 11);
+  const twoLines = RP.render.measureCalloutHeight('Panel LP-1\nSee note 4', 200, 11);
+  check('a second paragraph makes the box taller', twoLines > oneLine,
+    `${oneLine} -> ${twoLines}`);
+
+  // Refitting keeps the top edge put, which is what stops a callout walking up
+  // the sheet every time its text is edited.
+  const box = { type: 'callout', x: 100, y: 600, w: 200, h: 80, text: 'Panel LP-1', fontSize: 11 };
+  const fit = RP.render.fitCallout(box);
+  check('refitting a callout keeps its top edge', Math.abs((fit.y + fit.h) - (box.y + box.h)) < 1e-6);
 }
 
 /**
@@ -672,6 +844,163 @@ function testMarqueeZoom() {
     check('a restored view is not left in fit mode',
       other.fitMode === null || other.fitMode === state.fitMode, String(other.fitMode));
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas retention
+
+   Nothing frees a page canvas on its own. A 77-sheet set at fit-width holds
+   over a gigabyte of backing store if every page keeps its bitmap, and the
+   symptom is not a crash — it is pages taking longer and longer to appear the
+   further into the document you have scrolled, which is easy to blame on the
+   file or the machine. So the two halves are pinned here: eviction actually
+   hands memory back, and the page you are looking at is never the one evicted.
+   --------------------------------------------------------------------------- */
+function testCanvasRetention() {
+  console.log('\nCanvas retention');
+
+  /** A page record with canvases big enough that a few blow any sane budget. */
+  const makeRecord = (index, visible) => {
+    const canvas = () => ({ width: 3200, height: 4140, style: {} });
+    return {
+      index,
+      visible: !!visible,
+      rendered: true,
+      renderTask: null,
+      pdfCanvas: canvas(),
+      annotCanvas: canvas(),
+      textLayer: { innerHTML: 'text' },
+      nativeLayer: { innerHTML: 'annots', hidden: false },
+      nativeLayerObj: null,
+      textDivs: [1, 2, 3],
+      annotCanvasMap: new Map()
+    };
+  };
+
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  viewer.pages = [];
+  for (let i = 0; i < 40; i += 1) viewer.pages.push(makeRecord(i, i >= 19 && i <= 21));
+  viewer.currentPage = 20;
+
+  const before = viewer.rasterStats();
+  viewer.retainCanvases();
+  const after = viewer.rasterStats();
+
+  check('40 rastered sheets is over the retention budget',
+    before.approxMB > before.budgetMB, `${before.approxMB} MB vs ${before.budgetMB} MB budget`);
+  check('eviction sheds the bulk of it',
+    after.approxMB < before.approxMB / 10,
+    `${before.approxMB} MB -> ${after.approxMB} MB (budget ${after.budgetMB} MB)`);
+  /* Not "under budget": the budget is a target, not a ceiling. Pages on screen
+     and the MIN_RETAINED_PAGES floor are exempt, and three E-size sheets at
+     fit-width exceed it between them. Evicting those would mean re-rendering
+     the sheet being drawn on every scroll frame, which is worse than the
+     memory. So what is checked is that nothing *else* survived. */
+  check('everything still held is on screen or inside the floor',
+    viewer.pages.filter((r) => r.pdfCanvas.width > 0)
+      .every((r) => r.visible || Math.abs(r.index - viewer.currentPage) <= 2),
+    viewer.pages.filter((r) => r.pdfCanvas.width > 0).map((r) => r.index + 1).join(','));
+  check('eviction actually zeroes the backing store, not just a flag',
+    viewer.pages[0].pdfCanvas.width === 0 && viewer.pages[0].annotCanvas.width === 0,
+    `page 1 canvas ${viewer.pages[0].pdfCanvas.width}x${viewer.pages[0].pdfCanvas.height}`);
+
+  // The page under the viewport is exempt whatever the budget says, or scrolling
+  // would evict the sheet being drawn and re-render it on the spot, forever.
+  check('the page you are looking at is never evicted',
+    viewer.pages[20].rendered && viewer.pages[20].pdfCanvas.width > 0,
+    'page 21 rendered=' + viewer.pages[20].rendered);
+  check('the pages either side of it survive too',
+    viewer.pages[19].pdfCanvas.width > 0 && viewer.pages[21].pdfCanvas.width > 0);
+  check('an evicted page is marked for repaint, not left silently blank',
+    viewer.pages[0].annotDirty === true && viewer.pages[0].rendered === false);
+  check('an evicted page drops its text and annotation layers',
+    viewer.pages[0].textLayer.innerHTML === '' && viewer.pages[0].nativeLayer.innerHTML === '');
+
+  // A released page must still occupy its slot in the scroll column, or the
+  // document would concertina as you scrolled and every offset would move.
+  check('eviction leaves the CSS box alone so the scroll column holds',
+    viewer.pages[0].pdfCanvas.style.width === undefined ||
+    viewer.pages[0].pdfCanvas.style.width !== '0px');
+
+  // Re-running must be idempotent: retainCanvases is called from the observer,
+  // so it fires several times per scroll.
+  const stable = viewer.rasterStats();
+  viewer.retainCanvases();
+  check('a second sweep evicts nothing further',
+    viewer.rasterStats().rastered === stable.rastered, `${stable.rastered} pages held`);
+
+  /* A single sheet can be larger than the whole budget — an E-size drawing at
+     400% is tens of megapixels on its own. The floor is what stops the viewer
+     evicting everything and rendering nothing. */
+  const huge = RP.createViewer({ querySelector: () => null }, RP.store);
+  huge.pages = [];
+  for (let i = 0; i < 6; i += 1) {
+    const record = makeRecord(i, false);
+    record.pdfCanvas.width = 12000;
+    record.pdfCanvas.height = 12000;
+    record.annotCanvas.width = 12000;
+    record.annotCanvas.height = 12000;
+    huge.pages.push(record);
+  }
+  huge.currentPage = 3;
+  huge.retainCanvases();
+  check('a sheet larger than the whole budget is still retained',
+    huge.rasterStats().rastered >= 3, huge.rasterStats().rastered + ' pages held');
+  check('the retained ones are the pages nearest the viewport',
+    huge.pages[3].pdfCanvas.width > 0, 'current page held');
+}
+
+/* ---------------------------------------------------------------------------
+   Scroll position
+
+   `onScroll` runs on every frame of a scroll. It used to ask all 77 containers
+   for a bounding rect, forcing a layout per page per frame; it now binary
+   searches cached offsets, so the answer has to keep matching the old one at
+   the boundaries — inside a page, in the gutter between two, and at both ends.
+   --------------------------------------------------------------------------- */
+function testScrollPage() {
+  console.log('\nCurrent page tracking');
+
+  const PAGE_H = 800;
+  const GAP = 16;
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  viewer.pages = [];
+  for (let i = 0; i < 77; i += 1) {
+    viewer.pages.push({
+      index: i,
+      container: { offsetTop: i * (PAGE_H + GAP), offsetHeight: PAGE_H }
+    });
+  }
+  viewer.highlightThumb = function () {};
+  viewer.emit = function () {};
+
+  // The probe sits min(140, 30% of height) below the top of the pane.
+  const scroller = { scrollTop: 0, clientHeight: 900 };
+  viewer.els = { viewer: scroller };
+  const at = (top) => {
+    scroller.scrollTop = top;
+    viewer.onScroll();
+    return viewer.currentPage;
+  };
+
+  check('the top of the document is page 1', at(0) === 0, 'page ' + (at(0) + 1));
+  check('scrolling within a sheet keeps that sheet current',
+    at(300) === 0, 'page ' + (at(300) + 1));
+  // The probe is 140px below the top of the pane, so sheet 2 (top 816) takes
+  // over the moment scrollTop reaches 676 — not when it reaches the top edge.
+  check('the next sheet takes over once it passes the probe line',
+    at(600) === 0 && at(700) === 1, `${at(600) + 1} then ${at(700) + 1}`);
+  check('the gutter between sheets belongs to the one above it',
+    at(PAGE_H - 140 + 8) === 0, 'page ' + (at(PAGE_H - 140 + 8) + 1));
+  check('a jump deep into the set lands on the right sheet',
+    at(50 * (PAGE_H + GAP)) === 50, 'page ' + (at(50 * (PAGE_H + GAP)) + 1));
+  check('the last sheet is reachable and does not overrun',
+    at(76 * (PAGE_H + GAP) + 400) === 76, 'page ' + (at(76 * (PAGE_H + GAP) + 400) + 1));
+
+  // layout() invalidates the cache; a stale one would report the old geometry.
+  viewer.pageTops = null;
+  check('a cleared offset cache is rebuilt rather than crashing',
+    at(20 * (PAGE_H + GAP)) === 20, 'page ' + (at(20 * (PAGE_H + GAP)) + 1));
 }
 
 /* ---------------------------------------------------------------------------
@@ -1181,8 +1510,12 @@ async function pageLabel(bytes, index) {
     testChrome();
     testNativeAnnotations();
     testGeometry();
+    testCalloutText();
     testCompareMaths();
+    testCompareGuards();
     testMarqueeZoom();
+    testCanvasRetention();
+    testScrollPage();
     testSessions();
     testPackaging();
     await testExport();

@@ -300,10 +300,20 @@
             thickness: width, color, opacity
           });
           drawArrowHead(page, anchor, [annot.tipX, annot.tipY], color, width);
+          // Same wrap and inset the screen uses, so a saved sheet reads the
+          // way it was drawn; a line that will not fit is dropped rather than
+          // stamped under the box.
           const size = annot.fontSize || 11;
-          wrapText(String(annot.text || ''), font, size, box.w - 8).forEach((line, i) => {
-            const y = box.y + box.h - 4 - size * 0.85 - i * size * 1.25;
-            if (y > box.y + 2) page.drawText(line, { x: box.x + 4, y, size, font, color: lib().rgb(0.08, 0.09, 0.11) });
+          const pad = RP.render.CALLOUT_PAD;
+          const lines = RP.render.wrapLines(annot.text || '', RP.render.calloutTextWidth(box.w),
+            (s) => font.widthOfTextAtSize(s, size));
+          lines.forEach((line, i) => {
+            if (!line) return;
+            const lineTop = box.y + box.h - pad - i * size * RP.render.CALLOUT_LINE;
+            if (lineTop - size < box.y) return;
+            page.drawText(line, {
+              x: box.x + pad, y: lineTop - size * 0.85, size, font, color: lib().rgb(0.08, 0.09, 0.11)
+            });
           });
           break;
         }

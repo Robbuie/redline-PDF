@@ -178,22 +178,37 @@ turns your view.
 The comparison is designed to answer *"what actually changed?"* rather than
 *"which pixels differ?"*. Per page:
 
-1. both revisions render onto the same pixel grid at 150 DPI
+1. both revisions render onto the same pixel grid at 150 DPI; a baseline sheet
+   that is a **different size** is fitted and centred on that grid rather than
+   pinned to a corner
 2. each is reduced to a binary **ink mask** (anything darker than the threshold)
-3. a global x/y **plot shift is estimated and cancelled** — a sheet that was
-   re-plotted a millimetre off no longer lights up end to end
-4. each mask is **dilated by the tolerance radius**, then
+3. both masks are **sanity-checked**. A render that comes back empty or solid
+   black is a failure, not a result — it is retried once on a smaller grid and
+   then the page is reported as *could not be compared* rather than as a sheet
+   where everything changed
+4. a global **plot shift is estimated and cancelled** — coarsely from the ink
+   bounding boxes, which also recovers a sheet **re-plotted at a slightly
+   different scale**, then finely by projection correlation
+5. each mask is **dilated by the tolerance radius**, then
    `removed = baseline AND NOT dilated(current)` and
    `added = current AND NOT dilated(baseline)`, so a line that merely moved
    half a pixel cancels out completely
-5. surviving pixels below the **minimum change size** are dropped (scanner specks,
+6. surviving pixels below the **minimum change size** are dropped (scanner specks,
    dithering, JPEG mush)
-6. what's left is clustered into **labelled change regions** you can click through
+7. what's left is clustered into **labelled change regions** you can click through
 
 Results read as: **red = removed**, **blue = added**, **light grey = unchanged
-context**. Regions are outlined and listed in the sidebar with page and size;
-clicking one flashes it on the sheet. Three view modes: overlay, side-by-side,
-and a swipe slider.
+context**. The overlay paints ink only — no translucent wash over the change —
+because an edited number has its old and new digits in the same pixels and any
+colour fill turns that into mud. Regions are outlined and listed in the sidebar
+with page and size. Three view modes: overlay, side-by-side, and a swipe slider.
+
+**Region inspector.** Click a change — in the list or straight on the sheet — and
+a panel opens under the drawing showing that patch cropped out of *both*
+revisions and magnified, baseline and current beside the diff. This is how you
+read a changed dimension or panel schedule figure: the two values sit side by
+side instead of on top of each other. Step through every change on the sheet with
+the arrows, and set the magnification or leave it on Fit.
 
 **Cloud changes** turns every detected region into a revision cloud on your live
 drawing, so the compare result becomes markup you can save and issue.

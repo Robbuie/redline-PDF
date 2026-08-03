@@ -368,6 +368,14 @@
         if ((drag.movedPx || 0) < CLICK_TOL && drag.mode === 'move') {
           // A plain click on an already-selected markup: keep the selection.
         }
+        // A narrower callout needs more lines than the old height allowed for,
+        // so grow it to fit once the drag has settled — grow only, or dragging
+        // a box deliberately taller would snap straight back. The drag already
+        // checkpointed.
+        if (drag.mode === 'resize' && drag.annot && drag.annot.type === 'callout') {
+          const fit = RP.render.fitCallout(drag.annot);
+          if (fit.h > drag.annot.h) Object.assign(drag.annot, fit);
+        }
         RP.store.markDirty();
         RP.bus.emit('annots:changed', { reason: 'edit' });
       }
@@ -877,9 +885,10 @@
           RP.store.remove(annot.id);
         } else if (annot.type === 'callout') {
           // Grow or shrink the box to fit, keeping its top edge where it is.
-          const needed = RP.render.measureCalloutHeight(value, annot.w, annot.fontSize || 11);
-          const top = annot.y + annot.h;
-          RP.store.update(annot.id, { text: value, h: needed, y: top - needed });
+          // Measured off a copy: mutating first would land the new text in the
+          // checkpoint `update` takes, and undo would not bring the old text back.
+          const fit = RP.render.fitCallout(Object.assign({}, annot, { text: value }));
+          RP.store.update(annot.id, Object.assign({ text: value }, fit));
         } else {
           RP.store.update(annot.id, { text: value });
         }

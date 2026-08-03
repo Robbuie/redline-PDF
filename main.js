@@ -1054,6 +1054,24 @@ ipcMain.handle('diag:info', async () => {
     }
   };
   const exists = (rel) => (fs.existsSync(path.join(nodeModules, rel)) ? 'present' : 'missing');
+
+  /* Canvas rasterisation is the app's hot path, so whether Chromium accepted
+     this machine's GPU is a first-class diagnostic. A blocklisted driver drops
+     2d canvas onto software rendering, and the same drawing that is fine on one
+     PC then crawls on another with no other visible difference. */
+  let gpu = {};
+  try {
+    const status = app.getGPUFeatureStatus() || {};
+    gpu = {
+      canvas: status.gpu_compositing || 'unknown',
+      '2d canvas': status['2d_canvas'] || status.canvas_oop_rasterization || 'unknown',
+      rasterization: status.rasterization || 'unknown',
+      webgl: status.webgl || 'unknown'
+    };
+  } catch (err) {
+    gpu = { error: err.message };
+  }
+
   return ok({
     appVersion: app.getVersion(),
     electron: process.versions.electron,
@@ -1064,6 +1082,7 @@ ipcMain.handle('diag:info', async () => {
     packaged: app.isPackaged,
     userData: app.getPath('userData'),
     logFile: logPath(),
+    gpu,
     installed: {
       'pdfjs-dist': readVersion('pdfjs-dist'),
       'pdf-lib': readVersion('pdf-lib')

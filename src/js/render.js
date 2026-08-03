@@ -108,6 +108,39 @@
     return annot.type === 'callout' ? calloutBox(annot) : bbox(annot);
   }
 
+  // Callout text metrics. The inset is in *points* and is scaled at draw time;
+  // measuring and drawing have to wrap at the same width or the box gets sized
+  // for fewer lines than the text actually needs and the overflow lands under
+  // the box instead of inside it.
+  const CALLOUT_PAD = 4;
+  const CALLOUT_LINE = 1.25;
+
+  /**
+   * Wrap `text` to `maxWidth`, honouring hard newlines. `measure` returns a
+   * string's width in whatever units `maxWidth` is in, so the same function
+   * serves the canvas (pixels) and pdf-lib (points).
+   */
+  function wrapLines(text, maxWidth, measure) {
+    const out = [];
+    for (const paragraph of String(text === undefined || text === null ? '' : text).split('\n')) {
+      const words = paragraph.split(/\s+/).filter(Boolean);
+      if (!words.length) { out.push(''); continue; }
+      let line = '';
+      for (const word of words) {
+        const test = line ? line + ' ' + word : word;
+        if (line && measure(test) > maxWidth) { out.push(line); line = word; }
+        else line = test;
+      }
+      out.push(line);
+    }
+    return out;
+  }
+
+  /** Width available to text inside a callout box `widthPt` points wide. */
+  function calloutTextWidth(widthPt) {
+    return Math.max(20, widthPt - CALLOUT_PAD * 2);
+  }
+
   let measureCanvas = null;
   /** Height a callout needs for its text, in PDF points. */
   function measureCalloutHeight(text, widthPt, fontSize) {
@@ -115,17 +148,18 @@
     const ctx = measureCanvas.getContext('2d');
     const size = fontSize || 11;
     ctx.font = `${size}px "Segoe UI", system-ui, sans-serif`;
-    const maxWidth = Math.max(20, widthPt - 8);
-    let lines = 1;
-    for (const paragraph of String(text || '').split('\n')) {
-      let line = '';
-      for (const word of paragraph.split(/\s+/).filter(Boolean)) {
-        const test = line ? line + ' ' + word : word;
-        if (ctx.measureText(test).width > maxWidth && line) { lines += 1; line = word; }
-        else line = test;
-      }
-    }
-    return Math.max(size * 2, lines * size * 1.25 + 8);
+    const lines = wrapLines(text, calloutTextWidth(widthPt), (s) => ctx.measureText(s).width);
+    return Math.max(size * 2, lines.length * size * CALLOUT_LINE + CALLOUT_PAD * 2);
+  }
+
+  /**
+   * The `{y, h}` a callout needs to fit its text, keeping the top edge put.
+   * Anything that changes a callout's text, width or font size has to apply
+   * this, or the box stops matching what is drawn in it.
+   */
+  function fitCallout(annot) {
+    const h = measureCalloutHeight(annot.text, annot.w, annot.fontSize || 11);
+    return { h, y: annot.y + annot.h - h };
   }
 
   // -------------------------------------------------------------------------
@@ -342,7 +376,7 @@
         ctx.fillRect(box.x, box.y, box.w, box.h);
         ctx.restore();
         ctx.strokeRect(box.x, box.y, box.w, box.h);
-        drawWrappedText(ctx, annot.text || '', box, (annot.fontSize || 11) * viewport.scale, '#16181d');
+        drawWrappedText(ctx, annot.text || '', box, (annot.fontSize || 11) * viewport.scale, '#16181d', viewport.scale);
         break;
       }
 
@@ -397,28 +431,26 @@
     else if (annot.note && annot.type !== 'note') drawCommentPip(ctx, annot, viewport);
   }
 
-  function drawWrappedText(ctx, text, box, fontSize, color) {
+  /**
+   * Callout text, wrapped inside `box` (viewport space). The inset scales with
+   * the zoom so this wraps at exactly the width `measureCalloutHeight` sized
+   * the box for, and a line that would not fit is dropped rather than drawn
+   * below the box.
+   */
+  function drawWrappedText(ctx, text, box, fontSize, color, scale) {
     ctx.save();
     ctx.font = `${fontSize}px "Segoe UI", system-ui, sans-serif`;
     ctx.fillStyle = color;
     ctx.textBaseline = 'top';
     ctx.globalAlpha = 1;
-    const words = String(text).split(/\s+/);
-    const maxWidth = box.w - 8;
-    let line = '';
-    let y = box.y + 4;
-    for (const word of words) {
-      const test = line ? line + ' ' + word : word;
-      if (ctx.measureText(test).width > maxWidth && line) {
-        ctx.fillText(line, box.x + 4, y);
-        line = word;
-        y += fontSize * 1.25;
-        if (y > box.y + box.h - fontSize) break;
-      } else {
-        line = test;
-      }
+    const pad = CALLOUT_PAD * (scale || 1);
+    const lines = wrapLines(text, Math.max(1, box.w - pad * 2), (s) => ctx.measureText(s).width);
+    let y = box.y + pad;
+    for (const line of lines) {
+      if (y + fontSize > box.y + box.h) break;
+      if (line) ctx.fillText(line, box.x + pad, y);
+      y += fontSize * CALLOUT_LINE;
     }
-    if (line) ctx.fillText(line, box.x + 4, y);
     ctx.restore();
   }
 
@@ -613,6 +645,11 @@
     calloutAnchor,
     calloutPart,
     measureCalloutHeight,
+    calloutTextWidth,
+    fitCallout,
+    wrapLines,
+    CALLOUT_PAD,
+    CALLOUT_LINE,
     drawAnnotation,
     drawSelection,
     handlesFor,

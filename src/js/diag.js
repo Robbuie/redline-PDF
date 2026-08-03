@@ -77,7 +77,11 @@
           name: RP.store ? RP.store.docName : null,
           pages: RP.store ? RP.store.numPages : 0,
           markups: RP.store ? RP.store.annotations.length : 0
-        }
+        },
+        // Canvas backing store is the app's main memory cost and the usual
+        // reason a long sheet set gets slower the further you scroll, so what
+        // the retention budget is actually holding is worth reporting.
+        raster: RP.viewer ? RP.viewer.rasterStats() : 'no viewer'
       };
       try {
         if (window.rp && window.rp.diag) Object.assign(info, await window.rp.diag.info());

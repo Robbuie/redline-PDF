@@ -176,9 +176,56 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   target sheet size back through the rotation first. Get this backwards and
   every landscape-plotted sheet prints off the edge of the paper.
   `test/verify.js` covers it, along with a MediaBox whose origin is not (0,0).
+- **Page canvases are on a memory budget, and a released page is not a bug.**
+  Nothing frees a canvas on its own, and an E-size sheet at fit-width is ~13
+  megapixels per canvas with two per page, so a 77-sheet set scrolled end to end
+  would hold over a gigabyte of backing store. Chromium starts evicting under
+  that and every later render crawls — which reads as "pages take forever",
+  getting worse the longer the document has been open, and is easy to misblame
+  on the file or the machine. `RP.viewer.retainCanvases()` therefore releases
+  the rastered pages furthest from the viewport once past `CANVAS_BUDGET_PX`,
+  and `releasePage` zeroes *both* canvas dimensions — `clearRect` leaves the
+  backing store allocated. Pages on screen and the `MIN_RETAINED_PAGES` floor
+  are exempt, so the budget is a target and not a ceiling. The CSS size stays
+  put, or the scroll column would concertina. `test/verify.js` covers it.
+- **Rasterisation is queued, not fired off the observer.** pdf.js has one
+  worker, so `requestPage` puts indices in `renderQueue` and `pumpRenders` runs
+  at most `MAX_PAGE_RENDERS` at a time, nearest the viewport first. Thumbnails
+  go through `requestThumb`/`pumpThumbs`, which will not start while any page is
+  pending — they share that worker, and opening the panel on a long set
+  otherwise queues 77 thumb rasters ahead of the sheet being read. Call
+  `requestPage`, never `renderPage` directly.
+- **`redrawAll()` only repaints what is on screen.** It fires on
+  `selection:changed`, i.e. every click; repainting every page still holding a
+  raster meant clearing 77 canvases per click. Off-screen pages get
+  `annotDirty` and are repainted by the page observer when they come back, so a
+  new code path that paints into `annotCanvas` has to respect that flag.
+- **`onScroll` must not measure the DOM.** Page tops are cached in
+  `viewer.pageTops` by `measurePages()` and invalidated by `layout()`; the
+  handler binary-searches them. Reading `getBoundingClientRect()` per page there
+  forces a layout per page per frame, which was most of the scroll jank on a
+  sheet set. Anything that changes page geometry must null `pageTops`.
 - **Compare is CPU-heavy and currently on the main thread.** Changes to
   `compare.js` should not add per-page work without measuring; moving the
   pipeline to a Web Worker is a tracked item in `PLAN.md`.
+- **A failed render is not a difference.** The diff maths cannot tell "this
+  sheet was redrawn" from "this sheet never painted": a render that times out
+  leaves a white canvas and reads as *everything removed*, and a canvas the
+  browser refused to allocate reads back black and reads as *everything added*.
+  So `compare.js` times every render out, checks each mask for zero ink and for
+  near-total ink, retries the pair once on a smaller grid, and then reports the
+  page as **could not be compared** — never as a page where everything changed.
+  `test/verify.js` covers the health checks and the verdicts.
+- **Fit the baseline sheet onto the grid centred, not cornered**, and let
+  `fitCorrection` re-render it at a corrected scale when the ink bounding boxes
+  say the sheet was re-plotted. Sheet sizes drift between issues; anchoring the
+  smaller one at the origin puts every mark a few hundred pixels from its twin
+  and the whole page reports as changed.
+- **Nothing translucent goes over a change region.** Old and new glyphs of an
+  edited number occupy the same pixels, so a wash of red over a wash of blue is
+  unreadable. The overlay paints ink only and the *inspector* — the same crop
+  taken from both revisions, magnified side by side — is what answers "changed
+  to what?".
 - **The CSP in `index.html` is deliberately tight** (`default-src 'self'`, no
   remote origins). No CDNs, no remote fonts, no telemetry. Add dependencies as
   npm packages loaded from `node_modules` and list their dist paths in the
@@ -242,6 +289,15 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   sibling, so markups keep their real colours — invert them and every redline
   comes back cyan. `test/verify.js` asserts the rule does not name
   `.annot-canvas`.
+- **A callout's box is sized from its text, so sizing and drawing must wrap
+  identically.** `RP.render.wrapLines` is the one wrapper; `measureCalloutHeight`
+  runs it in points to size the box and `drawWrappedText` runs it in viewport
+  pixels with the *same* inset scaled by `viewport.scale`. A fixed pixel inset
+  wraps narrower than the box was measured for at low zoom, and the extra line
+  draws below the box. Anything that changes a callout's text, width or font
+  size has to re-apply `RP.render.fitCallout` — the inline editor, the
+  properties panel and the end of a resize drag all do.
+  `test/verify.js` covers it.
 - **There is one popup menu, `RP.menu`.** Two implementations means two sets of
   outside-click listeners fighting over one press. `RP.pages.openMenu` wraps it
   to keep its own async/busy guard; anything else calls `RP.menu.open` directly.
