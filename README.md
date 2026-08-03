@@ -315,6 +315,17 @@ Double-click any markup to attach or edit a comment. Double-click a text or
 callout markup to edit its text. Hold **Shift** while drawing to constrain lines
 to 45° steps and boxes to squares.
 
+**Typography.** With the Text or Callout tool active the toolbar gains a text
+group: typeface (sans, serif or mono), size, bold, and — for callouts, whose
+text sits on its own white box — the text colour. These set the style for the
+next markup you draw, and restyle the current selection if you have one, the way
+the colour swatches already do. The same controls sit in a markup's properties
+dialog for editing one after the fact, and a callout's box regrows to fit
+whenever the face or size changes. The three typefaces map onto fonts every PDF
+reader already has, so a saved sheet reads the same everywhere without carrying
+a font with it. A callout's colour is its box and leader; its text is coloured
+separately. A typewriter note has no box, so its colour *is* its text.
+
 **Measuring:** draw a measurement over a known distance and enter its real length
 once — every measurement on that drawing then reads in real units. The status bar
 shows the calibration; click it to reset.

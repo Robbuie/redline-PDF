@@ -115,6 +115,23 @@
   const CALLOUT_PAD = 4;
   const CALLOUT_LINE = 1.25;
 
+  // Text-bearing markups pick a family from a fixed short list, because every
+  // one of them has to survive the trip through pdf-lib's standard 14 fonts on
+  // export. A free-text family box would let you choose something the exporter
+  // cannot embed and the saved sheet would silently substitute.
+  const FONT_STACKS = {
+    sans: '"Segoe UI", system-ui, sans-serif',
+    serif: 'Georgia, "Times New Roman", serif',
+    mono: '"Cascadia Mono", Consolas, "Courier New", monospace'
+  };
+  const DEFAULT_TEXT_COLOR = '#16181d';
+
+  /** Canvas font shorthand for a text-bearing markup drawn at `sizePx`. */
+  function fontSpec(annot, sizePx) {
+    const stack = FONT_STACKS[(annot && annot.fontFamily) || 'sans'] || FONT_STACKS.sans;
+    return (annot && annot.bold ? '700 ' : '') + sizePx + 'px ' + stack;
+  }
+
   /**
    * Wrap `text` to `maxWidth`, honouring hard newlines. `measure` returns a
    * string's width in whatever units `maxWidth` is in, so the same function
@@ -142,23 +159,28 @@
   }
 
   let measureCanvas = null;
-  /** Height a callout needs for its text, in PDF points. */
-  function measureCalloutHeight(text, widthPt, fontSize) {
+  /**
+   * Height a callout needs for its text, in PDF points. `font` is anything
+   * carrying `fontFamily`/`bold` — the annotation itself, normally — because a
+   * bold or serif face wraps differently and the box has to be sized for the
+   * face it will actually be drawn in.
+   */
+  function measureCalloutHeight(text, widthPt, fontSize, font) {
     if (!measureCanvas) measureCanvas = document.createElement('canvas');
     const ctx = measureCanvas.getContext('2d');
     const size = fontSize || 11;
-    ctx.font = `${size}px "Segoe UI", system-ui, sans-serif`;
+    ctx.font = fontSpec(font, size);
     const lines = wrapLines(text, calloutTextWidth(widthPt), (s) => ctx.measureText(s).width);
     return Math.max(size * 2, lines.length * size * CALLOUT_LINE + CALLOUT_PAD * 2);
   }
 
   /**
    * The `{y, h}` a callout needs to fit its text, keeping the top edge put.
-   * Anything that changes a callout's text, width or font size has to apply
-   * this, or the box stops matching what is drawn in it.
+   * Anything that changes a callout's text, width, font size, family or weight
+   * has to apply this, or the box stops matching what is drawn in it.
    */
   function fitCallout(annot) {
-    const h = measureCalloutHeight(annot.text, annot.w, annot.fontSize || 11);
+    const h = measureCalloutHeight(annot.text, annot.w, annot.fontSize || 11, annot);
     return { h, y: annot.y + annot.h - h };
   }
 
@@ -376,14 +398,14 @@
         ctx.fillRect(box.x, box.y, box.w, box.h);
         ctx.restore();
         ctx.strokeRect(box.x, box.y, box.w, box.h);
-        drawWrappedText(ctx, annot.text || '', box, (annot.fontSize || 11) * viewport.scale, '#16181d', viewport.scale);
+        drawCalloutText(ctx, annot, box, viewport);
         break;
       }
 
       case 'text': {
         const size = (annot.fontSize || 12) * viewport.scale;
         const origin = vp(viewport, annot.x, annot.y);
-        ctx.font = `${size}px "Segoe UI", system-ui, sans-serif`;
+        ctx.font = fontSpec(annot, size);
         ctx.textBaseline = 'top';
         ctx.fillStyle = annot.color || '#ff2f2f';
         const lines = String(annot.text || '').split('\n');
@@ -437,13 +459,16 @@
    * the box for, and a line that would not fit is dropped rather than drawn
    * below the box.
    */
-  function drawWrappedText(ctx, text, box, fontSize, color, scale) {
+  function drawCalloutText(ctx, annot, box, viewport) {
+    const scale = viewport.scale;
+    const fontSize = (annot.fontSize || 11) * scale;
     ctx.save();
-    ctx.font = `${fontSize}px "Segoe UI", system-ui, sans-serif`;
-    ctx.fillStyle = color;
+    ctx.font = fontSpec(annot, fontSize);
+    ctx.fillStyle = annot.textColor || DEFAULT_TEXT_COLOR;
     ctx.textBaseline = 'top';
     ctx.globalAlpha = 1;
     const pad = CALLOUT_PAD * (scale || 1);
+    const text = annot.text || '';
     const lines = wrapLines(text, Math.max(1, box.w - pad * 2), (s) => ctx.measureText(s).width);
     let y = box.y + pad;
     for (const line of lines) {
@@ -648,6 +673,9 @@
     calloutTextWidth,
     fitCallout,
     wrapLines,
+    fontSpec,
+    FONT_STACKS,
+    DEFAULT_TEXT_COLOR,
     CALLOUT_PAD,
     CALLOUT_LINE,
     drawAnnotation,

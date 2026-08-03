@@ -294,6 +294,26 @@
 
   <div class="tsep" id="hlModeSep" hidden></div>
 
+  <div class="tgroup tool-opts" id="textOptsGroup" hidden>
+    <span class="opt-label">Text</span>
+    <select id="fontFamily" title="Typeface">
+      <option value="sans">Sans</option>
+      <option value="serif">Serif</option>
+      <option value="mono">Mono</option>
+    </select>
+    <label class="mini-field" title="Font size">
+      <span>Size</span>
+      <input type="number" id="fontSize" min="4" max="96" step="1" value="12" />
+    </label>
+    <button class="chip" id="fontBold" title="Bold"><b>B</b></button>
+    <label class="mini-field" title="Text colour">
+      <span>Colour</span>
+      <input type="color" id="textColor" value="#16181d" />
+    </label>
+  </div>
+
+  <div class="tsep" id="textOptsSep" hidden></div>
+
   <div class="tgroup style-group">
     <div class="swatches" id="swatches"></div>
     <label class="mini-field" title="Line width">

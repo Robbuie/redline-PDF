@@ -16,6 +16,9 @@
       width: 2,
       opacity: 1,
       fontSize: 12,
+      fontFamily: 'sans',
+      bold: false,
+      textColor: '#16181d',
       fill: false
     },
     drag: null,
@@ -105,6 +108,20 @@
       const sep = RP.$('#hlModeSep');
       if (group) group.hidden = tool !== 'highlight';
       if (sep) sep.hidden = tool !== 'highlight';
+
+      // Typography only means something for the two markups that carry text.
+      const textish = tool === 'text' || tool === 'callout';
+      const textGroup = RP.$('#textOptsGroup');
+      const textSep = RP.$('#textOptsSep');
+      if (textGroup) textGroup.hidden = !textish;
+      if (textSep) textSep.hidden = !textish;
+      if (textGroup) {
+        // The callout's own text sits on white; a typewriter note is the
+        // markup itself and takes the markup colour, so the swatch is only
+        // meaningful for callouts.
+        const colourField = textGroup.querySelector('#textColor');
+        if (colourField && colourField.parentNode) colourField.parentNode.hidden = tool !== 'callout';
+      }
       if (tool === 'highlight') {
         RP.status(this.highlightMode === 'text'
           ? 'Drag across text to highlight it — hold Shift for a box'
@@ -125,6 +142,30 @@
       const base = this.highlightMode;
       if (!this.shiftHeld) return base;
       return base === 'text' ? 'area' : 'text';
+    },
+
+    /**
+     * Typography defaults for the next text or callout. Changing these also
+     * restyles the current selection, the way picking a colour does — you have
+     * a markup selected and you are looking at the control that describes it.
+     */
+    setTextStyle(patch) {
+      Object.assign(this.style, patch);
+      RP.$$('#fontBold').forEach((btn) => btn.classList.toggle('active', !!this.style.bold));
+
+      const targets = RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
+      if (!targets.length) return;
+      RP.store.checkpoint();
+      for (const annot of targets) {
+        // A typewriter note has no box and no separate text colour: its own
+        // colour *is* its text, so the swatch would fight the style group.
+        const fields = annot.type === 'callout' ? patch : omit(patch, 'textColor');
+        Object.assign(annot, fields);
+        if (annot.type === 'callout') Object.assign(annot, RP.render.fitCallout(annot));
+      }
+      RP.store.markDirty();
+      RP.store.emit('annots:changed', { reason: 'style' });
+      RP.viewer.redrawAll();
     },
 
     setHighlightMode(mode) {
@@ -590,7 +631,9 @@
             x: pdf[0] + RP.viewer.pxToPdf(46),
             y: pdf[1] + RP.viewer.pxToPdf(34),
             w, h,
-            text: '', fontSize: this.style.fontSize
+            text: '', fontSize: this.style.fontSize,
+            fontFamily: this.style.fontFamily, bold: this.style.bold,
+            textColor: this.style.textColor
           });
           break;
         }
@@ -869,7 +912,16 @@
       editor.hidden = false;
       editor.style.left = (box.left + view[0]) + 'px';
       editor.style.top = (box.top + view[1]) + 'px';
+      // Typed in the face it will be drawn in, or the wrap you see while typing
+      // is not the wrap you get. Set piecemeal rather than through the `font`
+      // shorthand, which would reset the line-height the stylesheet sets.
+      const face = existing || this.style;
       editor.style.fontSize = size + 'px';
+      editor.style.fontFamily = RP.render.FONT_STACKS[face.fontFamily || 'sans'] || RP.render.FONT_STACKS.sans;
+      editor.style.fontWeight = face.bold ? '700' : '400';
+      editor.style.color = existing
+        ? (existing.type === 'callout' ? (existing.textColor || RP.render.DEFAULT_TEXT_COLOR) : (existing.color || '#16181d'))
+        : this.style.color;
       editor.style.width = (rect ? rect.w : 220) + 'px';
       editor.value = existing ? (existing.text || '') : '';
       editor.style.height = 'auto';
@@ -908,6 +960,8 @@
           color: this.style.color,
           opacity: this.style.opacity,
           fontSize: this.style.fontSize,
+          fontFamily: this.style.fontFamily,
+          bold: this.style.bold,
           x: pdf[0],
           y: pdf[1],
           text: value
@@ -1056,6 +1110,13 @@
       RP.bus.emit('annots:changed', { reason: 'scale' });
     }
   };
+
+  /** A copy of `obj` without `key`. */
+  function omit(obj, key) {
+    const out = Object.assign({}, obj);
+    delete out[key];
+    return out;
+  }
 
   /** True while the keystroke belongs to a field, not to the drawing. */
   function isTypingTarget(node) {

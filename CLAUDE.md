@@ -291,13 +291,31 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   `.annot-canvas`.
 - **A callout's box is sized from its text, so sizing and drawing must wrap
   identically.** `RP.render.wrapLines` is the one wrapper; `measureCalloutHeight`
-  runs it in points to size the box and `drawWrappedText` runs it in viewport
+  runs it in points to size the box and `drawCalloutText` runs it in viewport
   pixels with the *same* inset scaled by `viewport.scale`. A fixed pixel inset
   wraps narrower than the box was measured for at low zoom, and the extra line
-  draws below the box. Anything that changes a callout's text, width or font
-  size has to re-apply `RP.render.fitCallout` — the inline editor, the
-  properties panel and the end of a resize drag all do.
-  `test/verify.js` covers it.
+  draws below the box. Both must also measure in the same *face*, so
+  `measureCalloutHeight` takes the annotation and goes through
+  `RP.render.fontSpec` — a bold or serif callout wraps wider than the sans it
+  would otherwise be sized for. Anything that changes a callout's text, width,
+  font size, family or weight has to re-apply `RP.render.fitCallout` — the
+  inline editor, the properties panel, the toolbar's typography group and the
+  end of a resize drag all do. `test/verify.js` covers it.
+- **The inline text editor is placed from `vpRect`, not from a converted
+  corner.** A callout box is *drawn* as the axis-aligned rect of its four
+  corners, so anchoring the editor by converting the single top-left PDF corner
+  only agrees at `/Rotate 0`. On a plotted landscape sheet the corner maps
+  somewhere else and the editor opens away from its box — which reads as text
+  that starts below the box and snaps into it on commit, because the committed
+  canvas render was right all along. `test/verify.js` checks the anchor against
+  the painted box at 0/90/180/270.
+- **Text markups pick a face from a fixed list, never a free-text family.**
+  `RP.render.FONT_STACKS` (sans/serif/mono) maps one-for-one onto the standard
+  14 fonts in `RP.exporter.STANDARD_FONTS`, so anything on screen can be stamped
+  without embedding a font program. Only the faces a drawing actually uses get
+  embedded. A callout's `color` is its box and leader; its text has its own
+  `textColor`, because tying them together would restyle every callout already
+  drawn. A typewriter `text` markup has no box, so its `color` *is* its text.
 - **There is one popup menu, `RP.menu`.** Two implementations means two sets of
   outside-click listeners fighting over one press. `RP.pages.openMenu` wraps it
   to keep its own async/busy guard; anything else calls `RP.menu.open` directly.

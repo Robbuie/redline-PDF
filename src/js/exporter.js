@@ -175,6 +175,20 @@
   // Main export
   // -------------------------------------------------------------------------
 
+  // The screen's font stacks, mapped onto the standard 14 fonts every PDF
+  // reader already has. Nothing here is embedded as a file, so a stamped sheet
+  // stays small and opens the same everywhere.
+  const STANDARD_FONTS = {
+    'sans:regular': 'Helvetica', 'sans:bold': 'HelveticaBold',
+    'serif:regular': 'TimesRoman', 'serif:bold': 'TimesRomanBold',
+    'mono:regular': 'Courier', 'mono:bold': 'CourierBold'
+  };
+
+  function fontKeyOf(annot) {
+    const family = (annot && annot.fontFamily) || 'sans';
+    return (STANDARD_FONTS[family + ':regular'] ? family : 'sans') + (annot && annot.bold ? ':bold' : ':regular');
+  }
+
   async function buildPdf(opts) {
     const options = opts || {};
     const { PDFDocument, StandardFonts, BlendMode, PDFName, PDFString, PDFHexString } = lib();
@@ -186,6 +200,18 @@
     const pdfDoc = await PDFDocument.load(store.docBytes, { ignoreEncryption: true, updateMetadata: false });
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    // Only the faces this drawing actually uses get embedded — the standard 14
+    // are cheap but they are still objects in someone's file.
+    const textFonts = {};
+    for (const key of new Set(store.annotations
+      .filter((a) => a.type === 'text' || a.type === 'callout')
+      .map(fontKeyOf))) {
+      const name = STANDARD_FONTS[key];
+      if (name) textFonts[key] = await pdfDoc.embedFont(StandardFonts[name]);
+    }
+    const fontFor = (annot) => textFonts[fontKeyOf(annot)] || font;
+
     const pages = pdfDoc.getPages();
 
     // If this file was saved by Redline before, drop what we stamped last time.
@@ -274,12 +300,13 @@
 
         case 'text': {
           const size = annot.fontSize || 12;
+          const textFont = fontFor(annot);
           const lines = String(annot.text || '').split('\n');
           lines.forEach((line, i) => {
             page.drawText(line, {
               x: annot.x,
               y: annot.y - size * 0.85 - i * size * 1.25,
-              size, font, color, opacity
+              size, font: textFont, color, opacity
             });
           });
           break;
@@ -305,14 +332,16 @@
           // stamped under the box.
           const size = annot.fontSize || 11;
           const pad = RP.render.CALLOUT_PAD;
+          const textFont = fontFor(annot);
+          const textColor = colorOf(annot.textColor || RP.render.DEFAULT_TEXT_COLOR);
           const lines = RP.render.wrapLines(annot.text || '', RP.render.calloutTextWidth(box.w),
-            (s) => font.widthOfTextAtSize(s, size));
+            (s) => textFont.widthOfTextAtSize(s, size));
           lines.forEach((line, i) => {
             if (!line) return;
             const lineTop = box.y + box.h - pad - i * size * RP.render.CALLOUT_LINE;
             if (lineTop - size < box.y) return;
             page.drawText(line, {
-              x: box.x + pad, y: lineTop - size * 0.85, size, font, color: lib().rgb(0.08, 0.09, 0.11)
+              x: box.x + pad, y: lineTop - size * 0.85, size, font: textFont, color: textColor
             });
           });
           break;

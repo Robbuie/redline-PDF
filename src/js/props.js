@@ -36,6 +36,8 @@
       const body = RP.el('div', { class: 'modal-body' });
       body.appendChild(this.factsTable(annot));
       body.appendChild(this.styleSection(annot));
+      const type = this.typeSection(annot);
+      if (type) body.appendChild(type);
       body.appendChild(this.commentSection(annot));
       modal.appendChild(body);
 
@@ -131,7 +133,7 @@
       return RP.el('section', {}, [
         RP.el('h3', { text: 'Appearance' }),
         RP.el('label', { class: 'opt field props-field' }, [
-          RP.el('span', { text: 'Colour' }), colour
+          RP.el('span', { text: annot.type === 'callout' ? 'Box colour' : 'Colour' }), colour
         ]),
         strokes ? RP.el('label', { class: 'opt field props-field' }, [
           RP.el('span', { text: 'Line width' }), width, widthOut
@@ -140,6 +142,67 @@
           RP.el('span', { text: 'Opacity' }), opacity, opacityOut
         ])
       ]);
+    },
+
+    /**
+     * Typeface, size, weight and — for callouts, whose text sits on its own
+     * white box — the text colour. Every one of these changes how the text
+     * wraps, so a callout is refitted after each.
+     */
+    typeSection(annot) {
+      if (annot.type !== 'text' && annot.type !== 'callout') return null;
+      const isCallout = annot.type === 'callout';
+
+      const family = RP.el('select', {}, [
+        RP.el('option', { value: 'sans', text: 'Sans' }),
+        RP.el('option', { value: 'serif', text: 'Serif' }),
+        RP.el('option', { value: 'mono', text: 'Mono' })
+      ]);
+      family.value = annot.fontFamily || 'sans';
+      family.addEventListener('change', () => this.patchText({ fontFamily: family.value }));
+
+      const size = RP.el('input', {
+        type: 'number', min: '4', max: '96', step: '1',
+        value: String(annot.fontSize || (isCallout ? 11 : 12))
+      });
+      size.addEventListener('change', () => {
+        const next = Math.min(96, Math.max(4, Number(size.value) || 12));
+        size.value = String(next);
+        this.patchText({ fontSize: next });
+      });
+
+      const bold = RP.el('input', { type: 'checkbox' });
+      bold.checked = !!annot.bold;
+      bold.addEventListener('change', () => this.patchText({ bold: bold.checked }));
+
+      const textColour = RP.el('input', {
+        type: 'color', value: annot.textColor || RP.render.DEFAULT_TEXT_COLOR
+      });
+      textColour.addEventListener('input', () => this.patchText({ textColor: textColour.value }));
+
+      return RP.el('section', {}, [
+        RP.el('h3', { text: 'Text' }),
+        RP.el('label', { class: 'opt field props-field' }, [
+          RP.el('span', { text: 'Typeface' }), family
+        ]),
+        RP.el('label', { class: 'opt field props-field' }, [
+          RP.el('span', { text: 'Size' }), size
+        ]),
+        RP.el('label', { class: 'opt field props-field' }, [
+          RP.el('span', { text: 'Bold' }), bold
+        ]),
+        isCallout ? RP.el('label', { class: 'opt field props-field' }, [
+          RP.el('span', { text: 'Text colour' }), textColour
+        ]) : null
+      ]);
+    },
+
+    /** A typography edit, refitting the box it wraps inside. */
+    patchText(values) {
+      const live = RP.store.get(this.annotId);
+      if (!live) return;
+      if (live.type !== 'callout') { this.patch(values); return; }
+      this.patch(Object.assign({}, values, RP.render.fitCallout(Object.assign({}, live, values))));
     },
 
     commentSection(annot) {

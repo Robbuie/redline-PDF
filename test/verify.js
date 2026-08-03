@@ -33,12 +33,18 @@ function check(label, condition, detail) {
  */
 function measuringContext(record) {
   let fontSize = 11;
+  let bold = false;
   const noop = () => {};
   return {
-    get font() { return fontSize + 'px sans-serif'; },
-    set font(value) { fontSize = parseFloat(value) || fontSize; },
-    measureText: (text) => ({ width: String(text).length * 0.5 * fontSize }),
-    fillText(text, x, y) { if (record) record.push({ kind: 'text', text, x, y, size: fontSize }); },
+    get font() { return (bold ? '700 ' : '') + fontSize + 'px sans-serif'; },
+    set font(value) {
+      bold = /(^|\s)(bold|[6-9]00)(\s|$)/.test(value);
+      fontSize = parseFloat(String(value).replace(/^\s*[0-9]{3}\s+/, '')) || fontSize;
+    },
+    measureText: (text) => ({ width: String(text).length * (bold ? 0.56 : 0.5) * fontSize }),
+    fillText(text, x, y) {
+      if (record) record.push({ kind: 'text', text, x, y, size: fontSize, bold, fill: this.fillStyle });
+    },
     strokeRect(x, y, w, h) { if (record) record.push({ kind: 'box', x, y, w, h }); },
     fillRect: noop,
     save: noop, restore: noop, beginPath: noop, closePath: noop,
@@ -96,7 +102,10 @@ function sampleAnnotations() {
     { page: 1, type: 'cloud', color: '#ff2f2f', width: 2, opacity: 1, x: 90, y: 320, w: 260, h: 160, note: 'Rev C change' },
     { page: 1, type: 'text', color: '#ff2f2f', fontSize: 14, opacity: 1, x: 100, y: 620, text: 'VERIFY ON SITE\nsecond line' },
     { page: 1, type: 'callout', color: '#ff9500', width: 1.5, opacity: 1, x: 320, y: 560, w: 180, h: 60, tipX: 240, tipY: 480, text: 'Feeder routed above ceiling', fontSize: 10 },
-    { page: 1, type: 'measure', color: '#c04aff', width: 1.5, opacity: 1, x1: 100, y1: 200, x2: 400, y2: 200 }
+    { page: 1, type: 'measure', color: '#c04aff', width: 1.5, opacity: 1, x1: 100, y1: 200, x2: 400, y2: 200 },
+    // Non-default typefaces, so the export has to reach past Helvetica.
+    { page: 1, type: 'callout', color: '#ff9500', width: 1.5, opacity: 1, x: 320, y: 300, w: 180, h: 40, tipX: 260, tipY: 250, text: 'Serif bold callout', fontSize: 10, fontFamily: 'serif', bold: true, textColor: '#0044cc' },
+    { page: 1, type: 'text', color: '#2f8fff', fontSize: 11, opacity: 1, x: 100, y: 120, text: 'MONO NOTE', fontFamily: 'mono' }
   ].map((a, i) => Object.assign({ id: 'mk' + i, created: Date.now(), modified: Date.now(), author: 'Tester', note: a.note || '' }, a));
 }
 
@@ -117,6 +126,14 @@ async function testExport() {
 
   const reopened = await PDFLib.PDFDocument.load(saved);
   check('page count preserved', reopened.getPageCount() === 2);
+
+  // A markup drawn in a non-default face has to be stamped in that face, not
+  // silently flattened back to Helvetica. These are the standard 14, so they
+  // are named in the file rather than embedded as font programs.
+  const named = Buffer.from(saved).toString('latin1');
+  check('a serif bold callout stamps a serif bold font', /Times[-# ]?Bold/.test(named));
+  check('a mono typewriter note stamps a mono font', /\/Courier/.test(named));
+  check('unused faces are not embedded', !/Times-Italic|Helvetica-Oblique/.test(named));
 
   const embedded = await RP.exporter.readEmbeddedMarkup(saved);
   check('markup model round-trips for re-editing',
@@ -693,6 +710,36 @@ function testCalloutText() {
   const box = { type: 'callout', x: 100, y: 600, w: 200, h: 80, text: 'Panel LP-1', fontSize: 11 };
   const fit = RP.render.fitCallout(box);
   check('refitting a callout keeps its top edge', Math.abs((fit.y + fit.h) - (box.y + box.h)) < 1e-6);
+
+  // Typography feeds back into the box: a wider face needs more lines for the
+  // same words, and the box has to be measured in the face it is drawn in.
+  const phrase = 'Replace this 20A breaker with a 30A per revised load calc';
+  // 130pt is a width where the phrase fits in three lines regular and needs a
+  // fourth in bold, so this fails outright if the measurement ignores weight.
+  const regular = { type: 'callout', x: 0, y: 0, w: 130, h: 40, text: phrase, fontSize: 11 };
+  const heavy = Object.assign({}, regular, { bold: true });
+  check('a bold callout is measured in bold, not in regular',
+    RP.render.fitCallout(heavy).h > RP.render.fitCallout(regular).h,
+    `${RP.render.fitCallout(regular).h} -> ${RP.render.fitCallout(heavy).h}`);
+  check('the font shorthand carries family and weight',
+    /700/.test(RP.render.fontSpec({ bold: true }, 12)) &&
+    /Georgia/.test(RP.render.fontSpec({ fontFamily: 'serif' }, 12)) &&
+    !/700/.test(RP.render.fontSpec({}, 12)),
+    RP.render.fontSpec({ fontFamily: 'serif', bold: true }, 12));
+  check('an unknown family falls back rather than rendering nothing',
+    RP.render.fontSpec({ fontFamily: 'wingdings' }, 12) === RP.render.fontSpec({}, 12));
+
+  // Callout text colour is its own field: the markup colour is the box and the
+  // leader, and tying them together would restyle every callout already drawn.
+  const drawn = [];
+  const viewport = { scale: 1, convertToViewportPoint: (x, y) => [x, 792 - y] };
+  const coloured = Object.assign({}, regular, { x: 100, y: 600, color: '#ff9500', textColor: '#0044cc' });
+  Object.assign(coloured, RP.render.fitCallout(coloured));
+  const ctx = measuringContext(drawn);
+  RP.render.drawAnnotation(ctx, coloured, viewport, {});
+  check('callout text takes its own colour, not the box colour',
+    drawn.some((d) => d.kind === 'text' && d.fill === '#0044cc'),
+    JSON.stringify(drawn.filter((d) => d.kind === 'text').map((d) => d.fill)));
 }
 
 /**

@@ -520,6 +520,39 @@
         RP.tools.setOpacity(Number(opacityRange.value) / 100);
       });
 
+      // Typography for text and callouts. These sit in their own toolbar group
+      // that only appears for those two tools.
+      const fontFamily = RP.$('#fontFamily');
+      fontFamily.value = RP.tools.style.fontFamily;
+      fontFamily.addEventListener('change', () => RP.tools.setTextStyle({ fontFamily: fontFamily.value }));
+
+      const fontSize = RP.$('#fontSize');
+      fontSize.value = String(RP.tools.style.fontSize);
+      fontSize.addEventListener('change', () => {
+        const size = Math.min(96, Math.max(4, Number(fontSize.value) || 12));
+        fontSize.value = String(size);
+        RP.tools.setTextStyle({ fontSize: size });
+      });
+
+      const fontBold = RP.$('#fontBold');
+      fontBold.addEventListener('click', () => RP.tools.setTextStyle({ bold: !RP.tools.style.bold }));
+
+      const textColor = RP.$('#textColor');
+      textColor.value = RP.tools.style.textColor;
+      textColor.addEventListener('input', () => RP.tools.setTextStyle({ textColor: textColor.value }));
+
+      // Selecting a markup pulls the controls onto it, so the toolbar always
+      // describes what you are looking at rather than what you last drew.
+      RP.bus.on('selection:changed', () => {
+        const picked = RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
+        if (picked.length !== 1) return;
+        const annot = picked[0];
+        fontFamily.value = annot.fontFamily || 'sans';
+        fontSize.value = String(annot.fontSize || 12);
+        fontBold.classList.toggle('active', !!annot.bold);
+        if (annot.type === 'callout') textColor.value = annot.textColor || RP.render.DEFAULT_TEXT_COLOR;
+      });
+
       RP.$('#btnUndo').addEventListener('click', () => RP.store.undo());
       RP.$('#btnRedo').addEventListener('click', () => RP.store.redo());
       RP.$('#btnDelete').addEventListener('click', () => this.deleteSelection());
