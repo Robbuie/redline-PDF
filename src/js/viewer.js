@@ -43,6 +43,13 @@
      you are not. */
   const MAX_PAGE_RENDERS = 2;
 
+  /* How much of the gutter above a page to leave showing when navigating to
+     it, and how far the landing may drift before `confirmLanding` steps in.
+     The tolerance is a page, not a pixel count: a few pixels of overshoot is
+     normal and correcting it would fight the browser's own scroll animation. */
+  const PAGE_LEAD = 16;
+  const LANDING_CHECK_MS = 550;
+
   /**
    * @param {HTMLElement} root a `.pane` element holding `.viewer > .pages`
    * @param {object} store the document store this pane is currently showing
@@ -57,6 +64,8 @@
     fitMode: 'width',
     pages: [],          // page records, index 0-based
     currentPage: 0,
+    userScrollAt: 0,    // last gesture that means "I am steering now"
+    landingTimer: 0,    // pending goToPage landing check
     dpr: Math.min(window.devicePixelRatio || 1, 2),
 
     renderQueue: [],    // page indices waiting on a raster slot
@@ -108,6 +117,14 @@
       }, { root: this.els.thumbs, rootMargin: '400px 0px' });
 
       this.els.viewer.addEventListener('scroll', RP.throttleRaf(() => this.onScroll()), { passive: true });
+
+      /* A deliberate scroll of your own outranks a pending landing check —
+         click a thumbnail, then flick the wheel, and the correction below must
+         not drag you back to where you no longer are. */
+      const noteUserScroll = () => { this.userScrollAt = Date.now(); };
+      for (const type of ['wheel', 'pointerdown', 'keydown']) {
+        this.els.viewer.addEventListener(type, noteUserScroll, { passive: true, capture: true });
+      }
 
       /* Zoom by wheel and by trackpad.
 
@@ -259,6 +276,7 @@
       this.thumbQueue = [];
       this.pageTops = null;
       this.thumbCurrent = -1;
+      if (this.landingTimer) { clearTimeout(this.landingTimer); this.landingTimer = 0; }
       this.pages = [];
       this.els.pages.innerHTML = '';
       if (this.els.thumbs) this.els.thumbs.innerHTML = '';
@@ -667,15 +685,39 @@
      * long sheet set.
      */
     measurePages() {
-      this.pageTops = this.pages.map((record) => record.container.offsetTop);
+      this.pageTops = this.pages.map((record) => this.topOf(record));
     },
 
-    onScroll() {
-      if (!this.pages.length) return;
-      if (!this.pageTops || this.pageTops.length !== this.pages.length) this.measurePages();
-
+    /**
+     * A page's top in the scroller's own coordinates.
+     *
+     * Measured from live rects rather than `offsetTop`, which is relative to
+     * whatever the *offsetParent* happens to be. `.viewer` is `position:
+     * relative` today so the two agree, but a positioned wrapper appearing
+     * anywhere between `.viewer` and `.page` — a split pane, an overlay, a
+     * future panel — silently reparents the measurement and every page top
+     * comes back short. That reads as "clicking a thumbnail lands on the
+     * wrong page", which is a long way from the CSS that caused it.
+     */
+    topOf(record) {
       const viewer = this.els.viewer;
-      const probe = viewer.scrollTop + Math.min(140, viewer.clientHeight * 0.3);
+      return record.container.getBoundingClientRect().top
+        - viewer.getBoundingClientRect().top
+        + viewer.scrollTop;
+    },
+
+    /** Largest scrollTop the container will actually accept. */
+    maxScrollTop() {
+      const viewer = this.els.viewer;
+      return Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+    },
+
+    /** Which page a given scroll offset is "on". Shared by the scroll handler
+        and the landing check so the two cannot disagree. */
+    pageIndexAt(scrollTop) {
+      if (!this.pages.length) return 0;
+      if (!this.pageTops || this.pageTops.length !== this.pages.length) this.measurePages();
+      const probe = scrollTop + Math.min(140, this.els.viewer.clientHeight * 0.3);
       // Last page whose top is at or above the probe line.
       let lo = 0;
       let hi = this.pages.length - 1;
@@ -685,6 +727,12 @@
         if (this.pageTops[mid] <= probe) { current = mid; lo = mid + 1; }
         else hi = mid - 1;
       }
+      return current;
+    },
+
+    onScroll() {
+      if (!this.pages.length) return;
+      const current = this.pageIndexAt(this.els.viewer.scrollTop);
 
       if (current !== this.currentPage) {
         this.currentPage = current;
@@ -697,11 +745,58 @@
       const record = this.pages[RP.clamp(index, 0, this.pages.length - 1)];
       if (!record) return;
       const behavior = opts && opts.instant ? 'auto' : 'smooth';
-      const top = record.container.offsetTop - 16;
+      const top = RP.clamp(this.topOf(record) - PAGE_LEAD, 0, this.maxScrollTop());
       this.els.viewer.scrollTo({ top, behavior });
       this.currentPage = record.index;
       this.highlightThumb();
       this.emit('page:changed', record.index);
+      this.confirmLanding(record.index, top);
+    },
+
+    /**
+     * Verify that the scroll actually arrived, and say so in the diagnostics
+     * log when it did not.
+     *
+     * A smooth scroll is a browser animation, not an assignment: anything that
+     * relayouts the column while it is running moves the target under it, and
+     * the page tops we aimed at are only as good as the measurement that
+     * produced them. A landing on the wrong *page* is corrected outright —
+     * silently ending up a sheet away from the one you clicked is the worst
+     * possible failure here. A few pixels of drift is left alone; fighting the
+     * animation over it would be visible jitter for no gain.
+     */
+    confirmLanding(index, wanted) {
+      if (this.landingTimer) clearTimeout(this.landingTimer);
+      const startedAt = Date.now();
+      this.landingTimer = setTimeout(() => {
+        this.landingTimer = 0;
+        const record = this.pages[index];
+        if (!record || !this.isActive()) return;
+        // The user took over mid-flight; where they are now is where they want.
+        if (this.userScrollAt > startedAt) return;
+
+        const viewer = this.els.viewer;
+        const landed = this.pageIndexAt(viewer.scrollTop);
+        if (landed === index) return;
+
+        if (RP.diag) RP.diag.record('warn',
+          'Page navigation landed on page ' + (landed + 1) + ', not ' + (index + 1) +
+          ' — aimed at ' + Math.round(wanted) + ', ended at ' + Math.round(viewer.scrollTop) +
+          '; page top now ' + Math.round(this.topOf(record)) +
+          ', offsetTop ' + record.container.offsetTop +
+          ', scrollHeight ' + viewer.scrollHeight + ', clientHeight ' + viewer.clientHeight +
+          ', zoom ' + this.zoom.toFixed(3) + ', dpr ' + (window.devicePixelRatio || 1));
+
+        // Re-measure before the retry: whatever moved is still moved.
+        this.pageTops = null;
+        viewer.scrollTo({
+          top: RP.clamp(this.topOf(record) - PAGE_LEAD, 0, this.maxScrollTop()),
+          behavior: 'auto'
+        });
+        this.currentPage = index;
+        this.highlightThumb();
+        this.emit('page:changed', index);
+      }, LANDING_CHECK_MS);
     },
 
     /** Scroll so a PDF-space rect on `pageIndex` is centred and flash it. */
@@ -710,10 +805,12 @@
       if (!record) return;
       const view = RP.render.vpRect(record.viewport, rect);
       const viewer = this.els.viewer;
-      const targetTop = record.container.offsetTop + view.y - viewer.clientHeight / 2 + view.h / 2;
-      const targetLeft = record.container.offsetLeft + view.x - viewer.clientWidth / 2 + view.w / 2;
+      const targetTop = this.topOf(record) + view.y - viewer.clientHeight / 2 + view.h / 2;
+      const targetLeft = record.container.getBoundingClientRect().left
+        - viewer.getBoundingClientRect().left + viewer.scrollLeft
+        + view.x - viewer.clientWidth / 2 + view.w / 2;
       viewer.scrollTo({
-        top: Math.max(0, targetTop),
+        top: RP.clamp(targetTop, 0, this.maxScrollTop()),
         left: Math.max(0, targetLeft),
         behavior: (opts && opts.instant) ? 'auto' : 'smooth'
       });

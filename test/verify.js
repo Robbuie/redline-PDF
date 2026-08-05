@@ -850,7 +850,16 @@ function testMarqueeZoom() {
     const record = {
       index: 0,
       viewport: viewportAt(zoom),
-      container: { offsetTop: 0, offsetLeft: 0 }
+      container: {
+        offsetTop: 0,
+        offsetLeft: 0,
+        // Page tops are measured from live rects, so the stub has to move with
+        // the scroller the way a real element does.
+        getBoundingClientRect: () => ({
+          top: -viewer.els.viewer.scrollTop,
+          left: -viewer.els.viewer.scrollLeft
+        })
+      }
     };
     viewer.zoom = zoom;
     viewer.rotation = 0;
@@ -862,6 +871,7 @@ function testMarqueeZoom() {
         clientHeight: 800,
         scrollLeft: 0,
         scrollTop: 0,
+        scrollHeight: 1e6,      // a column taller than anything revealRect aims at
         getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
         scrollTo: (opts) => { scrolled.top = opts.top; scrolled.left = opts.left; }
       }
@@ -930,6 +940,94 @@ function testMarqueeZoom() {
       `zoom ${other.zoom} scroll ${other.els.viewer.scrollLeft},${other.els.viewer.scrollTop}`);
     check('a restored view is not left in fit mode',
       other.fitMode === null || other.fitMode === state.fitMode, String(other.fitMode));
+  }
+
+  /* Landing on the page you actually clicked.
+
+     `goToPage` scrolls a column it has to measure. Measuring through
+     `offsetTop` ties the answer to whatever the offsetParent happens to be, so
+     a positioned ancestor appearing between `.viewer` and `.page` shifts every
+     page top at once and a thumbnail starts opening the sheet *before* the one
+     clicked. The column here is built with an `offsetTop` that deliberately
+     disagrees with its real position, so a return to offsetTop fails loudly. */
+  {
+    const PAGE_H_PX = 500;
+    const GAP = 18;
+    const PAD = 22;
+    const LEAD = 16;                       // the gutter goToPage leaves showing
+    const topFor = (i) => PAD + i * (PAGE_H_PX + GAP);
+
+    const scroller = {
+      clientWidth: 1000, clientHeight: 800, scrollTop: 0, scrollLeft: 0,
+      scrollHeight: topFor(10) + 60,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
+      scrollTo: (opts) => {
+        if (opts.top !== undefined) scroller.scrollTop = opts.top;
+        if (opts.left !== undefined) scroller.scrollLeft = opts.left;
+      }
+    };
+    const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+    viewer.els = { viewer: scroller };
+    viewer.highlightThumb = function () {};
+    viewer.isActive = function () { return true; };
+    viewer.pages = [];
+    for (let i = 0; i < 10; i += 1) {
+      viewer.pages.push({
+        index: i,
+        container: {
+          offsetTop: topFor(i) - 900,      // an offsetParent that is not the scroller
+          offsetLeft: 0,
+          getBoundingClientRect: () => ({ top: topFor(i) - scroller.scrollTop, left: 0 })
+        }
+      });
+    }
+
+    viewer.goToPage(4);
+    check('a page top is measured against the scroller, not the offsetParent',
+      Math.abs(scroller.scrollTop - (topFor(4) - LEAD)) < 0.5, 'scrollTop ' + scroller.scrollTop);
+    check('the page the scroll handler reports back is the page that was asked for',
+      viewer.pageIndexAt(scroller.scrollTop) === 4,
+      'reads page ' + (viewer.pageIndexAt(scroller.scrollTop) + 1));
+
+    viewer.goToPage(9);
+    check('the last sheet is not scrolled past what the container allows',
+      scroller.scrollTop <= scroller.scrollHeight - scroller.clientHeight,
+      'scrollTop ' + scroller.scrollTop);
+
+    /* And when it still lands wrong — a relayout under a smooth scroll, a
+       measurement that went stale mid-flight — the landing check pulls it back
+       rather than leaving you a sheet away from the one you clicked. Run
+       against a captured timer so the check does not have to wait on it. */
+    const realTimeout = global.setTimeout;
+    let landingCheck = null;
+    global.setTimeout = (fn) => { landingCheck = fn; return 1; };
+    try {
+      viewer.goToPage(4);
+      scroller.scrollTop = topFor(3) - LEAD;   // ended up one sheet short
+      viewer.pageTops = null;
+      landingCheck();
+    } finally {
+      global.setTimeout = realTimeout;
+    }
+    check('a navigation that lands on the wrong page is corrected, not left there',
+      viewer.pageIndexAt(scroller.scrollTop) === 4 && viewer.currentPage === 4,
+      'ended on page ' + (viewer.pageIndexAt(scroller.scrollTop) + 1));
+
+    /* But not when you took the wheel yourself in the meantime. */
+    global.setTimeout = (fn) => { landingCheck = fn; return 1; };
+    try {
+      viewer.goToPage(4);
+      viewer.userScrollAt = Date.now() + 5;
+      scroller.scrollTop = topFor(7) - LEAD;
+      viewer.pageTops = null;
+      landingCheck();
+    } finally {
+      global.setTimeout = realTimeout;
+      viewer.userScrollAt = 0;
+    }
+    check('a scroll of your own outranks the pending landing check',
+      viewer.pageIndexAt(scroller.scrollTop) === 7,
+      'ended on page ' + (viewer.pageIndexAt(scroller.scrollTop) + 1));
   }
 }
 
@@ -1051,19 +1149,29 @@ function testScrollPage() {
   const PAGE_H = 800;
   const GAP = 16;
   const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+
+  // The probe sits min(140, 30% of height) below the top of the pane.
+  const scroller = {
+    scrollTop: 0, scrollLeft: 0, clientHeight: 900,
+    scrollHeight: 77 * (PAGE_H + GAP) + 900,
+    getBoundingClientRect: () => ({ top: 0, left: 0 })
+  };
+  viewer.els = { viewer: scroller };
+
   viewer.pages = [];
   for (let i = 0; i < 77; i += 1) {
+    const layoutTop = i * (PAGE_H + GAP);
     viewer.pages.push({
       index: i,
-      container: { offsetTop: i * (PAGE_H + GAP), offsetHeight: PAGE_H }
+      container: {
+        offsetTop: layoutTop,
+        offsetHeight: PAGE_H,
+        getBoundingClientRect: () => ({ top: layoutTop - scroller.scrollTop, left: 0 })
+      }
     });
   }
   viewer.highlightThumb = function () {};
   viewer.emit = function () {};
-
-  // The probe sits min(140, 30% of height) below the top of the pane.
-  const scroller = { scrollTop: 0, clientHeight: 900 };
-  viewer.els = { viewer: scroller };
   const at = (top) => {
     scroller.scrollTop = top;
     viewer.onScroll();
