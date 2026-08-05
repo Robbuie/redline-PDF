@@ -177,8 +177,18 @@
 
       // Read before the recents list is touched below, which moves the entry.
       const remembered = this.rememberedView(file.path);
-      const bytes = new Uint8Array(file.bytes);
       RP.status('Opening ' + file.name + '…');
+
+      /* A drawing this app saved before carries its markups twice: stamped into
+         the page content for other viewers, and as the editable model in the
+         catalog for this one. Rasterise the stamped copy as well as drawing the
+         model and every markup appears twice over, the baked one uneditable.
+         So the two are separated here, before pdf.js ever sees the file, and
+         only the model is drawn. The stripped bytes are what the next save has
+         to build from too, so they go straight into `baseBytes`. */
+      const split = await RP.exporter.splitSaved(new Uint8Array(file.bytes));
+      const embedded = split.model;
+      const bytes = split.bytes;
 
       let doc;
       try {
@@ -200,17 +210,20 @@
 
       const store = tab.store;
       store.setDocument({ doc, path: file.path, name: file.name, bytes });
+      // Already stripped above, so the Pages panel and Print need not do it again.
+      if (embedded) store.baseBytes = bytes;
       RP.compare.close();
       await RP.viewer.open(doc, store);
       const restored = this.restoreView(remembered);
       RP.search.reset();
 
-      // Markups embedded by a previous Redline save.
-      const embedded = await RP.exporter.readEmbeddedMarkup(bytes);
+      // Markups embedded by a previous Redline save. Written to the concrete
+      // store rather than `RP.store`: there are awaits above and below this,
+      // and the user can switch tabs across any of them.
       if (embedded) {
-        RP.store.load(embedded.annotations);
-        RP.store.scale = embedded.scale || null;
-        RP.store.markDirty(false);
+        store.load(embedded.annotations);
+        store.scale = embedded.scale || null;
+        store.markDirty(false);
         RP.toast(embedded.annotations.length + ' saved markups restored and editable', 'good');
       }
 
@@ -229,8 +242,8 @@
               cancelId: 1
             });
             if (answer.response === 0) {
-              RP.store.load(recovered.annotations);
-              RP.store.markDirty(true);
+              store.load(recovered.annotations);
+              store.markDirty(true);
             } else {
               await window.rp.recovery.clear(file.path);
             }
@@ -652,6 +665,32 @@
       if (!ids.length) { RP.status('Nothing selected', 'warn'); return; }
       RP.store.remove(ids);
       RP.tools.closeNotePopup();
+    },
+
+    /**
+     * The set-status rows, built once here because two menus offer them: the
+     * right-click on the drawing and the right-click on a markup-list row. Both
+     * act on the whole selection, which is what makes closing out a marquee's
+     * worth of items one gesture and one undo step.
+     */
+    statusMenuItems() {
+      const selected = RP.store.selected();
+      if (!selected.length) return [];
+      const ids = selected.map((a) => a.id);
+      const current = new Set(selected.map((a) => RP.statusOf(a)));
+      return [
+        { heading: selected.length > 1 ? 'Status of ' + selected.length + ' markups' : 'Status' },
+        ...RP.STATUSES.map((key) => ({
+          label: RP.STATUS_LABELS[key],
+          // Ticked only when the whole selection already agrees — a tick on a
+          // mixed selection would claim something that is not true of all of it.
+          checked: current.size === 1 && current.has(key),
+          run: () => {
+            const n = RP.store.setStatus(ids, key);
+            if (n) RP.status(n + (n === 1 ? ' markup ' : ' markups ') + RP.STATUS_LABELS[key].toLowerCase());
+          }
+        }))
+      ];
     },
 
     // -----------------------------------------------------------------------
@@ -1121,13 +1160,24 @@
       const selected = RP.store.selected();
       if (!selected.length) { node.textContent = ''; node.title = ''; return; }
       if (selected.length > 1) {
-        node.textContent = selected.length + ' markups selected';
+        // "3 markups selected" does not answer the question a punch list asks
+        // of a multi-select, which is how much of it is still outstanding.
+        const counts = RP.store.statusCounts(selected);
+        const tally = RP.STATUSES
+          .filter((key) => counts[key])
+          .map((key) => counts[key] + ' ' + RP.STATUS_LABELS[key].toLowerCase())
+          .join(', ');
+        node.textContent = selected.length + ' markups selected — ' + tally;
         node.title = '';
         return;
       }
       const annot = selected[0];
       const body = RP.sidebar.describe(annot);
-      node.textContent = RP.store.typeLabel(annot.type) + (body ? ' — ' + body : '');
+      const status = RP.statusOf(annot);
+      node.textContent = RP.store.typeLabel(annot.type) +
+        // Open is the default; saying so on every selection is noise.
+        (status === 'open' ? '' : ' (' + RP.STATUS_LABELS[status].toLowerCase() + ')') +
+        (body ? ' — ' + body : '');
       node.title = node.textContent;
     }
   };

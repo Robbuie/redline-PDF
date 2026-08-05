@@ -6,8 +6,14 @@
 
   const Sidebar = {
     panel: 'thumbs',
+    // These three describe *one document's* markup list, not the app's, so they
+    // are lifted onto the outgoing tab and put back on the incoming one by
+    // RP.tabs.stash/unstash. Leaving them here alone meant a status filter — or
+    // a typed filter, which had the same bug before — narrowing another
+    // drawing's list the moment you switched to it.
     filter: '',
     sort: 'page',
+    status: 'all',
 
     init() {
       RP.$$('.side-tab[data-panel]').forEach((tab) => {
@@ -27,6 +33,12 @@
       const sortSelect = RP.$('#markupSort');
       sortSelect.addEventListener('change', () => {
         this.sort = sortSelect.value;
+        this.renderMarkups();
+      });
+
+      const statusSelect = RP.$('#markupStatus');
+      statusSelect.addEventListener('change', () => {
+        this.status = statusSelect.value;
         this.renderMarkups();
       });
 
@@ -64,10 +76,18 @@
 
     visibleAnnotations() {
       let list = RP.store.annotations.slice();
+      if (this.status !== 'all') {
+        list = list.filter((a) => RP.statusOf(a) === this.status);
+      }
       if (this.filter) {
         list = list.filter((a) => {
+          // The status word is searchable but deliberately not part of
+          // `describe()`: that string is also the row's own text and the status
+          // bar's line, and folding "closed" into it would print the state
+          // twice on screen to make it typeable once.
           const haystack = [
             RP.store.typeLabel(a.type),
+            RP.STATUS_LABELS[RP.statusOf(a)],
             this.describe(a),
             a.author || '',
             'page ' + (a.page + 1)
@@ -86,7 +106,15 @@
       const count = RP.$('#markupCount');
       if (!list) return;
       const items = this.visibleAnnotations();
-      if (count) count.textContent = String(RP.store.annotations.length);
+      // The count is what is left to do, not what exists — an all-closed
+      // drawing reading "12" is the opposite of the answer a punch list wants.
+      const counts = RP.store.statusCounts();
+      if (count) {
+        count.textContent = counts.open + ' / ' + RP.store.annotations.length;
+        count.title = RP.STATUSES
+          .map((key) => counts[key] + ' ' + RP.STATUS_LABELS[key].toLowerCase())
+          .join(' · ');
+      }
       list.innerHTML = '';
 
       if (!RP.store.annotations.length) {
@@ -103,8 +131,9 @@
 
       for (const annot of items) {
         const note = this.describe(annot);
+        const status = RP.statusOf(annot);
         const row = RP.el('button', {
-          class: 'markup-row' + (RP.store.selection.has(annot.id) ? ' active' : ''),
+          class: 'markup-row st-' + status + (RP.store.selection.has(annot.id) ? ' active' : ''),
           'data-id': annot.id,
           onclick: (e) => this.focusAnnot(annot, e.shiftKey),
           ondblclick: () => {
@@ -116,10 +145,46 @@
             RP.el('span', { class: 'mk-type', text: RP.store.typeLabel(annot.type) }),
             note ? RP.el('span', { class: 'mk-note', text: note }) : null
           ]),
-          RP.el('span', { class: 'mk-meta', text: 'p' + (annot.page + 1) })
+          RP.el('span', { class: 'mk-meta' }, [
+            RP.el('span', { text: 'p' + (annot.page + 1) }),
+            // Open is the default and goes unmarked — badging every row of a
+            // fresh review says nothing.
+            status === 'open' ? null : RP.el('span', {
+              class: 'mk-status ' + status,
+              text: RP.STATUS_LABELS[status]
+            })
+          ])
         ]);
+        row.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          if (!RP.store.selection.has(annot.id)) RP.store.select(annot.id);
+          RP.menu.open(event.clientX, event.clientY, RP.app.statusMenuItems());
+        });
         list.appendChild(row);
       }
+    },
+
+    /* Per-document list state, lifted onto the tab on the way out and put back
+       on the way in. The DOM controls are re-synced here rather than by the
+       caller, because the value and the control that shows it have to move
+       together — a restored filter that the box does not display is worse than
+       one that did not restore. */
+    stash() {
+      return { filter: this.filter, sort: this.sort, status: this.status };
+    },
+
+    unstash(state) {
+      const next = state || { filter: '', sort: 'page', status: 'all' };
+      this.filter = next.filter || '';
+      this.sort = next.sort || 'page';
+      this.status = next.status || 'all';
+      const filterInput = RP.$('#markupFilter');
+      const sortSelect = RP.$('#markupSort');
+      const statusSelect = RP.$('#markupStatus');
+      if (filterInput) filterInput.value = this.filter;
+      if (sortSelect) sortSelect.value = this.sort;
+      if (statusSelect) statusSelect.value = this.status;
+      this.renderMarkups();
     },
 
     focusAnnot(annot, additive) {

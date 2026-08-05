@@ -302,9 +302,10 @@ selected-markup info, and document dimensions all currently have nowhere to live
 
 ## Tier 3 — hardening before you ship an installer
 
-### 17. Password-protected PDFs
+### 17. Password-protected PDFs — **superseded by 24**
 `getDocument` rejects and `App.loadDocument()` (`src/js/app.js` ~line 133) shows
 a generic "could not be read" toast. Catch `PasswordException`, prompt, retry.
+Written up properly as item **24** below; work from that one.
 
 ### 18. Large / corrupt file guard rails
 No limits anywhere. A 500MB scanned set will thrash. Needed: a size warning
@@ -327,6 +328,300 @@ choice, not a default).
 maths. Wanted: a headless Electron boot test that opens a sample drawing
 (already tracked in `PLAN.md` engineering debt), plus GitHub Actions running
 `node test/verify.js` on push.
+
+---
+
+## Tier 4 — picked for v0.6
+
+Chosen after the first real day of use. **22** is a papercut found in anger and
+should go first; it is the smallest of the four. The rest are independent.
+**22 shipped in 0.5.1** and **23 in 0.6.0**; 24 and 25 are still open.
+
+---
+
+### 22. `Ctrl+S` invents a filename nobody approved — **done** (0.5.1)
+
+**The complaint.** Saving writes `<drawing>-markup.pdf` next to the original
+without ever asking, even when the user did not choose "save as a new file".
+
+**What is actually happening.** This is the default behaviour, not a crash.
+`DEFAULT_SETTINGS.saveMode` is `'copy'` (`main.js` ~line 56, mirrored in
+`FALLBACK_SETTINGS()` at the bottom of `src/js/app.js`), and in copy mode
+`App.resolveTarget()` (`src/js/app.js` ~line 327) ends with:
+
+```js
+return { path: store.savedTo || this.defaultCopyPath(), backup: false };
+```
+
+`defaultCopyPath()` appends `-markup` to the stem and returns it. No dialog is
+shown on the *first* save, so the app picks a filename and a folder on the
+user's behalf and only mentions it afterwards, in the success toast. The
+`Save → new copy` chip in the status bar (`#stSaveMode`) is the only thing
+advertising the mode, and it reads as a label rather than a control.
+
+**What to build.** The first copy-mode save of a document opens the save dialog
+with `defaultCopyPath()` pre-filled; the user confirms or changes it. Every
+later save of that document writes to the confirmed path silently — repeat saves
+must not re-prompt, and must not stack files. `store.savedTo` already exists to
+carry that decision, so the change is roughly: when `mode === 'copy'` and
+`!store.savedTo`, go through `pickSavePath()` and return `null` if the user
+cancels. `App.save()` already treats a null target as "did not save" and returns
+`false`, which is what the tab-close and window-close guards read.
+
+Also worth doing while in there, all small:
+
+- Make the `#stSaveMode` chip look clickable — it already cycles on click via
+  `cycleSaveMode()`, and nothing says so. A cursor and a tooltip is enough.
+- `cycleSaveMode()` clears `RP.store.saveModeDecided` for the *focused* store
+  only. With tabs, every open store should be cleared, or a background drawing
+  keeps honouring a mode the user has since changed.
+- A drawing whose markups have been saved to a copy still has `docPath` pointing
+  at the original. Decide deliberately whether the tab now represents the copy
+  or the original — the title bar, the recents entry and the next save all read
+  differently depending on the answer. Current behaviour keeps the original,
+  which is defensible; it just needs to be a decision rather than an accident.
+
+**Do not** change the default to `'overwrite'` as part of this. An overwrite is
+destructive and the `.bak` safety net only fires once, on the first overwrite of
+a given file.
+
+**Acceptance.** Open a drawing, mark it up, `Ctrl+S` → a dialog appears with the
+`-markup.pdf` name pre-filled. Accept it. Mark up more, `Ctrl+S` → no dialog,
+saves over the same copy, toast names it. Cancel the first dialog → nothing is
+written and the document stays dirty. Switch the chip to overwrite → `Ctrl+S`
+writes over the original with a one-time `.bak`, no dialog. `node test/verify.js`
+still passes.
+
+**How it landed.** `App.resolveTarget()` now takes its store as an argument and,
+in copy mode, returns `store.savedTo` when there is one and goes through
+`pickSavePath()` when there is not — `null` on cancel. The `-markup` naming moved
+out to `RP.copyPath()` in `util.js` so it is pure and testable. All three
+side-items were done: the chip got a caret, a press state and a tooltip naming
+the cycle; `clearSaveModeDecisions()` walks `RP.tabs.all()` instead of touching
+only the focused store; and keeping `docPath` on the original is now written down
+as a decision in `CLAUDE.md`, with the reasoning that an overwrite-mode save
+after a copy must still mean the original. `test/verify.js` gained a
+`Save targets` section — it loads `app.js` in-process and drives `resolveTarget`
+against a stubbed dialog, so the "asks once, never twice" contract is covered
+rather than asserted in a comment.
+
+---
+
+### 23. Markup status — turn the markup list into a punch list — **done** (0.6.0)
+
+**Why.** A markup currently has a comment and nothing else. A review that gets
+handed back needs to say which items are still open, which were resolved and
+which were rejected — that is the difference between "some redlines" and a
+document somebody can work through.
+
+**The model.** Add `status` to the annotation, one of `'open'`, `'closed'`,
+`'rejected'`, defaulting to `'open'` when absent. Set it through
+`RP.store.checkpoint()` then a mutation then `store.touch(annot)`, like every
+other property edit.
+
+`store.serialize()` (`src/js/store.js` ~line 302) already writes `version: 2`.
+Bump it to 3 and make sure `store.load()` (~line 143) treats a missing `status`
+as `'open'`, so drawings saved by 0.5 keep opening. **The reverse matters too:**
+0.5 will happily open a 0.6 file and silently drop the field on the next save.
+That is acceptable, but note it in `CHANGELOG.md` rather than discovering it.
+
+**The UI.**
+
+- **Markup list** (`src/js/sidebar.js`): a status filter alongside the existing
+  `#markupFilter` and `#markupSort`, and a status dot on each row. The filter
+  state lives on the module the way `this.filter` and `this.sort` do at lines
+  9–10 — which means it is per-document state and needs adding to the
+  `stash()`/`unstash()` pair in `RP.tabs`, or switching tabs will carry one
+  drawing's filter onto another's list. Fold `status` into `describe()` (~line
+  49) so the text filter can match on it.
+- **Properties dialog** (`src/js/props.js`): a status control in the same
+  section pattern as the existing fields.
+- **Right-click on a markup**: set status directly, through `RP.menu` — the one
+  popup menu. Do not build a second.
+- **Status bar**: the selection description already exists; "3 open, 1 closed"
+  for a multi-select is a natural fit.
+
+**Rendering.** Resolved markups should be visually distinguishable without
+becoming invisible. Suggested: closed draws at reduced opacity, rejected gets a
+strike through its own bounding box. Whatever you pick, `RP.render` and
+`RP.exporter` must agree — they are the two halves that drift.
+
+**Export.** Add a `Status` column to the CSV header in `src/js/exporter.js`
+(~line 523) and to the PDF report. Group the report by status if it is cheap.
+
+**Open question worth deciding, not guessing.** Should status be embedded in the
+`RedlineMarkup` catalog entry (so it round-trips through a save and another
+Redline user sees it) or held only in the app? Embedded is the obvious answer
+and costs nothing, since the model is already serialised there — just confirm
+re-save stays idempotent afterwards.
+
+**Acceptance.** Set a markup closed, save, reopen → still closed. Filter to
+open-only → list narrows, page canvases unaffected. Export CSV → status column
+present. Open a 0.5-saved drawing → every markup reads open. Switch tabs with a
+filter active → the filter does not leak. `node test/verify.js` passes.
+
+**How it landed.** `RP.STATUSES` / `RP.STATUS_LABELS` / `RP.statusOf` in
+`store.js`, with `store.setStatus(ids, status)` checkpointing once for a whole
+selection and `store.statusCounts()` feeding the tallies. `serialize()` is at
+version 3.
+
+Four decisions worth knowing, all now in `CLAUDE.md`:
+
+- **Reads normalise, writes refuse.** `statusOf` coerces a missing or unknown
+  status to `'open'` so the markup still draws and still lists; `setStatus`
+  returns 0 rather than coercing, because a bad write coerced to `'open'` would
+  silently reopen a closed item. A test asserting the opposite is what surfaced
+  this — the first draft coerced on both sides.
+- **The appearance is defined once.** `RP.render.statusAlpha` and
+  `statusStrikeLine` (a line in PDF space) are called by the canvas *and* by
+  `exporter.js`, so a printed punch list cannot disagree with the screen. Each
+  case in `drawAnnotation` sets its own alpha with its own default, so the fade
+  goes through a local `alpha(fallback)` helper rather than by rewriting
+  `annot.opacity`.
+- **Status is searchable but not in `describe()`.** The spec above suggested
+  folding it in; that string is also the row's visible text and the status-bar
+  line, so it was added to the filter's haystack instead. The word would
+  otherwise be printed twice on screen to be typeable once. `test/verify.js`
+  asserts both halves.
+- **The whole markup-list state is now per document.** The spec called for
+  stashing the new status filter; the text filter and the sort had the same leak
+  already, so `RP.sidebar.stash()/unstash()` covers all three and `unstash`
+  re-syncs the DOM controls.
+
+Two things the spec asked for that were deliberately *not* done. The report is
+**not grouped by status** — grouping would have to override the page-order sort,
+and page order is how a sheet set is walked; it carries a tally at the top
+instead. And the compatibility note turned out to be wrong in our favour: 0.5
+does **not** drop the field, because `load` and `serialize` both copy whole
+annotation objects. `test/verify.js` covers that round trip and `CHANGELOG.md`
+says so.
+
+---
+
+### 24. Password-protected PDFs
+
+Supersedes item 17. Client-issued sets are frequently protected and the app
+currently gives up with a generic toast.
+
+**Where it breaks.** `App.loadDocument()` (`src/js/app.js` ~line 183) wraps
+`getDocument` in a `try`/`catch` that reports any failure as *"That file could
+not be read as a PDF"*. A password-protected file lands there, so the user
+cannot tell a protected drawing from a corrupt one.
+
+**The mechanism.** pdf.js does not simply reject — it calls an `onPassword`
+callback you pass in the document params, with a reason of
+`PasswordResponses.NEED_PASSWORD` or `INCORRECT_PASSWORD`, and waits for you to
+call it back with the password. Wire that through `RP.pdfjs.docParams()`
+(`src/js/pdfjs-loader.js` ~line 93) so both the ESM and UMD paths get it —
+`PasswordResponses` hangs off the library object, so reach it through
+`RP.pdfjs.lib` rather than a bare global. The rejected-promise path still needs
+handling for the case where the user cancels.
+
+**Two passwords, and they are not the same thing.** A *user* password gates
+opening; an *owner* password gates permissions (printing, editing, extraction)
+on a file that opens fine without it. pdf.js will open an owner-password file
+without asking. Decide what the app does about the permission flags: honouring
+them is not required of a local tool and enforcing them badly is worse than not
+enforcing them, but silently ignoring a "no printing" flag should at least be a
+recorded decision. Suggested: ignore them, note it in `README.md`.
+
+**The part that will actually bite, and it is already live.** pdf-lib is a
+*second* reader of the same bytes, and every call site already passes
+`{ ignoreEncryption: true }` — `exporter.js` lines 99, 110 and 200, `pages.js`
+169 and 584, `print.js` 226. That flag does not preserve encryption, it bypasses
+it: pdf-lib reads the file and writes an **unencrypted** one. So the save path
+will not throw on a protected drawing; it will quietly hand back a copy with the
+protection removed. Nothing in the UI says so today because nothing can open a
+protected file yet to find out — item 24 is what makes this reachable, so it has
+to be resolved as part of it rather than after. Pick one and be explicit:
+
+- Save the copy unencrypted and say so plainly in the toast and in `README.md`
+  ("markups are saved to an unprotected copy"), or
+- Refuse to save a protected drawing over itself and force a new copy, or
+- Re-encrypt on write, which pdf-lib does not support — so this means a
+  dependency, and is almost certainly out of scope.
+
+The first is probably right for a single-user offline tool, but it must not
+happen by accident: a user who opens a protected drawing and gets back an
+unprotected one without being told has been handed a compliance problem.
+
+**Prompting.** Password entry is a renderer modal, not a native dialog — a
+native `dialog.message` has no text input. Follow the existing modal pattern.
+Mask the field, allow three attempts, and offer cancel. Never write the password
+to `settings`, to the recents entry, or to the diagnostics log — `diag.js`
+streams to `%APPDATA%/Redline PDF/redline-pdf.log`, so make sure a failure path
+cannot log the parameters.
+
+**Also:** crash-recovery snapshots and autosave key off `docPath`. A recovered
+snapshot for a protected drawing will prompt for the password again on reopen,
+which is correct, but check it does not throw first.
+
+**Acceptance.** Open a user-password PDF → prompt, correct password opens it,
+wrong password re-prompts with a distinguishable message, cancel returns to the
+previous view with no blank tab left behind. Open a corrupt file → still the
+generic message, not a password prompt. Mark up a protected drawing and save →
+whatever behaviour you chose, clearly announced. `node test/verify.js` passes.
+
+---
+
+### 25. Polyline, area and perimeter measurement
+
+**Why.** `measure` is a single two-point segment. Real takeoff is a conduit run
+with bends and a room whose area you need — neither is expressible today.
+
+**Three things, sharing one geometry core:**
+
+1. **`polyline`** — a click-per-vertex markup, double-click or Escape to finish.
+   Non-measuring; the drawing cousin of `pen`, but with straight segments and
+   editable vertices.
+2. **`polylength`** — the same shape, labelled with its total length through
+   `store.formatLength()` (`src/js/store.js` ~line 291), which already applies
+   the calibration. Segment labels as well as a total is the nicer version.
+3. **`area`** — a closed polygon labelled with area *and* perimeter. Area needs
+   the shoelace formula and the calibration squared; get the unit right, since
+   `scale.unit` is linear (`ft`) and the label needs `ft²`.
+
+**Where the work lands.** Follow `measure` through the codebase — it is the
+model to copy, and it touches exactly the places these will:
+
+- `src/js/render.js` — a `case` in the draw switch (`measure` is at ~line 485),
+  one in the bbox switch (~line 39), one in hit-testing (~line 617), and handles
+  in the switch at ~line 564. `RP.geom.distToPolyline` already exists at
+  `src/js/util.js` ~line 199 and is what `pen` hit-tests with, so segment
+  picking is free. Area needs a point-in-polygon test for interior hits.
+- `src/js/exporter.js` — the matching `case` (measure is at ~line 384) drawing
+  through pdf-lib. Canvas and exporter must produce the same figure; that pair
+  drifting is a recurring bug in this codebase.
+- `src/js/tools.js` — multi-click creation is genuinely new. Every existing tool
+  is press-drag-release, so there is no in-progress state that survives a
+  pointer-up. That state has to live somewhere that a tab switch, a tool change,
+  Escape, and a document close all clear, or a half-drawn polygon leaks onto the
+  next drawing. Rubber-band the pending segment through the existing preview
+  path rather than adding a second one.
+- Undo: `checkpoint()` once when the shape is *committed*, not per vertex.
+  Per-vertex checkpoints would make Ctrl+Z walk backwards through a 30-vertex
+  polygon one click at a time. Backspace removing the last vertex mid-draw is
+  the right in-progress affordance.
+- Points go in `annot.points` as `[[x, y], ...]` in **PDF user space**, matching
+  `pen`. Never CSS pixels.
+
+**Tests.** `test/verify.js` has a `testGeometry()` (~line 582). Add: shoelace
+area against a known rectangle and a known triangle; a self-intersecting polygon
+(decide and document what it reports rather than returning a plausible wrong
+number); perimeter of a closed vs. open run; and area under a calibration,
+confirming the unit is squared. All of it is pure maths with no DOM, which is
+exactly what that harness is for.
+
+**Deliberately out of scope:** snapping, orthogonal constraint, and continuous
+chained dimensions. Ship the shapes first and see whether the drawings you
+actually measure want snapping.
+
+**Acceptance.** Draw a 3-segment run on a calibrated sheet → total length
+matches the sum of its parts measured individually. Draw a rectangle with the
+area tool over a known room → area matches width × height, perimeter matches.
+Save, reopen → both re-editable with their vertices intact. Export CSV →
+sensible values. Zoom, rotate the sheet 90°, save and reopen → geometry
+unchanged. `node test/verify.js` passes.
 
 ---
 

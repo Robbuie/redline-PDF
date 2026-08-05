@@ -12,6 +12,77 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.6.0] — 2026-08-05
+
+### Added
+
+- **A review status on every markup — open, closed or rejected.** New markups
+  start open. Set the status by right-clicking a markup on the drawing or a row
+  in the Markups panel, or from the properties dialog. A multiple selection is
+  set in one go, and `Ctrl+Z` steps back over the whole thing rather than one
+  markup at a time.
+- **A status filter in the Markups panel**, and a count that now reads *open of
+  total* — the number in the sidebar is what is left to deal with, not how many
+  markups the drawing has. Typing a status into the filter box matches on it
+  too. The filter, the sort and the text filter are now remembered per drawing,
+  so switching tabs no longer carries one drawing's filter onto another's list.
+- **Resolved markups are distinguishable on the sheet.** A closed markup draws
+  dimmed; a rejected one draws dimmed with a rule through it. Neither is
+  hidden — a punch-list item you cannot find is worse than one you cannot tell
+  the state of.
+- **Status in both exports.** The CSV gains a `Status` column and the PDF
+  report gains a status column plus a tally at the top of the first page. The
+  report is still ordered by page, because that is how a sheet set is walked.
+- The status-bar line for a multiple selection now reads "6 markups selected —
+  4 open, 2 closed" rather than just the count.
+
+### Changed
+
+- **A saved or printed drawing carries the status treatment.** Stamped markups
+  are dimmed and ruled the same way they are on screen, so a paper copy or a
+  PDF handed to somebody without Redline still says which items were dealt
+  with.
+- The embedded markup model is now **version 3**. The bump records that
+  `status` exists; nothing reads it to decide how to parse, because a missing
+  status is read as *open* regardless.
+
+### Fixed
+
+- **Reopening a drawing no longer shows every markup twice.** A save writes the
+  markups into the file two ways over: drawn into the page so that anyone
+  without Redline still sees them, and stored as the editable model so that you
+  can go on working. Opening the file drew both, so each markup appeared once
+  as itself and once baked into the drawing — where it could not be selected,
+  moved or deleted, and where it stayed put until the next save even after you
+  deleted the live one. The baked copy is now lifted back out as the file
+  opens, and what you see is the markups and nothing else.
+- **Typed text and callout text no longer save on their side.** A landscape
+  sheet that is stored upright and turned by the file (which is how most
+  drawings are plotted) had its text written into the page in the *stored*
+  orientation, so a note you typed across the sheet came out reading up the
+  side of it. Together with the duplicate above, that is what made a saved
+  markup look like it had been stamped twice, once wrong. Text, callout text
+  and measurement labels now read horizontally on paper at every rotation, in
+  the place they were put on screen.
+- **Switching the save mode to *new copy* after an overwrite asks where the
+  copy goes** instead of silently writing over the drawing. An overwrite was
+  recording the original as though it were the copy it had been given.
+
+### Compatibility
+
+- **Drawings marked up in 0.5 and earlier open with every markup reading as
+  open.** That is the honest reading of a review that predates the field.
+- **An older Redline build will not lose the statuses it cannot show.** 0.5
+  copies whole markup objects both when loading and when saving, so `status`
+  rides through its round trip untouched; the only thing it changes is the
+  version number, which walks back to 2. (The backlog assumed the field would
+  be dropped — it is not, and `test/verify.js` now covers the round trip.)
+- A status written by a *newer* build than this one is read as open rather than
+  discarded, so a markup can never become invisible or unlistable because of a
+  value this version has not heard of.
+
+---
+
 ## [0.5.1] — 2026-08-04
 
 ### Changed

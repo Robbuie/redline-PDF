@@ -197,6 +197,7 @@
         search: null,      // stashed search index and hits
         textsel: null,     // stashed standing area text selection
         compare: null,     // stashed compare run
+        markupList: null,  // stashed markup-list filter, sort and status
         pageSel: null,     // stashed Pages-panel selection
         el: null
       };
@@ -449,6 +450,7 @@
       if (RP.search && RP.search.stash) tab.search = RP.search.stash();
       if (RP.textsel && RP.textsel.stash) tab.textsel = RP.textsel.stash();
       if (RP.compare && RP.compare.stash) tab.compare = RP.compare.stash();
+      if (RP.sidebar && RP.sidebar.stash) tab.markupList = RP.sidebar.stash();
       if (RP.pages) tab.pageSel = { selection: new Set(RP.pages.selection), anchor: RP.pages.anchor };
     },
 
@@ -457,6 +459,7 @@
       if (RP.search && RP.search.unstash) RP.search.unstash(tab.search);
       if (RP.textsel && RP.textsel.unstash) RP.textsel.unstash(tab.textsel);
       if (RP.compare && RP.compare.unstash) RP.compare.unstash(tab.compare);
+      if (RP.sidebar && RP.sidebar.unstash) RP.sidebar.unstash(tab.markupList);
       if (RP.pages) {
         RP.pages.selection = new Set(tab.pageSel ? tab.pageSel.selection : []);
         RP.pages.anchor = tab.pageSel ? tab.pageSel.anchor : null;

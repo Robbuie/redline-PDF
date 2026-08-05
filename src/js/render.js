@@ -126,6 +126,53 @@
     return annot.type === 'callout' ? calloutBox(annot) : bbox(annot);
   }
 
+  // -------------------------------------------------------------------------
+  // Review status
+  //
+  // A resolved markup has to stay legible as a markup — a punch list is read
+  // against the drawing, and an item you cannot find is worse than one you
+  // cannot tell the state of. So status *dims*, it never hides: a closed or
+  // rejected markup drops to STATUS_FADE of its own opacity, and a rejected
+  // one additionally gets a rule through its bounding box so the two are
+  // distinguishable on the sheet and not only in the list.
+  //
+  // Both rules live here because the canvas and `exporter.js` have to produce
+  // the same picture, and that pair drifting is a recurring bug in this
+  // codebase. The strike is returned as a line in *PDF space* rather than
+  // drawn, so the exporter can stamp it directly and the canvas only has to
+  // convert the endpoints.
+  // -------------------------------------------------------------------------
+
+  const STATUS_FADE = 0.4;
+
+  /** The multiplier a markup's status applies to its own opacity. */
+  function statusAlpha(annot) {
+    return RP.statusOf(annot) === 'open' ? 1 : STATUS_FADE;
+  }
+
+  /** Whether this markup gets the rejected rule through it. */
+  function statusStruck(annot) {
+    return RP.statusOf(annot) === 'rejected';
+  }
+
+  /**
+   * The rejected rule, in PDF space. Its weight grows with the markup so it
+   * reads as a deliberate stroke over a cloud around half a sheet as well as
+   * over a two-line callout, and is clamped at both ends so it never becomes a
+   * hairline or a bar.
+   */
+  function statusStrikeLine(annot) {
+    const box = selectionRect(annot);
+    const y = box.y + box.h / 2;
+    return {
+      x1: box.x,
+      y1: y,
+      x2: box.x + box.w,
+      y2: y,
+      width: Math.max(1.5, Math.min(4, box.h * 0.03))
+    };
+  }
+
   // Callout text metrics. The inset is in *points* and is scaled at draw time;
   // measuring and drawing have to wrap at the same width or the box gets sized
   // for fewer lines than the text actually needs and the overflow lands under
@@ -206,12 +253,12 @@
   // Drawing
   // -------------------------------------------------------------------------
 
-  function strokeStyle(ctx, annot, viewport) {
+  function strokeStyle(ctx, annot, viewport, fade) {
     ctx.strokeStyle = annot.color || '#ff2f2f';
     ctx.lineWidth = Math.max(0.8, (annot.width || 2) * viewport.scale);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+    ctx.globalAlpha = (annot.opacity === undefined ? 1 : annot.opacity) * (fade === undefined ? 1 : fade);
   }
 
   function drawArrowHead(ctx, fromX, fromY, toX, toY, lineWidth) {
@@ -259,10 +306,13 @@
     ctx.closePath();
   }
 
-  function drawNoteIcon(ctx, x, y, color, opacity) {
+  /* `fade` is applied *after* the 0.5 floor, not before it: the floor exists so
+     a deliberately faint note icon is still clickable, and a closed note is
+     meant to recede. */
+  function drawNoteIcon(ctx, x, y, color, opacity, fade) {
     const s = NOTE_SIZE;
     ctx.save();
-    ctx.globalAlpha = opacity === undefined ? 1 : Math.max(0.5, opacity);
+    ctx.globalAlpha = (opacity === undefined ? 1 : Math.max(0.5, opacity)) * (fade === undefined ? 1 : fade);
     ctx.translate(x, y - s);
     // body
     ctx.fillStyle = color || '#ffcf3d';
@@ -298,7 +348,7 @@
     ctx.restore();
   }
 
-  function drawLabel(ctx, text, x, y, color) {
+  function drawLabel(ctx, text, x, y, color, fade) {
     ctx.save();
     ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
     const padX = 5;
@@ -306,7 +356,9 @@
     const metrics = ctx.measureText(text);
     const w = metrics.width + padX * 2;
     const h = 16;
-    ctx.globalAlpha = 1;
+    // Normally opaque so the reading stays legible over whatever it crosses;
+    // a resolved measurement recedes with the rest of its markup.
+    ctx.globalAlpha = fade === undefined ? 1 : fade;
     ctx.fillStyle = 'rgba(255,255,255,.92)';
     ctx.strokeStyle = color || '#ff2f2f';
     ctx.lineWidth = 1;
@@ -325,13 +377,21 @@
   function drawAnnotation(ctx, annot, viewport, opts) {
     const options = opts || {};
     ctx.save();
-    strokeStyle(ctx, annot, viewport);
+
+    /* Every case below sets its own alpha, and the type defaults differ — a
+       highlight lands at 0.4 where a line lands at 1 — so the status fade is
+       applied through this one helper rather than by overwriting
+       `annot.opacity`, which would have to know each of those defaults. */
+    const fade = statusAlpha(annot);
+    const alpha = (fallback) => (annot.opacity === undefined ? fallback : annot.opacity) * fade;
+
+    strokeStyle(ctx, annot, viewport, fade);
     ctx.fillStyle = annot.color || '#ff2f2f';
 
     switch (annot.type) {
       case 'highlight': {
         ctx.globalCompositeOperation = 'multiply';
-        ctx.globalAlpha = annot.opacity === undefined ? 0.4 : annot.opacity;
+        ctx.globalAlpha = alpha(0.4);
         ctx.fillStyle = annot.color || '#ffdd00';
         for (const rect of annot.rects || []) {
           const r = vpRect(viewport, rect);
@@ -349,7 +409,7 @@
          exporter so screen and paper agree. */
       case 'strikeout':
       case 'underline': {
-        ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+        ctx.globalAlpha = alpha(1);
         ctx.strokeStyle = annot.color || '#ff2f2f';
         ctx.lineCap = 'butt';
         ctx.setLineDash([]);
@@ -376,7 +436,7 @@
          because the text underneath is untouched and still selectable; see the
          note in CHANGELOG.md. */
       case 'cover': {
-        ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+        ctx.globalAlpha = alpha(1);
         ctx.fillStyle = annot.color || '#ffffff';
         const r = vpRect(viewport, { x: annot.x, y: annot.y, w: annot.w, h: annot.h });
         ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -415,9 +475,9 @@
       case 'rect': {
         const r = vpRect(viewport, annot);
         if (annot.fill) {
-          ctx.globalAlpha = (annot.opacity === undefined ? 1 : annot.opacity) * 0.25;
+          ctx.globalAlpha = alpha(1) * 0.25;
           ctx.fillRect(r.x, r.y, r.w, r.h);
-          ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+          ctx.globalAlpha = alpha(1);
         }
         ctx.strokeRect(r.x, r.y, r.w, r.h);
         break;
@@ -428,9 +488,9 @@
         ctx.beginPath();
         ctx.ellipse(r.x + r.w / 2, r.y + r.h / 2, Math.abs(r.w / 2), Math.abs(r.h / 2), 0, 0, Math.PI * 2);
         if (annot.fill) {
-          ctx.globalAlpha = (annot.opacity === undefined ? 1 : annot.opacity) * 0.25;
+          ctx.globalAlpha = alpha(1) * 0.25;
           ctx.fill();
-          ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+          ctx.globalAlpha = alpha(1);
         }
         ctx.stroke();
         break;
@@ -454,12 +514,12 @@
         ctx.stroke();
         drawArrowHead(ctx, best[0], best[1], tip[0], tip[1], ctx.lineWidth);
         ctx.save();
-        ctx.globalAlpha = (annot.opacity === undefined ? 1 : annot.opacity) * 0.9;
+        ctx.globalAlpha = alpha(1) * 0.9;
         ctx.fillStyle = 'rgba(255,255,255,.9)';
         ctx.fillRect(box.x, box.y, box.w, box.h);
         ctx.restore();
         ctx.strokeRect(box.x, box.y, box.w, box.h);
-        drawCalloutText(ctx, annot, box, viewport);
+        drawCalloutText(ctx, annot, box, viewport, fade);
         break;
       }
 
@@ -469,6 +529,7 @@
         ctx.font = fontSpec(annot, size);
         ctx.textBaseline = 'top';
         ctx.fillStyle = annot.color || '#ff2f2f';
+        ctx.globalAlpha = alpha(1);
         const lines = String(annot.text || '').split('\n');
         lines.forEach((line, i) => {
           ctx.fillText(line, origin[0], origin[1] + i * size * 1.25);
@@ -478,7 +539,7 @@
 
       case 'note': {
         const origin = vp(viewport, annot.x, annot.y);
-        drawNoteIcon(ctx, origin[0], origin[1], annot.color || '#ffcf3d', annot.opacity);
+        drawNoteIcon(ctx, origin[0], origin[1], annot.color || '#ffcf3d', annot.opacity, fade);
         break;
       }
 
@@ -500,13 +561,18 @@
         }
         const pdfLen = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
         const label = annot.label || RP.store.formatLength(pdfLen);
-        drawLabel(ctx, label, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 14, annot.color);
+        drawLabel(ctx, label, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 14, annot.color, fade);
         break;
       }
 
       default:
         break;
     }
+
+    // Drawn after the markup and at full opacity: the fade is what says
+    // "dealt with", and a rule that faded with it would be the one part of a
+    // rejected markup you could not read.
+    if (statusStruck(annot)) drawStatusStrike(ctx, annot, viewport);
 
     ctx.restore();
 
@@ -520,14 +586,16 @@
    * the box for, and a line that would not fit is dropped rather than drawn
    * below the box.
    */
-  function drawCalloutText(ctx, annot, box, viewport) {
+  function drawCalloutText(ctx, annot, box, viewport, fade) {
     const scale = viewport.scale;
     const fontSize = (annot.fontSize || 11) * scale;
     ctx.save();
     ctx.font = fontSpec(annot, fontSize);
     ctx.fillStyle = annot.textColor || DEFAULT_TEXT_COLOR;
     ctx.textBaseline = 'top';
-    ctx.globalAlpha = 1;
+    // The text sits on its own white box, so it is opaque regardless of the
+    // markup's opacity — but not regardless of its status.
+    ctx.globalAlpha = fade === undefined ? 1 : fade;
     const pad = CALLOUT_PAD * (scale || 1);
     const text = annot.text || '';
     const lines = wrapLines(text, Math.max(1, box.w - pad * 2), (s) => ctx.measureText(s).width);
@@ -537,6 +605,29 @@
       if (line) ctx.fillText(line, box.x + pad, y);
       y += fontSize * CALLOUT_LINE;
     }
+    ctx.restore();
+  }
+
+  /**
+   * The rejected rule. Endpoints come from `statusStrikeLine` in PDF space and
+   * are converted here, so this and the exporter's copy cannot disagree about
+   * where the line goes — only about which API draws it.
+   */
+  function drawStatusStrike(ctx, annot, viewport) {
+    const line = statusStrikeLine(annot);
+    const a = vp(viewport, line.x1, line.y1);
+    const b = vp(viewport, line.x2, line.y2);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = annot.color || '#ff2f2f';
+    ctx.lineWidth = Math.max(1, line.width * (viewport.scale || 1));
+    ctx.lineCap = 'butt';
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -737,6 +828,10 @@
     ruleWeight,
     calloutAnchor,
     calloutPart,
+    STATUS_FADE,
+    statusAlpha,
+    statusStruck,
+    statusStrikeLine,
     measureCalloutHeight,
     calloutTextWidth,
     fitCallout,

@@ -34,6 +34,32 @@
     measure: 'Measurement'
   };
 
+  /* Review state. A markup is 'open' until somebody says otherwise, and the
+     absence of the field means 'open' — that is what lets a drawing saved by
+     0.5, which had no concept of status, open here with every markup reading
+     as outstanding rather than as unset.
+
+     The order is the order the UI offers them in, so it is a list and not a
+     Set. */
+  const STATUSES = ['open', 'closed', 'rejected'];
+
+  const STATUS_LABELS = {
+    open: 'Open',
+    closed: 'Closed',
+    rejected: 'Rejected'
+  };
+
+  /**
+   * The status of a markup, normalised. Anything missing or unrecognised reads
+   * as 'open' — a file written by a future version with a status this build has
+   * never heard of must not draw as nothing, and must not be filtered out of
+   * the list where nobody would find it again.
+   */
+  function statusOf(annot) {
+    const value = annot && annot.status;
+    return STATUSES.includes(value) ? value : 'open';
+  }
+
   let nextStoreId = 1;
 
   function createStore() {
@@ -197,7 +223,8 @@
         created: Date.now(),
         modified: Date.now(),
         author: this.author || '',
-        note: ''
+        note: '',
+        status: 'open'
       }, annot);
       this.annotations.push(record);
       this.markDirty();
@@ -207,7 +234,14 @@
 
     /** Bulk insert without a checkpoint per item (used when loading a file). */
     load(list) {
-      this.annotations = (list || []).map((a) => Object.assign({ id: RP.uid('mk') }, a));
+      // `status` is normalised on the way in rather than read through
+      // `RP.statusOf` at every call site: a drawing saved before 0.6 has no
+      // status at all, and a file written by a later version could carry one
+      // this build does not know. Both have to end up as a value the filter,
+      // the renderer and the exporter can all agree on.
+      this.annotations = (list || []).map((a) => Object.assign(
+        { id: RP.uid('mk') }, a, { status: statusOf(a) }
+      ));
       this.history = [];
       this.future = [];
       this.selection.clear();
@@ -253,6 +287,41 @@
       return removed;
     },
 
+    /**
+     * Set the review status on one or many markups as a single undo step.
+     *
+     * Working through `update` per id would push a checkpoint each — Ctrl+Z
+     * after closing out a multi-select would then step back through the
+     * selection one markup at a time, which is not the action the user took.
+     */
+    setStatus(ids, status) {
+      /* A status this build does not know is refused rather than coerced.
+         `statusOf` normalises *reads* to 'open' so an unknown value can still
+         be drawn and listed, but doing the same on a write would let a typo
+         quietly reopen a closed markup — the one outcome a punch list cannot
+         afford. */
+      if (!STATUSES.includes(status)) return 0;
+      const next = status;
+      const set = new Set([].concat(ids));
+      const targets = this.annotations.filter((a) => set.has(a.id) && statusOf(a) !== next);
+      if (!targets.length) return 0;
+      this.checkpoint();
+      for (const annot of targets) {
+        annot.status = next;
+        annot.modified = Date.now();
+      }
+      this.markDirty();
+      this.emit('annots:changed', { reason: 'status' });
+      return targets.length;
+    },
+
+    /** How many of `list` sit at each status — the status bar's summary line. */
+    statusCounts(list) {
+      const counts = { open: 0, closed: 0, rejected: 0 };
+      for (const annot of list || this.annotations) counts[statusOf(annot)] += 1;
+      return counts;
+    },
+
     // -- selection ---------------------------------------------------------
 
     select(id, additive) {
@@ -296,10 +365,19 @@
       return value.toFixed(decimals) + ' ' + (this.scale.unit || '');
     },
 
-    /** Everything we persist inside the PDF so markups stay editable. */
+    /**
+     * Everything we persist inside the PDF so markups stay editable.
+     *
+     * Version 3 added `status`. The bump is a marker rather than a gate:
+     * nothing reads it to decide how to parse, because `load` normalises a
+     * missing status anyway. An older build reading one of these files keeps
+     * the field — it copies whole annotation objects both in and out — so a
+     * 0.5 round-trip preserves the statuses it cannot show, and only walks the
+     * version number back to 2.
+     */
     serialize() {
       return {
-        version: 2,
+        version: 3,
         app: 'redline-pdf',
         savedAt: Date.now(),
         scale: this.scale,
@@ -322,5 +400,12 @@
      document exists, has something valid to read. */
   RP.store = createStore();
   RP.TYPE_LABELS = TYPE_LABELS;
+
+  /* Status is read by render.js and exporter.js as well as by the UI, and both
+     of those must agree with the model about what an absent one means, so the
+     normaliser is shared rather than reimplemented per caller. */
+  RP.STATUSES = STATUSES;
+  RP.STATUS_LABELS = STATUS_LABELS;
+  RP.statusOf = statusOf;
 
 })(window.RP);

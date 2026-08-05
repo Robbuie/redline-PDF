@@ -1185,6 +1185,8 @@
       RP.menu.open(event.clientX, event.clientY, [
         ...textItems,
         hit ? { separator: true } : null,
+        ...(hit ? RP.app.statusMenuItems() : []),
+        hit ? { separator: true } : null,
         hit ? {
           label: 'Markup properties…',
           run: () => RP.props.open(hit)

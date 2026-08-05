@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.5.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.6.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -180,6 +180,28 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   await resolves the target against a different drawing. `App.save()` captures
   the store before the first await and hands it to both `resolveTarget` and
   `writeTo`.
+- **A file this app saved is split as it opens, not rendered as it stands.**
+  Every save writes the markups twice — stamped into the page content for other
+  viewers, and as the editable model in the catalog for this one. Rasterise the
+  file as it is *and* draw the model and every markup is on the sheet twice: the
+  baked copy cannot be selected, moved or deleted, and survives deleting the
+  live one right up until the next save. `RP.exporter.splitSaved` therefore
+  lifts the stamp back out in `App.loadDocument`, before pdf.js ever sees the
+  bytes, and the stripped result is both what gets rendered and what goes into
+  `store.baseBytes`. Those bytes carry no `RedlineMarkup` entry, so the next
+  save stamps from clean and stays idempotent. `test/verify.js` covers it.
+- **Text is stamped in the page's *displayed* orientation, everything else in
+  user space.** `/Rotate` is applied after the content stream, so a shape drawn
+  in user space turns with the page and stays where it was put — but a run of
+  text laid along +x reads left-to-right only at `/Rotate 0` and comes out on
+  its side on the landscape sheets drawings are plotted as. `exporter.pageFrame`
+  returns screen-right and screen-down as user-space vectors; `at`,
+  `screenTopLeft` and `screenSize` place text with them, and every `drawText`
+  passes `rotate: degrees(frame.angle)`. A callout also wraps to its
+  *displayed* width, because that is what the canvas wraps to. Three cases need
+  this — `text`, `callout` and the `measure` label — and `test/verify.js` reads
+  the stamped run back through pdf.js at all four angles, including a negative
+  control that the run really is turned in user space.
 - **Re-save must stay idempotent.** Every save embeds the markup model in the PDF
   catalog under `RedlineMarkup` *along with the object refs of everything that
   save stamped*; the next save strips those refs first. Break this and markups
@@ -324,6 +346,33 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   canvas and the exporter call it — an E-size sheet carries 3pt schedule text
   and 24pt titles on one page, and a fixed weight either obliterates the first
   or reads as a hairline under the second. The two callers must not drift.
+- **Review status normalises on read but not on write.** `RP.statusOf` maps a
+  missing or unrecognised status to `'open'`, because a drawing saved before 0.6
+  has no status at all and a file from a later build could carry one this
+  version has never heard of — either way the markup still has to draw and still
+  has to appear in the list. `store.setStatus` deliberately does *not* do the
+  same: it refuses a status not in `RP.STATUSES` and returns 0, since coercing a
+  bad write to `'open'` would silently reopen a closed item. It also checkpoints
+  **once** for the whole set, or `Ctrl+Z` after closing out a marquee's worth of
+  markups would walk back through them one at a time. `test/verify.js` covers
+  all of it.
+- **What a resolved markup looks like is defined once, in `render.js`.**
+  `statusAlpha` (the opacity multiplier) and `statusStrikeLine` (the rejected
+  rule, returned as a line in *PDF space*) are called by both the canvas and
+  `exporter.js`, because a printed punch list that disagrees with the one being
+  worked from is worse than no status on paper at all — and canvas/exporter
+  drift is a recurring bug here. The strike is drawn at full opacity over the
+  faded markup on purpose: the fade is the message, and a rule that faded with
+  it would be the one part of a rejected markup you could not read. Note that
+  each case in `drawAnnotation` sets its own alpha with its own default (a
+  highlight lands at 0.4, a line at 1), which is why the fade goes through the
+  local `alpha(fallback)` helper rather than by overwriting `annot.opacity`.
+- **The markup list's filter, sort and status are per *document*.** They live on
+  `RP.sidebar` as one shared instance, so they go through the
+  `stash()`/`unstash()` pair like search, compare and the Pages selection —
+  otherwise a filter set on one drawing narrows the next one's list the moment
+  you switch to it. `unstash` re-syncs the DOM controls itself: a restored
+  filter the box does not display is worse than one that did not restore.
 - **Compare is CPU-heavy and currently on the main thread.** Changes to
   `compare.js` should not add per-page work without measuring; moving the
   pipeline to a Web Worker is a tracked item in `PLAN.md`.

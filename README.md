@@ -62,6 +62,33 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.6
+
+**The markup list is a punch list.** Every markup now carries a review status —
+**open**, **closed** or **rejected** — and starts open. Set it from the
+right-click menu on the drawing or on a list row, or from the properties
+dialog; a multiple selection is closed out in one go and undoes in one step.
+
+The Markups panel gained a status filter and its count now reads *open of
+total*, so the number in the sidebar is what is left rather than what exists.
+Resolved items stay visible on the sheet — a closed markup dims, a rejected one
+dims and gets a rule through it — because an item you cannot find is worse than
+one you cannot tell the state of.
+
+Status travels with the drawing. It is stored in the same embedded model the
+markups are, so it survives a save, a reopen and a hand-off to another Redline
+user, and it appears as a column in both the CSV export and the PDF report
+(which also gains a tally at the top). A saved or printed sheet shows the same
+dimming and rules you were reviewing against, so a paper copy says which items
+were dealt with.
+
+Drawings marked up in 0.5 and earlier open with every markup reading as open,
+which is the honest answer for a review that predates the field. Going the
+other way, an older Redline build will open a 0.6 drawing, keep the statuses it
+cannot display, and hand them back intact on save.
+
+---
+
 ## What's new in 0.5
 
 **Selecting text asks what you want to do with it.** Dragging across text with
@@ -391,7 +418,9 @@ Two things happen on every save:
 - the full markup model is embedded in the document catalog under `RedlineMarkup`,
   along with the object references of everything this save stamped
 
-That last part is what makes re-editing and idempotent re-saving work.
+That last part is what makes re-editing and idempotent re-saving work. Review
+status rides in the same model, so it round-trips with everything else; the
+model is at version 3 as of 0.6, and a missing status is read as *open*.
 
 ---
 

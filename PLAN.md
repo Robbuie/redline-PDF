@@ -1,5 +1,18 @@
 # Roadmap
 
+## Done — v0.6
+
+- **Markup status** — open / closed / rejected on every markup, set from the
+  right-click menu on the drawing or the list, or from the properties dialog;
+  a multiple selection is set in one gesture and one undo step. Status filter
+  and an *open of total* count in the Markups panel, a `Status` column in the
+  CSV and the PDF report, and a tally in the report header
+- Resolved markups dim rather than hide, and a rejected one gets a rule through
+  it — on screen, in a saved file and on a print, from one shared rule in
+  `render.js` that `exporter.js` also calls
+- The markup list's filter, sort and status are per document now, stashed on
+  the tab like search and compare
+
 ## Done — v0.4
 
 - **Tabs.** Several drawings open at once, each with its own store, undo
@@ -108,8 +121,6 @@ stored as embedded images so they export cleanly.
 - Markup layers with show/hide, so trade markups can be toggled independently
 
 **Review workflow**
-- Status on each markup (open / closed / rejected) with a filter, so the markup
-  list works as a real punch list
 - Import/export a markup-only file (`.rpmk`) to send comments without the drawing
 - Merge two reviewers' markup files onto the same drawing
 

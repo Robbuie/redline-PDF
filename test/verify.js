@@ -118,7 +118,13 @@ function sampleAnnotations() {
     { page: 0, type: 'strikeout', color: '#ff2f2f', opacity: 1, rects: [{ x: 60, y: 660, w: 180, h: 12 }], text: 'SUPERSEDED' },
     { page: 0, type: 'underline', color: '#2f8fff', opacity: 1, rects: [{ x: 60, y: 630, w: 140, h: 12 }, { x: 60, y: 612, w: 90, h: 12 }], text: 'see note 4' },
     { page: 1, type: 'cover', color: '#ffffff', opacity: 1, x: 420, y: 640, w: 120, h: 30 }
-  ].map((a, i) => Object.assign({ id: 'mk' + i, created: Date.now(), modified: Date.now(), author: 'Tester', note: a.note || '' }, a));
+  ].map((a, i) => Object.assign({
+    id: 'mk' + i, created: Date.now(), modified: Date.now(), author: 'Tester', note: a.note || '',
+    // A resolved and a rejected item in the sample set, so the export path
+    // actually draws the fade and the rejected rule rather than only the
+    // default case. Most stay open, which is also the shape of a real review.
+    status: i === 3 ? 'closed' : (i === 7 ? 'rejected' : 'open')
+  }, a));
 }
 
 // --- tests ------------------------------------------------------------------
@@ -153,6 +159,13 @@ async function testExport() {
     embedded ? embedded.annotations.length + ' markups recovered' : 'nothing recovered');
   check('measurement scale round-trips',
     !!embedded && embedded.scale && embedded.scale.realLength === 7.5);
+  // Set a markup closed, save, reopen — it has to still be closed, or the
+  // punch list resets itself every time the drawing is handed over.
+  check('review status round-trips through a save',
+    !!embedded &&
+    embedded.annotations.filter((a) => a.status === 'closed').length === 1 &&
+    embedded.annotations.filter((a) => a.status === 'rejected').length === 1,
+    embedded ? JSON.stringify(RP.store.statusCounts(embedded.annotations)) : 'nothing recovered');
   check('content stream refs recorded for idempotent re-save',
     !!embedded && embedded.contentRefs && Object.keys(embedded.contentRefs).length === 2);
 
@@ -178,6 +191,9 @@ async function testExport() {
   check('CSV has a row per markup', countCsvRecords(csv) === RP.store.annotations.length + 1,
     countCsvRecords(csv) + ' records incl. header');
   check('CSV escapes multi-line text', csv.includes('"VERIFY ON SITE'));
+  check('CSV carries a status column',
+    csv.split('\r\n')[0].split(',')[3] === 'Status' &&
+    /(^|,)Closed(,|$)/m.test(csv) && /(^|,)Rejected(,|$)/m.test(csv));
 
   // Anything we write has to be readable by a normal PDF engine, not just ours.
   const pdfjs = await loadPdfjs();
@@ -626,6 +642,156 @@ function testGeometry() {
   check('calibrated measurement formatting', RP.store.formatLength(144) === '6.00 m', RP.store.formatLength(144));
   RP.store.scale = null;
   check('uncalibrated falls back to paper inches', RP.store.formatLength(72).startsWith('1.00 in'));
+}
+
+/* ---------------------------------------------------------------------------
+   Review status
+
+   The failure this guards is compatibility in both directions. A drawing saved
+   before 0.6 has no `status` at all, and it must open with every markup reading
+   as outstanding — not as unset, not filtered out of the list where nobody
+   would find it again. And a file this build writes has to survive being opened
+   by an older one, which knows nothing about the field.
+
+   The other half is the pair that always drifts in this codebase: the canvas
+   and the exporter agreeing on what a resolved markup looks like.
+   --------------------------------------------------------------------------- */
+function testMarkupStatus() {
+  console.log('\nMarkup status');
+
+  check('an absent status reads as open', RP.statusOf({ type: 'rect' }) === 'open');
+  check('an empty annotation reads as open', RP.statusOf(null) === 'open');
+  // A file from a later version could carry a status this build has no case
+  // for. Drawing nothing, or hiding it from the list, would lose the markup.
+  check('an unknown status falls back to open',
+    RP.statusOf({ status: 'deferred' }) === 'open', 'deferred -> ' + RP.statusOf({ status: 'deferred' }));
+  check('a real status is kept', RP.statusOf({ status: 'rejected' }) === 'rejected');
+
+  const store = RP.createStore();
+  const saved = RP.store;
+  RP.store = store;
+
+  const fresh = store.add({ page: 0, type: 'rect', x: 0, y: 0, w: 10, h: 10 });
+  check('a new markup starts open', fresh.status === 'open');
+
+  // The 0.5 case: markups arriving from a file that predates the field.
+  store.load([
+    { page: 0, type: 'rect', x: 0, y: 0, w: 10, h: 10 },
+    { page: 0, type: 'cloud', x: 0, y: 0, w: 10, h: 10, status: 'closed' },
+    { page: 0, type: 'note', x: 0, y: 0, status: 'nonsense' }
+  ]);
+  check('markups saved before 0.6 load as open', RP.statusOf(store.annotations[0]) === 'open');
+  check('a saved status survives loading', store.annotations[1].status === 'closed');
+  check('a nonsense status is normalised on load', store.annotations[2].status === 'open');
+
+  // One undo step for a whole selection, not one per markup.
+  const ids = store.annotations.map((a) => a.id);
+  const depth = store.history.length;
+  const changed = store.setStatus(ids, 'closed');
+  check('setStatus reports how many it moved', changed === 2, changed + ' of 3 (one was already closed)');
+  check('closing out a selection is a single undo step',
+    store.history.length === depth + 1, store.history.length - depth + ' checkpoints');
+  store.undo();
+  check('undo restores every status at once',
+    store.annotations.map((a) => a.status).join(',') === 'open,closed,open',
+    store.annotations.map((a) => a.status).join(','));
+  /* Reads coerce an unknown status to 'open' so the markup still draws and
+     still lists. Writes must not: coercing here would let a typo reopen a
+     closed item, which is the one thing a punch list cannot survive. */
+  const before = store.annotations[1].status;
+  const depthBefore = store.history.length;
+  check('setStatus refuses a status that does not exist',
+    store.setStatus(ids, 'banana') === 0 &&
+    store.annotations[1].status === before &&
+    store.history.length === depthBefore,
+    'annotation 2 stayed ' + store.annotations[1].status);
+
+  store.setStatus([ids[0]], 'rejected');
+  const counts = store.statusCounts();
+  check('status counts tally', counts.open === 1 && counts.closed === 1 && counts.rejected === 1,
+    JSON.stringify(counts));
+
+  const payload = store.serialize();
+  check('the embedded model declares version 3', payload.version === 3, 'version ' + payload.version);
+  check('status is part of the embedded model',
+    payload.annotations.every((a) => typeof a.status === 'string'));
+
+  /* Why an older build does not lose this: `load` and `serialize` both copy
+     whole annotation objects, so a field 0.5 has never heard of rides through
+     its round trip untouched. Only the version number walks back to 2. The
+     BACKLOG entry guessed the field would be dropped; it is not, and the
+     changelog says so on the strength of this check. */
+  const roundTripped = { id: 'x', page: 0, type: 'rect', status: 'rejected', futureField: 42 };
+  store.load([roundTripped]);
+  const out = store.serialize().annotations[0];
+  check('an unknown field survives a load/serialize round trip',
+    out.futureField === 42 && out.status === 'rejected');
+
+  // --- the shared rendering rule -------------------------------------------
+
+  const open = { type: 'rect', x: 100, y: 200, w: 200, h: 80, status: 'open' };
+  const closed = Object.assign({}, open, { status: 'closed' });
+  const rejected = Object.assign({}, open, { status: 'rejected' });
+
+  check('an open markup is not faded', RP.render.statusAlpha(open) === 1);
+  check('a closed markup is faded', RP.render.statusAlpha(closed) === RP.render.STATUS_FADE);
+  check('a rejected markup is faded too', RP.render.statusAlpha(rejected) === RP.render.STATUS_FADE);
+  check('only a rejected markup is struck',
+    !RP.render.statusStruck(open) && !RP.render.statusStruck(closed) && RP.render.statusStruck(rejected));
+
+  // The canvas and the exporter both draw this line; it is defined once, in
+  // PDF space, so the two cannot disagree about where it goes.
+  const strike = RP.render.statusStrikeLine(rejected);
+  check('the rejected rule spans the markup and sits on its middle',
+    strike.x1 === 100 && strike.x2 === 300 && strike.y1 === 240 && strike.y2 === 240,
+    JSON.stringify(strike));
+  check('the rule weight is clamped at both ends',
+    RP.render.statusStrikeLine({ type: 'rect', x: 0, y: 0, w: 10, h: 2 }).width === 1.5 &&
+    RP.render.statusStrikeLine({ type: 'rect', x: 0, y: 0, w: 10, h: 4000 }).width === 4);
+  // A callout is struck through its box, not through the bounding box that
+  // also contains the arrow tip — the same rect the selection chrome wraps.
+  const callout = { type: 'callout', x: 300, y: 400, w: 100, h: 40, tipX: 50, tipY: 50, status: 'rejected' };
+  check('a callout is struck through its box, not its leader',
+    RP.render.statusStrikeLine(callout).x1 === 300 &&
+    RP.render.statusStrikeLine(callout).x2 === 400);
+
+  // --- the markup list ------------------------------------------------------
+
+  store.load([
+    { page: 0, type: 'rect', x: 0, y: 0, w: 10, h: 10, note: 'alpha' },
+    { page: 0, type: 'cloud', x: 0, y: 0, w: 10, h: 10, note: 'beta', status: 'closed' },
+    { page: 1, type: 'cloud', x: 0, y: 0, w: 10, h: 10, note: 'gamma', status: 'rejected' }
+  ]);
+  RP.sidebar.status = 'all';
+  RP.sidebar.filter = '';
+  check('the list shows everything by default', RP.sidebar.visibleAnnotations().length === 3);
+  RP.sidebar.status = 'open';
+  check('the status filter narrows the list',
+    RP.sidebar.visibleAnnotations().length === 1 &&
+    RP.sidebar.visibleAnnotations()[0].note === 'alpha');
+  RP.sidebar.status = 'all';
+  RP.sidebar.filter = 'rejected';
+  check('the text filter can match on status',
+    RP.sidebar.visibleAnnotations().length === 1 &&
+    RP.sidebar.visibleAnnotations()[0].note === 'gamma');
+  // ...but the status must not have been folded into the row's own text, or it
+  // would be printed twice on screen to be typeable once.
+  check('status is not folded into the row description',
+    !/rejected/i.test(RP.sidebar.describe(store.annotations[2])),
+    RP.sidebar.describe(store.annotations[2]));
+
+  /* The leak the stash pair exists to stop: a filter set on one drawing must
+     not narrow another one's list the moment you switch to it. */
+  const stashed = RP.sidebar.stash();
+  RP.sidebar.unstash(null);
+  check('a new tab starts with an unfiltered list',
+    RP.sidebar.status === 'all' && RP.sidebar.filter === '' && RP.sidebar.sort === 'page');
+  RP.sidebar.unstash(stashed);
+  check('switching back restores the list state',
+    RP.sidebar.status === 'all' && RP.sidebar.filter === 'rejected');
+  RP.sidebar.unstash(null);
+
+  RP.store = saved;
 }
 
 /**
@@ -2168,6 +2334,135 @@ async function testSaveTargets() {
     /id="stSaveMode"[\s\S]{0,200}title="[^"]*click/i.test(html));
 }
 
+/* ---------------------------------------------------------------------------
+   Reopening a drawing this app saved
+
+   A save writes the markups twice over — stamped into the page content for
+   other viewers, and as the editable model in the catalog for this one. Open
+   such a file and rasterise it as it stands and every markup is on the sheet
+   twice: once live, once baked in where nothing can select, move or delete it.
+   `splitSaved` is what stops that, and it has to hand back both halves.
+   --------------------------------------------------------------------------- */
+async function testReopen() {
+  console.log('\nReopening a saved drawing');
+
+  const source = await makeSourcePdf();
+  RP.store.docBytes = source;
+  RP.store.docName = 'sheet.pdf';
+  RP.store.scale = null;
+  RP.store.annotations = sampleAnnotations();
+
+  const streamsPerPage = async (bytes) => {
+    const doc = await PDFLib.PDFDocument.load(bytes);
+    return doc.getPages().map((page) => {
+      const contents = page.node.get(PDFLib.PDFName.of('Contents'));
+      return contents && contents.asArray ? contents.asArray().length : 1;
+    });
+  };
+
+  const saved = await RP.exporter.buildPdf({});
+  const plain = await streamsPerPage(source);
+  const stamped = await streamsPerPage(saved);
+  check('a save really does stamp the pages it is being split back apart from',
+    JSON.stringify(stamped) !== JSON.stringify(plain),
+    JSON.stringify(plain) + ' -> ' + JSON.stringify(stamped));
+
+  const split = await RP.exporter.splitSaved(saved);
+  check('the editable model comes back off a saved file',
+    !!split.model && split.model.annotations.length === RP.store.annotations.length,
+    split.model ? split.model.annotations.length + ' markups' : 'nothing recovered');
+  check('the drawing handed to pdf.js has the stamp taken back out of it',
+    JSON.stringify(await streamsPerPage(split.bytes)) === JSON.stringify(plain),
+    JSON.stringify(await streamsPerPage(split.bytes)) + ' vs ' + JSON.stringify(plain));
+  check('and carries no markup model of its own',
+    (await RP.exporter.readEmbeddedMarkup(split.bytes)) === null);
+
+  // Those bytes are what the next save builds from, so they must stamp exactly
+  // once — the same as a save straight off the untouched drawing.
+  RP.store.docBytes = split.bytes;
+  RP.store.annotations = split.model.annotations;
+  check('saving what was reopened stamps each page once, not twice',
+    JSON.stringify(await streamsPerPage(await RP.exporter.buildPdf({}))) === JSON.stringify(stamped),
+    JSON.stringify(await streamsPerPage(await RP.exporter.buildPdf({}))) + ' vs ' + JSON.stringify(stamped));
+
+  // A drawing nobody has marked up yet is the common case and must cost
+  // nothing: the same buffer comes straight back.
+  const untouched = await RP.exporter.splitSaved(source);
+  check('a file this app never saved is handed back untouched',
+    untouched.model === null && untouched.bytes === source);
+}
+
+/* ---------------------------------------------------------------------------
+   Stamping onto a rotated sheet
+
+   `/Rotate` is applied after the content stream, so a shape drawn in user
+   space turns with the page and stays where it was put. Text does not: a run
+   laid along +x reads left-to-right only on an unturned sheet, and comes out
+   on its side on the landscape sheets drawings are plotted as. What the reader
+   then sees is the markup twice — the live one upright and the stamped one
+   lying on its side beside it.
+   --------------------------------------------------------------------------- */
+async function testRotatedStamp() {
+  console.log('\nStamping onto a rotated sheet');
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) { console.log('  (pdfjs-dist not installed — skipped)'); return; }
+
+  const SIZE = 14;
+  const ORIGIN = { x: 120, y: 600 };
+  const upright = [];
+  const placed = [];
+  const turnedInUserSpace = [];
+
+  for (const angle of [0, 90, 180, 270]) {
+    const doc = await PDFLib.PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.setRotation(PDFLib.degrees(angle));
+
+    RP.store.docBytes = await doc.save();
+    RP.store.docName = 'rotated.pdf';
+    RP.store.scale = null;
+    RP.store.annotations = [{
+      id: 'rot', created: Date.now(), modified: Date.now(), author: 'Tester', note: '', status: 'open',
+      page: 0, type: 'text', color: '#ff2f2f', fontSize: SIZE, opacity: 1,
+      x: ORIGIN.x, y: ORIGIN.y, text: 'SIDEWAYS'
+    }];
+
+    const saved = await RP.exporter.buildPdf({});
+    const parsed = await pdfjs.getDocument({
+      data: new Uint8Array(saved), useWorkerFetch: false, isEvalSupported: false
+    }).promise;
+    const pageProxy = await parsed.getPage(1);
+    const viewport = pageProxy.getViewport({ scale: 1, rotation: pageProxy.rotate });
+    const content = await pageProxy.getTextContent();
+    const item = content.items.find((it) => (it.str || '').includes('SIDEWAYS'));
+    if (!item) { check('the stamped text is in the page at ' + angle + '°', false); continue; }
+
+    // Where the run ends up on screen, and which way it runs.
+    const device = pdfjs.Util.transform(viewport.transform, item.transform);
+    if (Math.abs(device[1]) < 0.01 && device[0] > 0) upright.push(angle);
+
+    /* The canvas hangs the first line from `annot.x, annot.y` with
+       `textBaseline: 'top'`, so the baseline sits 0.85 of the size below it —
+       down the *screen*, whichever way the sheet is turned. */
+    const top = viewport.convertToViewportPoint(ORIGIN.x, ORIGIN.y);
+    if (Math.abs(device[4] - top[0]) < 0.5 && Math.abs(device[5] - (top[1] + SIZE * 0.85)) < 0.5) {
+      placed.push(angle);
+    }
+
+    // The negative control: on a turned sheet the run must genuinely be laid
+    // at an angle in user space. Drawn upright there — which is what pdf-lib
+    // does if nobody passes `rotate` — it would read sideways on screen.
+    if (Math.abs(item.transform[0]) < 0.01) turnedInUserSpace.push(angle);
+  }
+
+  check('stamped text reads horizontally at every /Rotate',
+    upright.join(',') === '0,90,180,270', 'upright at ' + upright.join(', ') + '°');
+  check('and lands where the canvas draws it',
+    placed.join(',') === '0,90,180,270', 'placed at ' + placed.join(', ') + '°');
+  check('a quarter-turned sheet really is stamped turned, not upright',
+    turnedInUserSpace.join(',') === '90,270', 'turned at ' + turnedInUserSpace.join(', ') + '°');
+}
+
 /** Read the sheet label back out of a page, to prove content moved with it. */
 async function pageLabel(bytes, index) {
   const pdfjs = await loadPdfjs();
@@ -2184,6 +2479,7 @@ async function pageLabel(bytes, index) {
     testChrome();
     testNativeAnnotations();
     testGeometry();
+    testMarkupStatus();
     testHighlightGeometry();
     testTextSelection();
     testCalloutText();
@@ -2196,6 +2492,8 @@ async function pageLabel(bytes, index) {
     testPackaging();
     await testSaveTargets();
     await testExport();
+    await testReopen();
+    await testRotatedStamp();
     await testPageManagement();
     await testPrinting();
   } catch (err) {

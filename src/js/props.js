@@ -35,6 +35,7 @@
 
       const body = RP.el('div', { class: 'modal-body' });
       body.appendChild(this.factsTable(annot));
+      body.appendChild(this.statusSection(annot));
       body.appendChild(this.styleSection(annot));
       const type = this.typeSection(annot);
       if (type) body.appendChild(type);
@@ -100,6 +101,31 @@
           RP.el('span', { class: 'props-key', text: label }),
           RP.el('span', { class: 'props-val', text: value })
         ]))
+      ]);
+    },
+
+    /**
+     * Review status. Above the appearance controls on purpose: what state an
+     * item is in is a bigger question than what colour it is, and this dialog
+     * is reached from a right-click on a markup somebody is working through.
+     *
+     * It goes through `store.setStatus` rather than `patch`, so the edit is the
+     * same single undo step whether it is made here or from the menu.
+     */
+    statusSection(annot) {
+      const select = RP.el('select', {}, RP.STATUSES.map((key) => (
+        RP.el('option', { value: key, text: RP.STATUS_LABELS[key] })
+      )));
+      select.value = RP.statusOf(annot);
+      select.addEventListener('change', () => {
+        if (this.annotId) RP.store.setStatus(this.annotId, select.value);
+      });
+
+      return RP.el('section', {}, [
+        RP.el('h3', { text: 'Review' }),
+        RP.el('label', { class: 'opt field props-field' }, [
+          RP.el('span', { text: 'Status' }), select
+        ])
       ]);
     },
 
