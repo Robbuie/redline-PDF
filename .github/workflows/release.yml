@@ -72,15 +72,40 @@ jobs:
       # latest.yml is the whole point of the release and the easiest thing to
       # lose silently, so its absence stops the run here rather than three
       # weeks later on somebody's second machine.
-      - name: Update metadata must exist
+      - name: Update metadata must exist and must name real files
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ ! -f dist/latest.yml ]; then
             echo "::error::electron-builder did not write dist/latest.yml"
             ls -la dist || true
             exit 1
           fi
           cat dist/latest.yml
+
+          # latest.yml names the file the updater will fetch, and that name has
+          # to survive being uploaded. electron-builder turns spaces in an
+          # artifact name into hyphens when it writes the url; GitHub turns them
+          # into dots when it takes the asset. So a productName with a space in
+          # it — "Redline PDF" — produced a latest.yml pointing at
+          # Redline-PDF-Setup-x.y.z.exe beside an asset called
+          # Redline.PDF.Setup.x.y.z.exe, and the app reported that the update
+          # could not be downloaded, 404. The artifactName settings keep spaces
+          # out of the filenames; this checks that they really are out, because
+          # the failure only shows up on a machine running the older build.
+          missing=0
+          while read -r url; do
+            [ -n "$url" ] || continue
+            if [ ! -f "dist/$url" ]; then
+              echo "::error::latest.yml points at '$url', which is not a file in dist/"
+              missing=1
+            fi
+          done < <(sed -nE 's/^[[:space:]]*-?[[:space:]]*url:[[:space:]]*(.+)$/\1/p' dist/latest.yml)
+          if [ "$missing" -ne 0 ]; then
+            ls -la dist
+            exit 1
+          fi
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')

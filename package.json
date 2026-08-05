@@ -1,7 +1,7 @@
 {
   "name": "redline-pdf",
   "productName": "Redline PDF",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Fast PDF markup tool for electrical drawings - highlight, redline, measure, and compare revisions.",
   "main": "main.js",
   "author": "Robbuie",
@@ -88,9 +88,10 @@
       ]
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "Redline-PDF-${version}-portable.${ext}"
     },
     "nsis": {
+      "artifactName": "Redline-PDF-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

@@ -12,6 +12,22 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.7.3] — 2026-08-05
+
+### Fixed
+
+- **The update downloads now.** 0.7.2 put a correct `latest.yml` on the
+  release, and the installer it named was not there — the app found the
+  update, went to fetch it and got a 404. The product name has a space in it,
+  and the two ends of the pipe disagreed about what to do with it:
+  electron-builder writes the download name with the spaces turned into
+  hyphens, GitHub turns them into dots when it takes the upload. The installer
+  and the portable exe are now built with names that have no spaces in them at
+  all, so there is nothing to disagree about, and the release build checks that
+  every file `latest.yml` names is really there before it publishes.
+
+---
+
 ## [0.7.2] — 2026-08-05
 
 ### Fixed

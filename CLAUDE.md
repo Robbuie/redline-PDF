@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.7.2. See `README.md` for user-facing behaviour,
+PDF. Current version 0.7.3. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -596,6 +596,20 @@ class of problem; keep it.
 The `publish` block in `package.json` stays even though `gh` does the
 uploading: it is what makes electron-builder generate the update metadata at
 all. `--publish never` suppresses the upload, not `latest.yml`.
+
+**No artifact filename may contain a space, which is why `nsis.artifactName`
+and `portable.artifactName` are spelled out rather than left to
+`${productName}`.** `productName` is "Redline PDF", and the two ends of the
+pipe sanitise that space differently: electron-builder writes the `url` in
+`latest.yml` with spaces turned to **hyphens**, GitHub renames an uploaded
+asset with spaces turned to **dots**. So the release carried
+`Redline.PDF.Setup.0.7.2.exe` while `latest.yml` asked for
+`Redline-PDF-Setup-0.7.2.exe`, and the app found the update and then 404'd
+fetching it. electron-builder's own publisher hid this by uploading under its
+own hyphenated name; moving the upload to `gh` exposed it. The release job now
+checks every `url` in `latest.yml` against the files in `dist/` and fails if
+one is not there — that check is what makes this class of mismatch a red run
+instead of a broken second machine.
 
 **`publish.releaseType` must stay `"release"`.** electron-builder defaults it to
 `"draft"`, and a draft is not a release as far as anything outside the web UI is
