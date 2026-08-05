@@ -3,11 +3,24 @@
 #   npm version patch     (bumps package.json and creates the v0.3.1 tag)
 #   git push --follow-tags
 #
-# electron-builder publishes the NSIS installer, the portable exe, the
-# .blockmap files that make updates differential, and latest.yml — which is
-# the file electron-updater in the shipped app reads. The GitHub provider
-# infers owner/repo from the origin remote, so there is nothing to configure
-# here; the default GITHUB_TOKEN is enough because the repo is public.
+# electron-builder BUILDS the NSIS installer, the portable exe, the .blockmap
+# files that make updates differential, and latest.yml — which is the file
+# electron-updater in the shipped app reads. It does not publish them: `gh`
+# does, in one call, at the end.
+#
+# That split is deliberate. electron-builder's own publisher runs one per
+# target, and with two Windows targets both of them raced to POST the same
+# release: the v0.7.1 log has "creating GitHub release reason=release doesn't
+# exist tag=v0.7.1" twice over. One wins, the loser's uploads are orphaned
+# against a release object that no longer exists, and latest.yml — uploaded
+# last of all — never arrives. The step still exits 0, so the run is green and
+# the release page shows a lone .blockmap. Without latest.yml the shipped
+# updater has nothing to read and reports that it could not check for updates,
+# which is a long way from where the fault actually is.
+#
+# Uploading explicitly also means the asset list is something this file states
+# rather than something a publisher decides, and a missing latest.yml fails
+# the run instead of shipping a release nobody can update to.
 name: release
 
 on:
@@ -50,7 +63,51 @@ jobs:
       - name: Headless checks
         run: node test/verify.js
 
-      - name: Build and publish
-        run: npx electron-builder --win --publish always
+      # `--publish never` still writes latest.yml, because the `publish` block
+      # in package.json is what turns update-metadata generation on — not this
+      # flag. Do not remove that block thinking it is now unused.
+      - name: Build
+        run: npx electron-builder --win --publish never
+
+      # latest.yml is the whole point of the release and the easiest thing to
+      # lose silently, so its absence stops the run here rather than three
+      # weeks later on somebody's second machine.
+      - name: Update metadata must exist
+        shell: bash
+        run: |
+          if [ ! -f dist/latest.yml ]; then
+            echo "::error::electron-builder did not write dist/latest.yml"
+            ls -la dist || true
+            exit 1
+          fi
+          cat dist/latest.yml
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Artifact names carry the product name, so they contain spaces —
+          # collected into an array rather than left to word-splitting. The
+          # uninstaller sits in dist/ too and is not a release asset.
+          assets=()
+          for file in dist/*.exe; do
+            case "$file" in *__uninstaller*) continue ;; esac
+            assets+=("$file")
+          done
+          for file in dist/*.blockmap dist/latest.yml; do
+            assets+=("$file")
+          done
+          printf 'publishing %s\n' "${assets[@]}"
+
+          # A re-run of the same tag replaces the release rather than failing
+          # on it. The tag itself is left alone: it is already pushed, and
+          # deleting it here would delete the thing that triggered this run.
+          gh release delete "$GITHUB_REF_NAME" --yes || true
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Redline PDF ${GITHUB_REF_NAME#v} — see CHANGELOG.md" \
+            "${assets[@]}"

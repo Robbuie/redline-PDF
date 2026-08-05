@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.7.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.7.2. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -573,13 +573,29 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
 ## Releasing
 
 `npm version patch && git push --follow-tags` is the whole release. The `v*`
-tag runs `.github/workflows/release.yml`, which re-runs `test/verify.js` and
-then has electron-builder publish the NSIS installer, the portable exe, the
-`.blockmap` files and `latest.yml` to a GitHub release. The GitHub publish
-provider infers owner and repo from the `origin` remote, so there is nothing to
-configure — but the repo has to stay **public**, or the shipped updater would
+tag runs `.github/workflows/release.yml`, which re-runs `test/verify.js`, has
+electron-builder *build* the NSIS installer, the portable exe, the `.blockmap`
+files and `latest.yml`, and then uploads all of them with `gh release create`
+in one step. The repo has to stay **public**, or the shipped updater would
 need a token baked into it to read releases. `verify.yml` runs the headless
 checks on every push.
+
+**electron-builder builds; `gh` publishes. Do not hand publishing back to
+electron-builder.** Its publisher runs once per build target, and with two
+Windows targets both instances raced to create the same release — the v0.7.1
+log carries `creating GitHub release reason=release doesn't exist tag=v0.7.1`
+twice. One wins, the other's uploads are orphaned against a release object
+that has gone, and `latest.yml`, which goes up last, never arrives at all. The
+step still exits 0. What you get is a green run and a release page holding one
+`.blockmap`, while the shipped updater — which reads `latest.yml` and nothing
+else — says it *could not check for updates*. Nothing in that chain points at
+the publisher, which is what made it expensive. The workflow now fails outright
+if `dist/latest.yml` is missing, and that check is the tripwire for this whole
+class of problem; keep it.
+
+The `publish` block in `package.json` stays even though `gh` does the
+uploading: it is what makes electron-builder generate the update metadata at
+all. `--publish never` suppresses the upload, not `latest.yml`.
 
 **`publish.releaseType` must stay `"release"`.** electron-builder defaults it to
 `"draft"`, and a draft is not a release as far as anything outside the web UI is

@@ -12,6 +12,22 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.7.2] — 2026-08-05
+
+### Fixed
+
+- **The release actually carries the installer now.** 0.7.1 fixed the drafts
+  but the release it produced held nothing except a `.blockmap` — the two
+  installers and `latest.yml` went missing, and the build reported success
+  the whole time. electron-builder runs one publisher per build target, and
+  the two Windows targets raced each other to create the same release; the
+  loser's uploads went to a release that no longer existed. Releases are now
+  built first and uploaded once, in a single step, and a build that fails to
+  produce `latest.yml` stops rather than shipping a release nothing can
+  update to.
+
+---
+
 ## [0.7.1] — 2026-08-05
 
 ### Fixed
