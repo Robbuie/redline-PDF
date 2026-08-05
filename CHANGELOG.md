@@ -12,6 +12,21 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.7.1] — 2026-08-05
+
+### Fixed
+
+- **"Check for updates" now finds the update.** Every release the build
+  workflow has ever made was published as a *draft*, which is
+  electron-builder's default and not something the workflow said out loud. A
+  draft has no `latest.yml` anyone can download and does not count as the
+  latest release, so the shipped updater asked GitHub for the newest published
+  version, was told there wasn't one, and reported that it could not check —
+  on a repository whose releases page looked perfectly full. Releases are now
+  published outright.
+
+---
+
 ## [0.7.0] — 2026-08-05
 
 ### Changed

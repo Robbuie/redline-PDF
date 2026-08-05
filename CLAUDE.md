@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.7.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.7.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -580,6 +580,18 @@ provider infers owner and repo from the `origin` remote, so there is nothing to
 configure — but the repo has to stay **public**, or the shipped updater would
 need a token baked into it to read releases. `verify.yml` runs the headless
 checks on every push.
+
+**`publish.releaseType` must stay `"release"`.** electron-builder defaults it to
+`"draft"`, and a draft is not a release as far as anything outside the web UI is
+concerned: its assets are not downloadable anonymously, and `/releases/latest`
+does not resolve to it, so `electron-updater` asks for the newest published
+version, is told there is none, and reports that it *could not check for
+updates*. The releases page looks full the whole time, which is what makes this
+one expensive to diagnose — the tags are in the atom feed whether a release
+exists or not, so a feed listing `v0.7.0` proves only that the tag was pushed.
+Every release up to 0.7.0 was published this way and none of them was ever
+installable by the updater. If drafts appear on the releases page again, this
+setting is what regressed.
 
 Before tagging, `CHANGELOG.md` needs the entry for what is going out and its
 heading needs the real date — `npm version` bumps `package.json` and the lock
