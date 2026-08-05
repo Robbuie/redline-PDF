@@ -795,6 +795,95 @@ function testMarkupStatus() {
 }
 
 /**
+ * Arming a tool.
+ *
+ * A markup tool is a one-shot: it draws one markup and hands back to Select.
+ * The behaviour this replaced left the tool armed, so the click meant to
+ * select the callout you had just drawn started a second one on top of it.
+ *
+ * Arming the armed tool toggles a lock, for the runs of clouds and dimensions
+ * where the one-shot would be the annoyance instead. Two things have to hold:
+ * a *finished* markup is what hands the tool back — a drag too small to become
+ * one must leave the tool where it was — and Select itself is never locked.
+ */
+function testToolArming() {
+  console.log('\nTool arming');
+
+  const T = RP.tools;
+  const wasStore = RP.store;
+  RP.store = RP.createStore();
+
+  T.setTool('select');
+  T.setTool('callout');
+  check('arming a tool from Select does not lock it', T.tool === 'callout' && !T.sticky);
+
+  T.afterCreate();
+  check('one markup hands the tool back to Select', T.tool === 'select');
+
+  T.setTool('callout');
+  T.setTool('callout');
+  check('arming the armed tool locks it on', T.tool === 'callout' && T.sticky === true);
+
+  T.afterCreate();
+  T.afterCreate();
+  check('a locked tool stays armed across markups', T.tool === 'callout' && T.sticky === true);
+
+  T.setTool('callout');
+  check('arming it once more unlocks it, so it cannot get stuck', !T.sticky);
+
+  T.setTool('callout');
+  T.setTool('rect');
+  check('picking a different tool drops the lock', T.tool === 'rect' && !T.sticky);
+
+  // Select is where a one-shot lands, so locking it would mean nothing and a
+  // second press on it must not quietly turn the lock on for the next tool.
+  T.setTool('select');
+  T.setTool('select');
+  check('Select never locks', T.tool === 'select' && !T.sticky);
+
+  T.afterCreate();
+  check('afterCreate stands down under Select', T.tool === 'select' && !T.sticky);
+
+  T.setTool('select');
+  RP.store = wasStore;
+
+  // --- wiring ---------------------------------------------------------------
+  const tools = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+
+  // A draft that came out under the minimum size returns *before* the markup
+  // is added; the hand-back has to sit after that, or a slipped click disarms
+  // the tool you were about to use.
+  check('a draft too small to become a markup leaves the tool armed',
+    /finishDraft\(drag\)[\s\S]*?RP\.store\.add\(draft\)[\s\S]{0,600}?this\.afterCreate\(\);/.test(tools));
+  // Text and callout defer to `closeInlineText` instead, because the toolbar's
+  // typography group goes away the moment the tool stops being text-ish.
+  check('a callout hands back only once its text is committed',
+    /if \(made\) this\.afterCreate\(\);/.test(tools)
+    && /openInlineText\(drag\.record[^\n]*\);\s*\n\s*return;/.test(tools));
+  check('a locked tool looks different from a merely armed one',
+    /\.tools \.tbtn\.locked::after/.test(css));
+
+  // The typography controls are part of the edit. Clicking one blurs the
+  // editor, and committing on that blur would close the markup before the
+  // control's `change` ever fired — the restyle would land on nothing.
+  check('the editor survives a click onto the typography controls',
+    /closest\('#textOptsGroup'\)\) return;/.test(tools));
+  check('the markup being typed into is what the controls restyle',
+    /this\.inlineEdit \? this\.inlineEdit\.annot : null/.test(tools));
+  // Re-fitting off `annot.text` would size the box to what it held *before*
+  // this edit, which on a callout being created is the empty string.
+  check('a live callout is re-fitted to the text in the editor',
+    /annot === live \? this\.inlineText\.value : annot\.text/.test(tools));
+  check('and the editor is re-placed to the box it now has',
+    /this\.placeInlineText\(\);\s*\n\s*this\.inlineText\.focus\(\);/.test(tools));
+  // Double-clicking a callout to re-word it happens under Select, where the
+  // group would otherwise be hidden.
+  check('the typography group is up for as long as an editor is',
+    /this\.tool === 'callout' \|\| !!this\.inlineEdit/.test(tools));
+}
+
+/**
  * A callout's box is sized from its text, so the sizing and the drawing have
  * to wrap identically. They did not: the box was measured in points against a
  * 4pt inset while the canvas wrapped in pixels against a *fixed* 4px one, so
@@ -2482,6 +2571,7 @@ async function pageLabel(bytes, index) {
     testMarkupStatus();
     testHighlightGeometry();
     testTextSelection();
+    testToolArming();
     testCalloutText();
     testCompareMaths();
     testCompareGuards();

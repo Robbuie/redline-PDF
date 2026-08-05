@@ -387,6 +387,17 @@ the same spot; drag the leader line to move the whole callout; drag the arrow
 handle to re-aim it. The box resizes without disturbing the arrow, and grows to
 fit whatever you type.
 
+A tool draws **one** markup and hands back to Select, so the click you make
+next selects what you just drew instead of starting another one. For a run of
+clouds or dimensions, **double-click the tool button** (or press its shortcut
+twice) to lock it on — it's underlined while locked, and stays armed until you
+pick another tool or press **Esc**.
+
+While you're typing a text or callout, **Enter** finishes it and **Shift+Enter**
+gives you a new line; **Esc** throws it away. The typography controls work
+while you type, so you can change the typeface or size mid-callout and watch
+the box re-fit.
+
 Double-click any markup to attach or edit a comment. Double-click a text or
 callout markup to edit its text. Hold **Shift** while drawing to constrain lines
 to 45° steps and boxes to squares.

@@ -81,6 +81,9 @@
         ['Delete', 'Delete the selection'],
         ['Shift+drag', 'Constrain, or add to the selection'],
         ['Double-click', 'Edit a markup’s text or comment'],
+        ['Enter', 'Finish the text or callout being typed'],
+        ['Shift+Enter', 'New line inside a text or callout'],
+        ['Double-click a tool', 'Lock it on — it draws one markup otherwise'],
         ['Right-click', 'Context menu'],
         ['Esc', 'Clear the selection and return to Select']
       ]

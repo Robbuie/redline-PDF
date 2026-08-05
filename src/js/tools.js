@@ -10,6 +10,8 @@
 
   const Tools = {
     tool: 'select',
+    sticky: false,          // armed tool stays armed instead of drawing once
+    inlineEdit: null,       // {record, pdf, annot} while the text editor is up
     style: {
       color: '#ff2f2f',
       highlightColor: '#ffdd00',
@@ -100,12 +102,35 @@
       this.initInlineText();
     },
 
-    setTool(tool) {
+    /**
+     * Arm a tool.
+     *
+     * A markup tool is a **one-shot**: it draws one markup and hands back to
+     * Select — see `afterCreate`. Most marking up is one cloud here, one
+     * callout there, and the tool that stayed armed meant the click that was
+     * meant to select what you had just drawn drew another one instead.
+     *
+     * Arming the tool that is *already* armed **toggles the lock**, so a
+     * locked tool stays armed for as many markups as you want. That is the CAD
+     * convention, and it is what a double-click on a toolbar button does — its
+     * second click re-arms the same tool. Pressing the tool's shortcut twice
+     * does the same thing, so the keyboard is not shut out of it. Select is
+     * never locked; the concept means nothing there.
+     */
+    setTool(tool, opts) {
+      const lock = opts && 'sticky' in opts
+        ? !!opts.sticky
+        : (tool !== 'select' && this.tool === tool && !this.sticky);
+      this.sticky = lock;
       this.tool = tool;
       document.body.dataset.tool = tool;
       // Tool buttons are matched by `data-tool` wherever they sit, because the
       // navigation tools live up in the view group rather than in #toolGroup.
-      RP.$$('.tbtn.tool[data-tool]').forEach((btn) => btn.classList.toggle('active', btn.dataset.tool === tool));
+      RP.$$('.tbtn.tool[data-tool]').forEach((btn) => {
+        const on = btn.dataset.tool === tool;
+        btn.classList.toggle('active', on);
+        btn.classList.toggle('locked', on && lock);
+      });
       if (tool !== 'select') RP.store.clearSelection();
       this.closeNotePopup();
       this.syncHighlightMode();
@@ -115,19 +140,7 @@
       if (group) group.hidden = tool !== 'highlight';
       if (sep) sep.hidden = tool !== 'highlight';
 
-      // Typography only means something for the two markups that carry text.
-      const textish = tool === 'text' || tool === 'callout';
-      const textGroup = RP.$('#textOptsGroup');
-      const textSep = RP.$('#textOptsSep');
-      if (textGroup) textGroup.hidden = !textish;
-      if (textSep) textSep.hidden = !textish;
-      if (textGroup) {
-        // The callout's own text sits on white; a typewriter note is the
-        // markup itself and takes the markup colour, so the swatch is only
-        // meaningful for callouts.
-        const colourField = textGroup.querySelector('#textColor');
-        if (colourField && colourField.parentNode) colourField.parentNode.hidden = tool !== 'callout';
-      }
+      this.syncTextOpts();
       if (tool === 'highlight') {
         RP.status(this.highlightMode === 'text'
           ? 'Drag across text to highlight it — hold Shift for a box'
@@ -139,8 +152,50 @@
       } else if (tool === 'zoomrect') {
         RP.status('Drag a box around what you want to see — click to zoom in a step. Esc returns to Select');
       }
+      // Locking is invisible otherwise: the button looks the same as an armed
+      // one until the second markup you did not expect appears.
+      if (lock) RP.status('Locked on — this tool stays armed until you pick another. Esc returns to Select');
 
       RP.bus.emit('tool:changed', tool);
+    },
+
+    /**
+     * Hand back to Select once a tool has produced a markup.
+     *
+     * Called by everything that finishes creating one, never by the drag code
+     * itself — a drag that came out too small to become a markup must leave
+     * the tool where it was, or a slipped click disarms the tool you were
+     * about to use.
+     */
+    afterCreate() {
+      if (this.sticky || this.tool === 'select') return;
+      this.setTool('select', { sticky: false });
+    },
+
+    /**
+     * Show the typography group when it has something to act on.
+     *
+     * Typography only means anything for the two markups that carry text, so
+     * the group follows the tool — but it also has to be up for as long as an
+     * inline editor is open, whatever the tool is. Double-clicking a callout
+     * to re-word it happens under Select, and the controls being the thing
+     * that changes its typeface is no use if they are hidden while you are in
+     * it. Called by `setTool` and by both ends of the inline editor.
+     */
+    syncTextOpts() {
+      const editing = this.inlineEdit ? this.inlineEdit.annot : null;
+      const textish = this.tool === 'text' || this.tool === 'callout' || !!this.inlineEdit;
+      const textGroup = RP.$('#textOptsGroup');
+      const textSep = RP.$('#textOptsSep');
+      if (textSep) textSep.hidden = !textish;
+      if (!textGroup) return;
+      textGroup.hidden = !textish;
+      // The callout's own text sits on white; a typewriter note is the markup
+      // itself and takes the markup colour, so the swatch is only meaningful
+      // for callouts. What is being edited outranks what is armed.
+      const calloutish = editing ? editing.type === 'callout' : this.tool === 'callout';
+      const colourField = textGroup.querySelector('#textColor');
+      if (colourField && colourField.parentNode) colourField.parentNode.hidden = !calloutish;
     },
 
     /** Shift temporarily flips whichever highlight mode is selected. */
@@ -154,24 +209,49 @@
      * Typography defaults for the next text or callout. Changing these also
      * restyles the current selection, the way picking a colour does — you have
      * a markup selected and you are looking at the control that describes it.
+     *
+     * The markup under an open inline editor counts as the selection. It is
+     * plainly what the toolbar is describing, and a callout being created is
+     * not in `store.selected()` at all — without this the controls would look
+     * live while you typed and do nothing until the text had been committed
+     * and the markup selected again.
      */
     setTextStyle(patch) {
       Object.assign(this.style, patch);
       RP.$$('#fontBold').forEach((btn) => btn.classList.toggle('active', !!this.style.bold));
 
-      const targets = RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
-      if (!targets.length) return;
-      RP.store.checkpoint();
-      for (const annot of targets) {
-        // A typewriter note has no box and no separate text colour: its own
-        // colour *is* its text, so the swatch would fight the style group.
-        const fields = annot.type === 'callout' ? patch : omit(patch, 'textColor');
-        Object.assign(annot, fields);
-        if (annot.type === 'callout') Object.assign(annot, RP.render.fitCallout(annot));
+      const live = this.inlineEdit ? this.inlineEdit.annot : null;
+      const targets = live
+        ? [live]
+        : RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
+
+      if (targets.length) {
+        RP.store.checkpoint();
+        for (const annot of targets) {
+          // A typewriter note has no box and no separate text colour: its own
+          // colour *is* its text, so the swatch would fight the style group.
+          const fields = annot.type === 'callout' ? patch : omit(patch, 'textColor');
+          Object.assign(annot, fields);
+          // The box has to be fitted to the text in the *editor*, not to
+          // `annot.text`, which is still whatever it held before this edit
+          // began — on a callout being created that is the empty string.
+          if (annot.type === 'callout') {
+            const text = annot === live ? this.inlineText.value : annot.text;
+            Object.assign(annot, RP.render.fitCallout(Object.assign({}, annot, { text })));
+          }
+        }
+        RP.store.markDirty();
+        RP.store.emit('annots:changed', { reason: 'style' });
+        RP.viewer.redrawAll();
       }
-      RP.store.markDirty();
-      RP.store.emit('annots:changed', { reason: 'style' });
-      RP.viewer.redrawAll();
+
+      // Re-place even when nothing was restyled: a typewriter markup that has
+      // not been committed yet has no annotation to patch, but the editor
+      // still has to show the face the text is about to be drawn in.
+      if (this.inlineEdit) {
+        this.placeInlineText();
+        this.inlineText.focus();
+      }
     },
 
     setHighlightMode(mode) {
@@ -749,7 +829,15 @@
       const annot = RP.store.add(draft);
 
       if (draft.type === 'measure') this.afterMeasure(annot);
-      if (draft.type === 'callout') this.openInlineText(drag.record, [annot.x, annot.y + annot.h], annot);
+      if (draft.type === 'callout') {
+        // A callout hands back to Select in `closeInlineText` instead of here.
+        // The toolbar's typography group is hidden the moment the tool stops
+        // being text-ish, and it has to stay reachable while the text is being
+        // typed — changing the typeface mid-callout is the point of it.
+        this.openInlineText(drag.record, [annot.x, annot.y + annot.h], annot);
+        return;
+      }
+      this.afterCreate();
     },
 
     /** Preview of the in-progress markup + the marquee rectangle. */
@@ -954,7 +1042,7 @@
         note: ''
       });
       RP.store.select(annot.id);
-      this.setTool('select');
+      this.afterCreate();
       RP.viewer.redrawPage(record.index);
       this.openNotePopup(annot);
     },
@@ -1011,10 +1099,28 @@
     initInlineText() {
       this.inlineText = RP.$('#inlineText');
       this.inlineText.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); this.closeInlineText(true); }
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.closeInlineText(); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.closeInlineText(true); }
+        // Enter finishes the markup; Shift+Enter is the line break. A callout is
+        // a label on a drawing, not a paragraph — one line is the common case
+        // and reaching for the mouse to end every one of them is the cost of
+        // making the rare multi-line case free. Ctrl/Cmd+Enter still commits so
+        // the old habit does not break. Alt is let through to the browser.
+        if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.isComposing) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.closeInlineText();
+        }
       });
-      this.inlineText.addEventListener('blur', () => this.closeInlineText());
+      // Clicking away commits — except onto the typography controls, which are
+      // part of the edit rather than a click out of it. Reaching for the
+      // typeface dropdown mid-callout would otherwise commit the markup and
+      // then restyle nothing, because by the time `change` fires the editor
+      // has closed and the markup is no longer selected.
+      this.inlineText.addEventListener('blur', (e) => {
+        const to = e.relatedTarget;
+        if (to && to.closest && to.closest('#textOptsGroup')) return;
+        this.closeInlineText();
+      });
       this.inlineText.addEventListener('input', () => {
         this.inlineText.style.height = 'auto';
         this.inlineText.style.height = this.inlineText.scrollHeight + 'px';
@@ -1024,6 +1130,31 @@
     openInlineText(record, pdf, existing) {
       const editor = this.inlineText;
       this.inlineEdit = { record, pdf, annot: existing || null };
+      editor.hidden = false;
+      editor.value = existing ? (existing.text || '') : '';
+      this.placeInlineText();
+      this.syncTextOpts();
+      RP.bus.emit('textedit:changed', existing || null);
+      setTimeout(() => {
+        editor.focus();
+        editor.style.height = editor.scrollHeight + 'px';
+      }, 10);
+    },
+
+    /**
+     * Put the editor over the markup it is editing, in that markup's face.
+     *
+     * Split out of `openInlineText` because the typography controls now work
+     * *during* an edit: changing the typeface or the size re-fits a callout's
+     * box, and an editor left at the old geometry would go on wrapping to a
+     * width the box no longer has — which is the same class of bug as a fixed
+     * pixel inset, and shows up as a line escaping below the box.
+     */
+    placeInlineText() {
+      const edit = this.inlineEdit;
+      if (!edit) return;
+      const editor = this.inlineText;
+      const { record, pdf, annot } = edit;
 
       // A callout box is *drawn* as the axis-aligned `vpRect` of its four
       // corners, so the editor has to be placed from that same rect. Converting
@@ -1031,33 +1162,27 @@
       // page: on a sheet with its own /Rotate — which is most plotted landscape
       // drawings — that corner lands somewhere else entirely and the editor
       // opens away from the box it belongs to, usually below it.
-      const rect = existing && existing.type === 'callout'
-        ? RP.render.vpRect(record.viewport, RP.render.calloutBox(existing))
+      const rect = annot && annot.type === 'callout'
+        ? RP.render.vpRect(record.viewport, RP.render.calloutBox(annot))
         : null;
       const view = rect ? [rect.x, rect.y] : record.viewport.convertToViewportPoint(pdf[0], pdf[1]);
 
       const box = record.container.getBoundingClientRect();
-      const size = (existing ? existing.fontSize : this.style.fontSize) * RP.viewer.zoom;
-      editor.hidden = false;
-      editor.style.left = (box.left + view[0]) + 'px';
-      editor.style.top = (box.top + view[1]) + 'px';
       // Typed in the face it will be drawn in, or the wrap you see while typing
       // is not the wrap you get. Set piecemeal rather than through the `font`
       // shorthand, which would reset the line-height the stylesheet sets.
-      const face = existing || this.style;
-      editor.style.fontSize = size + 'px';
+      const face = annot || this.style;
+      editor.style.left = (box.left + view[0]) + 'px';
+      editor.style.top = (box.top + view[1]) + 'px';
+      editor.style.fontSize = ((face.fontSize || this.style.fontSize) * RP.viewer.zoom) + 'px';
       editor.style.fontFamily = RP.render.FONT_STACKS[face.fontFamily || 'sans'] || RP.render.FONT_STACKS.sans;
       editor.style.fontWeight = face.bold ? '700' : '400';
-      editor.style.color = existing
-        ? (existing.type === 'callout' ? (existing.textColor || RP.render.DEFAULT_TEXT_COLOR) : (existing.color || '#16181d'))
+      editor.style.color = annot
+        ? (annot.type === 'callout' ? (annot.textColor || RP.render.DEFAULT_TEXT_COLOR) : (annot.color || '#16181d'))
         : this.style.color;
       editor.style.width = (rect ? rect.w : 220) + 'px';
-      editor.value = existing ? (existing.text || '') : '';
       editor.style.height = 'auto';
-      setTimeout(() => {
-        editor.focus();
-        editor.style.height = editor.scrollHeight + 'px';
-      }, 10);
+      editor.style.height = editor.scrollHeight + 'px';
     },
 
     closeInlineText(discard) {
@@ -1067,22 +1192,30 @@
       const value = editor.value;
       editor.hidden = true;
       this.inlineEdit = null;
+      this.syncTextOpts();
+      RP.bus.emit('textedit:changed', null);
 
       if (discard) { RP.viewer.redrawPage(record.index); return; }
 
+      let made = false;
       if (annot) {
         if (!value.trim() && annot.type === 'callout') {
+          // Nothing was typed, so nothing was made — leave the tool armed, or
+          // an abandoned callout costs you a trip back to the toolbar.
           RP.store.remove(annot.id);
         } else if (annot.type === 'callout') {
+          made = true;
           // Grow or shrink the box to fit, keeping its top edge where it is.
           // Measured off a copy: mutating first would land the new text in the
           // checkpoint `update` takes, and undo would not bring the old text back.
           const fit = RP.render.fitCallout(Object.assign({}, annot, { text: value }));
           RP.store.update(annot.id, Object.assign({ text: value }, fit));
         } else {
+          made = true;
           RP.store.update(annot.id, { text: value });
         }
       } else if (value.trim()) {
+        made = true;
         RP.store.add({
           page: record.index,
           type: 'text',
@@ -1097,6 +1230,11 @@
         });
       }
       RP.viewer.redrawPage(record.index);
+      // Text and callout hand the tool back from here rather than from
+      // `finishDraft`, so that the typography group survives the whole edit.
+      // A double-click re-edit reaches this too and is harmless: the tool is
+      // Select by then, and `afterCreate` stands down for it.
+      if (made) this.afterCreate();
     },
 
     onDoubleClick(event) {
@@ -1200,8 +1338,8 @@
         { separator: true },
         {
           label: 'Add note here',
-          // `createNote` already returns to the select tool and opens the
-          // editor, so this is the whole gesture.
+          // `createNote` hands the tool back and opens the editor itself, so
+          // this is the whole gesture.
           run: () => this.createNote(record, pdf)
         },
         { separator: true },

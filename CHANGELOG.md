@@ -12,6 +12,32 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.7.0] — 2026-08-05
+
+### Changed
+
+- **`Enter` now finishes a typewriter text or a callout**, instead of only
+  adding a line to it. `Shift+Enter` gives the line break. Most callouts on a
+  drawing are one line, and ending each one meant clicking away onto blank
+  paper — which, with a text tool still armed, started the next markup where
+  you clicked. `Ctrl+Enter` still commits, and `Esc` still cancels.
+- **A markup tool now draws one markup and hands back to Select.** Previously
+  it stayed armed, so the click meant to select the callout you had just drawn
+  started another one on top of it. A drag too small to become a markup leaves
+  the tool armed, so a slipped click costs nothing.
+- **Double-click a tool button to lock it on** for a run of clouds, dimensions
+  or notes — it then stays armed until you pick another tool or press `Esc`. A
+  locked tool is underlined on the toolbar. Pressing the tool's shortcut key
+  twice does the same thing, and pressing it again unlocks.
+
+### Added
+
+- **The typeface, size, bold and text colour controls now work while you are
+  typing.** Reaching for them mid-callout used to commit the markup and
+  restyle nothing. The box re-fits to the new face as you change it, and the
+  controls stay on the toolbar for the whole edit — including when you
+  double-click a finished callout to re-word it.
+
 ## [0.6.0] — 2026-08-05
 
 ### Added

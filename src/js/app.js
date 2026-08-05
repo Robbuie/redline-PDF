@@ -579,17 +579,25 @@
       textColor.value = RP.tools.style.textColor;
       textColor.addEventListener('input', () => RP.tools.setTextStyle({ textColor: textColor.value }));
 
-      // Selecting a markup pulls the controls onto it, so the toolbar always
-      // describes what you are looking at rather than what you last drew.
-      RP.bus.on('selection:changed', () => {
-        const picked = RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
-        if (picked.length !== 1) return;
-        const annot = picked[0];
+      // Selecting a markup — or opening its editor — pulls the controls onto
+      // it, so the toolbar always describes what you are looking at rather
+      // than what you last drew.
+      const showTextStyle = (annot) => {
+        if (!annot) return;
         fontFamily.value = annot.fontFamily || 'sans';
         fontSize.value = String(annot.fontSize || 12);
         fontBold.classList.toggle('active', !!annot.bold);
         if (annot.type === 'callout') textColor.value = annot.textColor || RP.render.DEFAULT_TEXT_COLOR;
+      };
+      RP.bus.on('selection:changed', () => {
+        // Not while an editor is open: it has already claimed the controls,
+        // and creating a callout clears the selection on the way in.
+        if (RP.tools.inlineEdit) return;
+        const picked = RP.store.selected().filter((a) => a.type === 'text' || a.type === 'callout');
+        if (picked.length !== 1) return;
+        showTextStyle(picked[0]);
       });
+      RP.bus.on('textedit:changed', showTextStyle);
 
       RP.$('#btnUndo').addEventListener('click', () => RP.store.undo());
       RP.$('#btnRedo').addEventListener('click', () => RP.store.redo());

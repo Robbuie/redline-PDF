@@ -230,6 +230,16 @@ kbd {
   color: #ff8f80;
 }
 .tools .tbtn.active b { color: #ff8f80; }
+
+/* A markup tool draws one markup and hands back to Select. Arming it twice
+   locks it on instead, and the two states have to be told apart at a glance —
+   otherwise the second markup you did not expect is the only way to find out. */
+.tools .tbtn.locked { position: relative; }
+.tools .tbtn.locked::after {
+  content: '';
+  position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px;
+  border-radius: 1px; background: currentColor;
+}
 body.theme-light .tbtn.active { color: var(--accent-dim); }
 body.theme-light .tools .tbtn.active b { color: var(--accent-dim); }
 

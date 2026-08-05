@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.6.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.7.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -457,6 +457,29 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   sibling, so markups keep their real colours — invert them and every redline
   comes back cyan. `test/verify.js` asserts the rule does not name
   `.annot-canvas`.
+- **A markup tool is a one-shot, and only a *finished* markup hands it back.**
+  `RP.tools.afterCreate()` returns to Select unless `tools.sticky` is set;
+  arming the already-armed tool toggles that lock. It is called from the
+  places that have actually produced something — `finishDraft` after
+  `store.add`, `createNote`, and `closeInlineText` when `made` is true — never
+  from the drag code, because `finishDraft` returns early for a drag under the
+  minimum size and disarming the tool there means a slipped click costs you a
+  trip back to the toolbar. Text and callout are the exception to "hand back
+  where you created it": they defer to `closeInlineText`, because `setTool`
+  hides the typography group the moment the tool stops being text-ish and it
+  has to stay reachable for the whole edit. `test/verify.js` covers all of it.
+- **The typography controls act on the markup under an open inline editor, not
+  on `store.selected()`.** A callout being created is not selected at all —
+  `setTool` cleared the selection on the way in — so without that branch in
+  `setTextStyle` the controls look live while you type and do nothing. Three
+  things hang off it and all three are load-bearing: the editor's `blur`
+  handler must let a click into `#textOptsGroup` through, or the markup commits
+  before the control's `change` ever fires; the re-fit must measure
+  `inlineText.value` rather than `annot.text`, which on a fresh callout is
+  still the empty string; and `placeInlineText` has to run afterwards, or the
+  editor keeps wrapping to a width the box no longer has. `syncTextOpts` is
+  what keeps the group up for the whole edit regardless of the armed tool,
+  since a double-click re-edit happens under Select.
 - **A callout's box is sized from its text, so sizing and drawing must wrap
   identically.** `RP.render.wrapLines` is the one wrapper; `measureCalloutHeight`
   runs it in points to size the box and `drawCalloutText` runs it in viewport
