@@ -1459,6 +1459,33 @@ function testChrome() {
   check('a glyph press yields to the browser instead of marqueeing',
     /RP\.clip\.isGlyph\(event\.target\)\)\s*\{[\s\S]{0,120}return;/.test(tools));
 
+  // --- layer rotation -------------------------------------------------------
+  // pdf.js sizes the text and annotation layers from `viewport.rawDims` — the
+  // unrotated viewBox — positions every child as a percentage of that box, and
+  // hands the rotation to CSS through `data-main-rotation`. Its own
+  // pdf_viewer.css carries the three transforms at the top level; this app
+  // mirrors those rules by hand instead of importing the sheet, so dropping
+  // them is a one-line regression with no visible error. What it produces is an
+  // upright text layer over a landscape sheet: the I-beam appears over blank
+  // paper, `overflow: clip` swallows the overhang, and a drag selects spans
+  // that are nowhere near the glyphs — which reads as a broken drawing.
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rotates = (selector, angle) =>
+    Array.from(rules.matchAll(/([^{}]+)\{([^{}]*)\}/g)).some(([, sel, body]) =>
+      sel.split(',').some((part) =>
+        part.trim() === '.page .' + selector + '[data-main-rotation="' + angle + '"]') &&
+      new RegExp('transform:\\s*rotate\\(' + angle + 'deg\\)').test(body));
+  for (const layer of ['text-layer', 'native-annots']) {
+    for (const angle of [90, 180, 270]) {
+      check('.' + layer + ' turns with the page at ' + angle + '°', rotates(layer, angle));
+    }
+    const rule = (rules.match(new RegExp('\\.page\\s+\\.' + layer + '\\s*\\{([^}]*)\\}')) || [])[1] || '';
+    // rotate() about the centre would swing the layer off the sheet entirely;
+    // the translate() in each transform assumes a top-left origin.
+    check('.' + layer + ' rotates about its top-left corner',
+      /transform-origin:\s*0\s+0/.test(rule));
+  }
+
   // --- recents --------------------------------------------------------------
   check('the recents pin/remove IPC exists on both sides',
     /ipcMain\.handle\(\s*'recents:pin'/.test(main) &&

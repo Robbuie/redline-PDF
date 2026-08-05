@@ -757,6 +757,28 @@ body.night .thumb canvas { filter: invert(1) hue-rotate(180deg); }
 .page .text-layer .markedContent { display: contents; }
 .page .text-layer ::selection { background: rgba(74, 168, 255, .5); }
 
+/* Rotation is the layer's job, not the span's, and these three rules are the
+   whole of it. pdf.js sizes both layers from `viewport.rawDims` — the *raw*
+   viewBox, never rotated — places every child as a percentage of that box, and
+   then stamps `data-main-rotation` on the container expecting the stylesheet to
+   turn it. Its own `pdf_viewer.css` carries these at the top level; because
+   this app mirrors those rules by hand rather than importing that sheet, they
+   have to be repeated here.
+
+   Leave them out and a sheet with its own `/Rotate` — which is most plotted
+   drawings — gets an upright text layer over a landscape page: `overflow: clip`
+   eats the overhang and everything left lands somewhere the glyphs are not. It
+   reads as an I-beam over blank paper and as highlights that select nothing,
+   which looks like a broken document rather than a missing CSS rule. The same
+   goes for `.native-annots`, where it costs link and popup hit targets.
+   `test/verify.js` covers both. */
+.page .text-layer[data-main-rotation="90"],
+.page .native-annots[data-main-rotation="90"] { transform: rotate(90deg) translateY(-100%); }
+.page .text-layer[data-main-rotation="180"],
+.page .native-annots[data-main-rotation="180"] { transform: rotate(180deg) translate(-100%, -100%); }
+.page .text-layer[data-main-rotation="270"],
+.page .native-annots[data-main-rotation="270"] { transform: rotate(270deg) translateX(-100%); }
+
 /* Native annotation layer — the comments, links and form fields that were
    already in the file. Like the text layer above, these rules mirror what
    pdf.js's own annotation_layer builds; they are scoped to .native-annots
