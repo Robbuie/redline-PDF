@@ -1,0 +1,112 @@
+# Changelog
+
+All notable changes to Redline PDF are recorded here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) — though while the
+app is pre-1.0 the minor number carries features and the patch number carries
+fixes.
+
+Entries describe what changed for *the person marking up a drawing*. Rationale
+a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
+`BACKLOG.md`.
+
+---
+
+## [0.5.0] — 2026-08-04
+
+Everything since the 0.4.1 release. Five separate pieces of work landed in
+between without a version of their own, so they are gathered here.
+
+### Added
+
+- **An action menu on text selection.** Selecting text with the highlight tool
+  no longer commits a highlight the instant you let go. The selection is
+  captured and a menu opens at the pointer offering what to do with it:
+  highlight, strike out, underline, cloud, box, cover, copy, copy with a page
+  reference, turn into a callout or a sticky note, or search the drawing for
+  it. Press Escape or click away to keep the selection and do nothing.
+- **A text-select tool (`X`).** Drag a box over any part of a sheet and every
+  word inside it is selected — no dragging along a line of text, no fighting
+  the order the plotter happened to write the entities in. The selection stays
+  put after you release, so `Ctrl+C` copies it and right-clicking it opens the
+  same action menu. Escape clears it.
+- **Three markup types:** strikeout, underline and cover. Strikeout and
+  underline follow the selected words the way a highlight does, and size their
+  rule from the text so a 3pt schedule note and a 24pt sheet title both read as
+  a pen stroke. Cover is an opaque filled box.
+- **Typography for text markups.** With the Text or Callout tool active the
+  toolbar gains a text group: typeface (sans, serif or mono), size, bold, and —
+  for callouts, whose text sits on its own box — the text colour. These set the
+  style for the next markup and restyle the current selection, the way the
+  colour swatches already do. The same controls sit in a markup's properties
+  dialog, and a callout's box regrows to fit whenever the face or size changes.
+  The three typefaces map onto fonts every PDF reader already has, so a saved
+  sheet reads the same everywhere without carrying a font with it.
+
+### Changed
+
+- Text copied off a drawing now comes out in **reading order** — rows top to
+  bottom, words left to right, columns kept apart — rather than in the order
+  the entities were plotted. See the note under *Fixed*.
+- `Ctrl+C` also copies a standing area selection, in addition to a live text
+  selection and the selected markups.
+- The right-click menu on a page gains the full set of text actions when the
+  click lands inside a standing selection.
+
+### Fixed
+
+- **Highlighting text swept in words from all over the sheet.** Highlight bars
+  were built from the raw rectangles the browser handed back for its selection,
+  and the browser selects in DOM order while PDF.js emits one span per run in
+  content-stream order — the order the plotter wrote the entities. Dragging
+  down two lines of a description block therefore highlighted every run written
+  in between, scattered across the drawing. The shape that was actually swept
+  is now rebuilt geometrically from the press point, growing a horizontal band
+  row by row and admitting only the runs that overlap it.
+- **Highlights stopped a third of a character short at each end.** PDF.js lays
+  a substituted face over a CAD stick font and stretches it to the recorded
+  advance, so only the run's total width is guaranteed to line up and the caret
+  lands slightly inside where it looks like it should. Measured on a plotted
+  sheet the bars came out inset 1 to 2.5pt at each end, which reads as the
+  first letter of a word refusing to highlight. Selections are now rounded out
+  to whole words before anything is measured.
+- **Copying text off a drawing produced a jumble.** The browser concatenates a
+  selection in DOM order and PDF.js emits one span per run in content-stream
+  order — the order the plotter wrote the entities — so a two-line description
+  block came back with its lines interleaved and runs from the far side of the
+  sheet dropped in between. Text is now rebuilt from the rows the selection
+  actually swept.
+- **The text layer did not turn with a rotated sheet.** Most plotted drawings
+  carry their own `/Rotate`. The text and annotation layers were left upright
+  over a landscape page, so the I-beam appeared over blank paper, highlights
+  selected nothing, and links and comment bubbles could not be clicked — which
+  reads as a broken file rather than as three missing CSS rules.
+- **Clicking a thumbnail could open the sheet before the one clicked.** Page
+  tops were measured with `offsetTop`, which is relative to the offsetParent
+  rather than to the scroller, so any positioned element appearing in between
+  shifted every page top at once. Navigation now measures against the scroller
+  itself, clamps to the real scroll extent, and — because a smooth scroll is an
+  animation that a relayout can move the target under — checks where it landed
+  afterwards, correcting a landing that is a whole page out and recording the
+  geometry it saw in the diagnostics log. A scroll of your own mid-flight
+  outranks the correction.
+- **A callout's inline editor opened away from its box on a rotated sheet.** A
+  callout is drawn as the axis-aligned rect of its four corners, but the editor
+  was anchored by converting the single top-left PDF corner, which only agrees
+  at `/Rotate 0`. On a plotted landscape sheet the text appeared to start below
+  the box and snap into place on commit — the committed render had been right
+  all along.
+
+### Notes
+
+- **Cover is not redaction.** It draws an opaque box over the words; the text
+  itself stays in the file and remains selectable, searchable and extractable
+  underneath. Use it to tidy a print, never to hide something confidential.
+
+---
+
+## [0.4.1] and earlier
+
+Recorded in git history only — this changelog starts at 0.5.0. The shipped
+feature set up to 0.4.1 is described in `README.md`, and the items marked
+**done** in `BACKLOG.md` cover what landed when.

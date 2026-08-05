@@ -55,6 +55,7 @@
       keys: [
         ['V', 'Select'],
         ['H', 'Highlight'],
+        ['X', 'Select text by dragging a box'],
         ['N', 'Sticky note'],
         ['P', 'Pen'],
         ['L', 'Line'],
@@ -73,6 +74,7 @@
       title: 'Markups',
       keys: [
         ['Ctrl+C', 'Copy selected text, or the selected markups'],
+        ['Right-click text', 'Highlight, strike out, underline, cloud, copy…'],
         ['Ctrl+A', 'Select every markup on this page'],
         ['Ctrl+Z', 'Undo'],
         ['Ctrl+Y', 'Redo'],

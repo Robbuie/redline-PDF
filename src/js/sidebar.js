@@ -49,7 +49,12 @@
     describe(annot) {
       if (annot.type === 'note') return annot.note || '(empty note)';
       if (annot.type === 'text' || annot.type === 'callout') return annot.text || '(no text)';
-      if (annot.type === 'highlight') return annot.text || annot.note || '';
+      // The three text markups all carry the words they were made from, which
+      // is what makes the markup list searchable by what was marked up rather
+      // than only by where.
+      if (annot.type === 'highlight' || annot.type === 'strikeout' || annot.type === 'underline') {
+        return annot.text || annot.note || '';
+      }
       if (annot.type === 'measure') {
         const len = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
         return (annot.label || RP.store.formatLength(len)) + (annot.note ? ' — ' + annot.note : '');

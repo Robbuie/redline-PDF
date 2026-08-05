@@ -55,6 +55,10 @@
       <path d="M14.1 6.1l1.6-1.6a1.6 1.6 0 0 1 2.3 0l1.5 1.5a1.6 1.6 0 0 1 0 2.3l-1.6 1.6z"/>
       <path fill="currentColor" stroke="none" d="M4 20.4h16v2.2H4z"/>
     </symbol>
+    <symbol id="i-textselect" viewBox="0 0 24 24">
+      <path stroke-dasharray="3 2.4" d="M3.4 3.4h17.2v17.2H3.4z"/>
+      <path d="M8 8.2h8"/><path d="M12 8v8"/><path d="M10 16.2h4"/>
+    </symbol>
     <symbol id="i-note" viewBox="0 0 24 24">
       <path d="M4 6.2A1.7 1.7 0 0 1 5.7 4.5h12.6A1.7 1.7 0 0 1 20 6.2v8.1a1.7 1.7 0 0 1-1.7 1.7H10l-4.6 3.5V16h-.7a1.7 1.7 0 0 1-1.7-1.7z"/>
       <path d="M7.5 8.6h9M7.5 11.9h5.5"/>
@@ -271,6 +275,7 @@
   <div class="tgroup tools" id="toolGroup">
     <button class="tbtn tool active" data-tool="select" title="Select, move and edit markups  (V)"><svg><use href="#i-select"/></svg><b>Select</b></button>
     <button class="tbtn tool" data-tool="highlight" title="Highlight text — hold Shift for area highlight  (H)"><svg><use href="#i-highlight"/></svg><b>Highlight</b></button>
+    <button class="tbtn tool" data-tool="textselect" title="Select text by dragging a box over it — then Ctrl+C, or right-click for what to do with it  (X)"><svg><use href="#i-textselect"/></svg><b>Words</b></button>
     <button class="tbtn tool" data-tool="note" title="Sticky note  (N)"><svg><use href="#i-note"/></svg><b>Note</b></button>
     <button class="tbtn tool" data-tool="pen" title="Freehand redline  (P)"><svg><use href="#i-pen"/></svg><b>Pen</b></button>
     <button class="tbtn tool" data-tool="line" title="Straight line — Shift constrains to 45°  (L)"><svg><use href="#i-line"/></svg><b>Line</b></button>
@@ -710,6 +715,7 @@
 <script src="js/viewer.js"></script>
 <script src="js/annots.js"></script>
 <script src="js/clip.js"></script>
+<script src="js/textsel.js"></script>
 <script src="js/props.js"></script>
 <script src="js/keys.js"></script>
 <script src="js/tools.js"></script>

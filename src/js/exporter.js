@@ -239,6 +239,40 @@
           break;
         }
 
+        /* Same `rects` as a highlight, one rule per run of words. PDF space
+           has y running *up*, so the strikeout sits 0.45 of the way up each
+           run (the 0.55-from-the-top the canvas draws) and the underline sits
+           just below its foot. Thickness comes from `RP.render.ruleWeight`,
+           shared with the canvas so the two cannot drift apart. */
+        case 'strikeout':
+        case 'underline': {
+          for (const rect of annot.rects || []) {
+            if (!rect || rect.w < 0.2) continue;
+            const weight = RP.render.ruleWeight(rect);
+            const y = annot.type === 'strikeout'
+              ? rect.y + rect.h * 0.45
+              : rect.y - Math.max(0.4, rect.h * 0.08);
+            page.drawLine({
+              start: { x: rect.x, y },
+              end: { x: rect.x + rect.w, y },
+              thickness: weight, color, opacity, lineCap: 0
+            });
+          }
+          break;
+        }
+
+        /* Opaque by construction — that is the difference between this and a
+           filled `rect`, which exports at a quarter opacity. It hides the
+           marks underneath from the eye and from nothing else: the text
+           objects are still in the content stream and still extractable. */
+        case 'cover': {
+          page.drawRectangle({
+            x: annot.x, y: annot.y, width: annot.w, height: annot.h,
+            color, opacity: opacity === undefined ? 1 : opacity
+          });
+          break;
+        }
+
         case 'pen': {
           const pts = annot.points || [];
           for (let i = 1; i < pts.length; i += 1) {
@@ -464,7 +498,9 @@
         let detail = '';
         if (annot.type === 'note') detail = annot.note || '';
         else if (annot.type === 'text' || annot.type === 'callout') detail = annot.text || '';
-        else if (annot.type === 'highlight') detail = annot.text || annot.note || '';
+        else if (annot.type === 'highlight' || annot.type === 'strikeout' || annot.type === 'underline') {
+          detail = annot.text || annot.note || '';
+        }
         else if (annot.type === 'measure') {
           detail = annot.label || store.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2));
           if (annot.note) detail += ' — ' + annot.note;

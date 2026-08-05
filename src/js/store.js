@@ -19,6 +19,9 @@
 
   const TYPE_LABELS = {
     highlight: 'Highlight',
+    strikeout: 'Strikeout',
+    underline: 'Underline',
+    cover: 'Cover',
     note: 'Sticky note',
     pen: 'Freehand',
     line: 'Line',

@@ -792,9 +792,9 @@
 
     wireShortcuts() {
       const toolKeys = {
-        v: 'select', h: 'highlight', n: 'note', p: 'pen', l: 'line', a: 'arrow',
-        r: 'rect', e: 'ellipse', c: 'cloud', t: 'text', o: 'callout', m: 'measure',
-        g: 'pan', z: 'zoomrect'
+        v: 'select', h: 'highlight', x: 'textselect', n: 'note', p: 'pen',
+        l: 'line', a: 'arrow', r: 'rect', e: 'ellipse', c: 'cloud', t: 'text',
+        o: 'callout', m: 'measure', g: 'pan', z: 'zoomrect'
       };
 
       document.addEventListener('keydown', (event) => {
@@ -838,6 +838,10 @@
         if (event.key === 'Escape') {
           if (RP.print.open) { RP.print.hide(); return; }
           if (RP.compare.active) { RP.compare.close(); return; }
+          // Dropping a standing text selection is the whole gesture — it must
+          // not also throw away the markup selection and reset the tool, which
+          // is what the rest of this branch does.
+          if (RP.textsel.clear()) return;
           RP.tools.closeNotePopup();
           RP.store.clearSelection();
           RP.tools.setTool('select');

@@ -34,7 +34,11 @@
 
   function bbox(annot) {
     switch (annot.type) {
+      // The three rects-based markups share a shape: one rectangle per run of
+      // words, in PDF space. Only the paint differs.
       case 'highlight':
+      case 'strikeout':
+      case 'underline':
         return RP.geom.unionRect(annot.rects || []) || { x: 0, y: 0, w: 0, h: 0 };
       case 'pen': {
         const pts = annot.points || [];
@@ -66,6 +70,20 @@
       default:
         return { x: annot.x || 0, y: annot.y || 0, w: annot.w || 0, h: annot.h || 0 };
     }
+  }
+
+  /**
+   * How thick the rule of a strikeout or underline should be, in PDF points,
+   * for a run of words `rect` tall.
+   *
+   * Derived from the run rather than from `annot.width` so the line stays in
+   * proportion to whatever it crosses: an E-size sheet carries 3pt schedule
+   * text and 24pt titles on the same page, and a fixed 2pt rule either
+   * obliterates the first or looks like a hairline under the second. The
+   * exporter calls this too — the rule on paper has to be the rule on screen.
+   */
+  function ruleWeight(rect) {
+    return Math.max(0.5, (rect && rect.h ? rect.h : 8) * 0.09);
   }
 
   /** The callout box on its own — the tip is anchored separately. */
@@ -322,6 +340,49 @@
         break;
       }
 
+      /* Strikeout and underline carry the same `rects` as a highlight — one
+         per run of words — and differ only in where the rule is drawn inside
+         each one. The rule's thickness comes from the rect height rather than
+         from `annot.width`, so it stays in proportion to the text it crosses:
+         a 4pt schedule note and a 20pt sheet title both get a line that reads
+         as a pen stroke rather than as a bar. `ruleWeight` is shared with the
+         exporter so screen and paper agree. */
+      case 'strikeout':
+      case 'underline': {
+        ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+        ctx.strokeStyle = annot.color || '#ff2f2f';
+        ctx.lineCap = 'butt';
+        ctx.setLineDash([]);
+        for (const rect of annot.rects || []) {
+          const r = vpRect(viewport, rect);
+          if (r.w < 0.5) continue;
+          ctx.lineWidth = Math.max(1, ruleWeight(rect) * (viewport.scale || 1));
+          // vpRect is in screen space, so y grows downward: the middle of the
+          // run for a strikeout, just under its foot for an underline.
+          const y = annot.type === 'strikeout'
+            ? r.y + r.h * 0.55
+            : r.y + r.h + Math.max(1, r.h * 0.08);
+          ctx.beginPath();
+          ctx.moveTo(r.x, y);
+          ctx.lineTo(r.x + r.w, y);
+          ctx.stroke();
+        }
+        break;
+      }
+
+      /* An opaque filled box. Deliberately *not* `rect` with `fill: true`,
+         which paints at a quarter opacity so the drawing shows through — the
+         whole point here is that it does not. Named "cover" and not "redact"
+         because the text underneath is untouched and still selectable; see the
+         note in CHANGELOG.md. */
+      case 'cover': {
+        ctx.globalAlpha = annot.opacity === undefined ? 1 : annot.opacity;
+        ctx.fillStyle = annot.color || '#ffffff';
+        const r = vpRect(viewport, { x: annot.x, y: annot.y, w: annot.w, h: annot.h });
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        break;
+      }
+
       case 'pen': {
         const pts = annot.points || [];
         if (pts.length < 2) break;
@@ -549,6 +610,8 @@
     const t = tol || 4;
     switch (annot.type) {
       case 'highlight':
+      case 'strikeout':
+      case 'underline':
         return (annot.rects || []).some((r) => RP.geom.rectContains(r, x, y, 1));
       case 'pen':
         return RP.geom.distToPolyline(x, y, annot.points || []) <= t + (annot.width || 2) / 2;
@@ -603,6 +666,8 @@
     }
     switch (annot.type) {
       case 'highlight':
+      case 'strikeout':
+      case 'underline':
         for (const r of annot.rects || []) { r.x += dx; r.y += dy; }
         break;
       case 'pen':
@@ -629,6 +694,8 @@
 
     switch (annot.type) {
       case 'highlight':
+      case 'strikeout':
+      case 'underline':
         annot.rects = (orig.rects || []).map((r) => ({
           x: mapX(r.x), y: mapY(r.y), w: r.w * sx, h: r.h * sy
         }));
@@ -667,6 +734,7 @@
     bbox,
     selectionRect,
     calloutBox,
+    ruleWeight,
     calloutAnchor,
     calloutPart,
     measureCalloutHeight,

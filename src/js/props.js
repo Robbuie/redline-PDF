@@ -106,7 +106,10 @@
     styleSection(annot) {
       // Highlights and notes carry a fill, not a stroke, so a line width on
       // them would be a control that does nothing.
-      const strokes = !['highlight', 'note', 'text'].includes(annot.type);
+      // Stroke width means nothing where there is no stroke to set: the rects
+      // markups size their own rule from the text (RP.render.ruleWeight) and a
+      // cover is fill only.
+      const strokes = !['highlight', 'strikeout', 'underline', 'cover', 'note', 'text'].includes(annot.type);
 
       const colour = RP.el('input', { type: 'color', value: annot.color || '#ff2f2f' });
       colour.addEventListener('input', () => this.patch({ color: colour.value }));

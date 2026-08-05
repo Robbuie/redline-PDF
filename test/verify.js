@@ -72,7 +72,7 @@ global.document = {
 
 const globalEval = eval; // indirect eval => runs in global scope
 for (const file of ['util.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
-  'print.js', 'annots.js', 'viewer.js']) {
+  'print.js', 'annots.js', 'viewer.js', 'textsel.js', 'tools.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -105,7 +105,14 @@ function sampleAnnotations() {
     { page: 1, type: 'measure', color: '#c04aff', width: 1.5, opacity: 1, x1: 100, y1: 200, x2: 400, y2: 200 },
     // Non-default typefaces, so the export has to reach past Helvetica.
     { page: 1, type: 'callout', color: '#ff9500', width: 1.5, opacity: 1, x: 320, y: 300, w: 180, h: 40, tipX: 260, tipY: 250, text: 'Serif bold callout', fontSize: 10, fontFamily: 'serif', bold: true, textColor: '#0044cc' },
-    { page: 1, type: 'text', color: '#2f8fff', fontSize: 11, opacity: 1, x: 100, y: 120, text: 'MONO NOTE', fontFamily: 'mono' }
+    { page: 1, type: 'text', color: '#2f8fff', fontSize: 11, opacity: 1, x: 100, y: 120, text: 'MONO NOTE', fontFamily: 'mono' },
+    // The text markups from a selection. Strikeout and underline share the
+    // highlight's `rects`, and a cover is an opaque box — all three are new in
+    // 0.5.0 and all three are silently dropped on save if the exporter has no
+    // case for them, which is exactly the failure this list exists to catch.
+    { page: 0, type: 'strikeout', color: '#ff2f2f', opacity: 1, rects: [{ x: 60, y: 660, w: 180, h: 12 }], text: 'SUPERSEDED' },
+    { page: 0, type: 'underline', color: '#2f8fff', opacity: 1, rects: [{ x: 60, y: 630, w: 140, h: 12 }, { x: 60, y: 612, w: 90, h: 12 }], text: 'see note 4' },
+    { page: 1, type: 'cover', color: '#ffffff', opacity: 1, x: 420, y: 640, w: 120, h: 30 }
   ].map((a, i) => Object.assign({ id: 'mk' + i, created: Date.now(), modified: Date.now(), author: 'Tester', note: a.note || '' }, a));
 }
 
@@ -1716,6 +1723,311 @@ async function firstTextPos(bytes) {
   return { x: +t[4].toFixed(2), y: +t[5].toFixed(2), size: +Math.hypot(t[0], t[1]).toFixed(2) };
 }
 
+/**
+ * Highlight geometry.
+ *
+ * Everything here is in page-local CSS pixels with y running down, and the
+ * fixtures are modelled on a plotted description block: an 8pt stick font on
+ * 13pt line spacing, one span per word, with a second column of unrelated text
+ * far to the right at the same heights. That second column is the whole point —
+ * pdf.js hands the browser's selection over in content-stream order, so those
+ * runs arrive mixed in with the ones actually swept, and before `sweep` existed
+ * they were highlighted too.
+ */
+function testHighlightGeometry() {
+  console.log('\nHighlight geometry');
+  const HL = RP.tools.hl;
+
+  // A word box: 8pt caps in a 13pt line box, ~5.5pt per character.
+  const word = (text, left, line) => ({
+    left, right: left + text.length * 5.5, top: line * 13, bottom: line * 13 + 11
+  });
+
+  // --- rows -----------------------------------------------------------------
+  // Same row, different heights: a taller glyph shifts `top` without starting a
+  // new line, which is exactly what sorting on `top` used to get wrong.
+  const ragged = [
+    word('LIGHT', 40, 0),
+    Object.assign(word('STACK', 0, 0), { top: -1, bottom: 11 }),
+    word('RED', 0, 1)
+  ];
+  const rows = HL.rows(ragged);
+  check('words on one row stay on one row when their tops disagree',
+    rows.length === 2 && rows[0].words.length === 2, rows.length + ' rows');
+  check('rows come back top of the page first', rows[0].top < rows[1].top);
+  check('words within a row come back left to right',
+    rows[0].words[0].left === 0 && rows[0].words[1].left === 40);
+
+  // --- bars: bridging -------------------------------------------------------
+  const phrase = [word('STACK', 0, 0), word('LIGHT', 33, 0)];   // 5.5pt gap
+  const bars = HL.bars(phrase);
+  check('a word gap on one row is painted through', bars.length === 1,
+    bars.length + ' bars');
+  check('the bridged bar spans the whole phrase',
+    bars[0].left === 0 && Math.abs(bars[0].right - 60.5) < 0.01,
+    JSON.stringify(bars[0]));
+
+  // A schedule row: two columns, blank paper between them.
+  const columns = HL.bars([word('SPARE', 0, 0), word('RELAY', 200, 0)]);
+  check('a column gap is left alone', columns.length === 2, columns.length + ' bars');
+
+  // Measured on a real sheet, the two gap populations are cleanly separated:
+  // letter gaps at ~0.3 of the row height, word gaps at ~0.93, column gaps
+  // several times that. The threshold has to sit in the space between.
+  const rowHeight = 11;
+  const gapOf = (ratio) => HL.bars([
+    word('A', 0, 0),
+    { left: 5.5 + rowHeight * ratio, right: 5.5 + rowHeight * ratio + 20, top: 0, bottom: 11 }
+  ]).length;
+  check('a letter gap bridges', gapOf(0.3) === 1);
+  check('the widest real word gap bridges', gapOf(0.93) === 1);
+  check('a column gap does not', gapOf(2) === 2);
+
+  // --- bars: the union ------------------------------------------------------
+  // Carrying `max(height)` against `min(top)` produced a bar shorter than the
+  // words under it. The union has to be taken on the edges.
+  const uneven = HL.bars([
+    { left: 0, right: 20, top: 2, bottom: 12 },
+    { left: 22, right: 40, top: 0, bottom: 10 }
+  ]);
+  check('a bar covers every word it merged, top and bottom',
+    uneven.length === 1 && uneven[0].top === 0 && uneven[0].bottom === 12,
+    JSON.stringify(uneven[0]));
+
+  // --- sweep ----------------------------------------------------------------
+  // Three lines of a description block, plus a column of unrelated runs at
+  // x=400 that the content stream happens to interleave.
+  const block = [
+    word('STACK', 0, 0), word('LIGHT', 33, 0),
+    word('RED', 0, 1), word('LIGHT', 22, 1),
+    word('FAULTED', 0, 2),
+    word('ELSEWHERE', 400, 0), word('ALSO', 400, 1), word('AGAIN', 400, 2)
+  ];
+  const blockRows = HL.rows(block);
+  const swept = HL.sweep(blockRows, { row: 0, x: 1 }, { row: 2, x: 60 });
+  const sweptWords = swept.flat();
+  check('the sweep keeps every row it crossed', swept.length === 3, swept.length + ' rows');
+  check('runs from elsewhere in the content stream are dropped',
+    sweptWords.every((w) => w.left < 200), JSON.stringify(sweptWords.map((w) => w.left)));
+  check('the swept rows still contain the words that were under the pointer',
+    sweptWords.length === 5, sweptWords.length + ' words');
+
+  // A drag that stops part way along the last row must not take the rest of it.
+  const partial = HL.sweep(blockRows, { row: 0, x: 1 }, { row: 1, x: 10 });
+  check('the last row stops where the pointer was released',
+    partial.length === 2 && partial[1].length === 1 && partial[1][0].left === 0,
+    JSON.stringify(partial[1] && partial[1].map((w) => w.left)));
+
+  // Dragging up the page is the same selection as dragging down it.
+  const upwards = HL.sweep(blockRows, { row: 2, x: 60 }, { row: 0, x: 1 });
+  check('a drag up the page sweeps the same words as a drag down it',
+    JSON.stringify(upwards) === JSON.stringify(swept));
+
+  // A double-click lands both ends on one word; the row must not run away.
+  const oneWord = HL.sweep(blockRows, { row: 1, x: 30 }, { row: 1, x: 30 });
+  check('a double-click takes the word under it and nothing else',
+    oneWord.length === 1 && oneWord[0].length === 1 && oneWord[0][0].left === 22,
+    JSON.stringify(oneWord[0] && oneWord[0].map((w) => w.left)));
+
+  // No drag recorded — a keyboard selection — must not be filtered away.
+  check('a selection with no drag behind it is taken as it stands',
+    HL.sweep(blockRows, null, null).flat().length === block.length);
+
+  // --- wiring ---------------------------------------------------------------
+  const tools = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  check('the press point is recorded before the text layer takes the drag',
+    /hlPress = \{ page: record\.index/.test(tools));
+  check('the capture works off pdf.js\'s own span list, not the range rects',
+    /record\.textDivs/.test(tools) && /containsNode\(div, true\)/.test(tools));
+  check('a partial word is rounded out to whitespace at both ends',
+    /while \(from > 0 && !\/\\s\/\.test\(text\[from - 1\]\)\)/.test(tools) &&
+    /while \(to < text\.length && !\/\\s\/\.test\(text\[to\]\)\)/.test(tools));
+}
+
+/**
+ * Selecting text, and what can be done with it once selected.
+ *
+ * Three separate things are covered here and they fail in different ways.
+ *
+ * The *band* rule decides which words an area drag picks up, and it is the one
+ * piece of that feature with no visible symptom until a sheet is in front of
+ * someone: too greedy and a box drawn short of a schedule's second column
+ * takes the column anyway, too strict and a word with a descender falls out of
+ * its own row.
+ *
+ * *Reading order* is why the text is rebuilt from the swept rows rather than
+ * taken from `selection.toString()`. The browser concatenates in DOM order and
+ * pdf.js emits spans in content-stream order — plotter order — so the naive
+ * version pastes a description block with its lines shuffled. The rows are
+ * already bucketed and sorted by `HL`, so this checks that `textOf` actually
+ * walks them rather than trusting whatever order it was handed.
+ *
+ * And the *payload* is the contract between the two gestures and the action
+ * menu. It is snapshotted at release because opening a menu collapses the
+ * browser's selection before a single handler in it runs; anything here that
+ * reached back for the live selection would work in testing and fail on the
+ * first real click.
+ */
+function testTextSelection() {
+  console.log('\nText selection');
+  const band = RP.tools.band;
+  const HL = RP.tools.hl;
+
+  // --- the band -------------------------------------------------------------
+  const dragged = band.normBand({ x: 220, y: 180 }, { x: 40, y: 60 });
+  check('a band is normalised whichever way it was dragged',
+    dragged.left === 40 && dragged.top === 60 && dragged.right === 220 && dragged.bottom === 180);
+
+  const inside = { left: 60, top: 80, right: 100, bottom: 92 };
+  const outside = { left: 300, top: 80, right: 340, bottom: 92 };
+  // Clipped at the left edge: most of the word is outside, so its centre is
+  // too, and it stays out. Overlap would have taken it.
+  const clipped = { left: 20, top: 80, right: 52, bottom: 92 };
+  // A descender pokes out of the bottom edge. Containment would have dropped
+  // it; the centre is still in, so it stays.
+  const descender = { left: 120, top: 165, right: 160, bottom: 190 };
+  check('a word inside the band is taken', band.centreInBand(inside, dragged));
+  check('a word outside the band is not', !band.centreInBand(outside, dragged));
+  check('a word the band merely clips is not taken', !band.centreInBand(clipped, dragged));
+  check('a word that pokes out of the edge is still taken', band.centreInBand(descender, dragged));
+
+  // --- reading order --------------------------------------------------------
+  // Fed in plotter order — the second line before the first, and the right-hand
+  // column before the left — which is exactly the shape pdf.js hands over.
+  const scrambled = [
+    { left: 200, top: 40, right: 260, bottom: 52, text: 'AMPS' },
+    { left: 40, top: 60, right: 90, bottom: 72, text: 'FEEDER' },
+    { left: 40, top: 40, right: 96, bottom: 52, text: 'PANEL' },
+    { left: 98, top: 40, right: 150, bottom: 52, text: 'L1' },
+    { left: 92, top: 60, right: 140, bottom: 72, text: 'B' }
+  ];
+  const rows = HL.rows(scrambled);
+  const text = HL.textOf(new Map([[0, rows.map((row) => row.words)]]));
+  check('rows come back top to bottom and words left to right',
+    text === 'PANEL L1  AMPS\nFEEDER B', JSON.stringify(text));
+  // The gap between L1 and AMPS is several row-heights wide, which is a column
+  // boundary rather than a word space — running them together would read as one
+  // phrase on a schedule.
+  check('a column gap does not become a word space', /L1 {2}AMPS/.test(text));
+  check('pages are kept apart and in order',
+    HL.textOf(new Map([
+      [2, [[{ left: 0, top: 0, right: 10, bottom: 8, text: 'later' }]]],
+      [1, [[{ left: 0, top: 0, right: 10, bottom: 8, text: 'earlier' }]]]
+    ])) === 'earlier\n\nlater');
+  check('a rect carrying no text is skipped rather than pasted as a gap',
+    HL.textOf(new Map([[0, [[
+      { left: 0, top: 0, right: 10, bottom: 8, text: 'wrapped' },
+      { left: 0, top: 10, right: 10, bottom: 18, text: '' }
+    ]]]])) === 'wrapped');
+
+  // --- payloads and the actions built on them -------------------------------
+  const payload = {
+    pages: new Map([
+      [0, [{ x: 60, y: 690, w: 200, h: 12 }, { x: 60, y: 674, w: 120, h: 12 }]],
+      [1, [{ x: 80, y: 400, w: 90, h: 12 }]]
+    ]),
+    text: 'PANEL L1\nFEEDER B'
+  };
+  check('an empty payload is recognised as empty',
+    RP.textsel.isEmpty(null) && RP.textsel.isEmpty({ pages: new Map() }) &&
+    RP.textsel.isEmpty({ pages: new Map([[0, []]]) }));
+  check('a real payload is not', !RP.textsel.isEmpty(payload));
+  check('the first page is the lowest, not the first inserted',
+    RP.textsel.firstPage({ pages: new Map([[3, [{ x: 0, y: 0, w: 1, h: 1 }]], [1, [{ x: 0, y: 0, w: 1, h: 1 }]]]) }) === 1);
+  check('word count comes off the text', RP.textsel.wordCount(payload) === 4);
+
+  // The box a cloud, a box or a cover is drawn at: the union of that page's
+  // rects with a little air. Anchored on the page asked for, not on the first.
+  const box = RP.textsel.boxOn(payload, 0);
+  check('the shape box unions one page\'s rects and pads them',
+    box.x < 60 && box.y < 674 && box.x + box.w > 260 && box.y + box.h > 702,
+    JSON.stringify(box));
+  check('a page the selection does not touch has no box',
+    RP.textsel.boxOn(payload, 5) === null);
+
+  // Each page gets one markup, not one per run — three bars over two pages is
+  // two things the user did, and splitting them would need six deletes to undo.
+  const store = RP.store;
+  const before = store.annotations.length;
+  const made = RP.textsel.markup(payload, 'strikeout');
+  check('one markup per page, not one per run', made === 2,
+    made + ' from ' + payload.pages.size + ' pages');
+  const added = store.annotations.slice(before);
+  check('the markup carries the rects it was made from',
+    added[0].rects.length === 2 && added[1].rects.length === 1);
+  check('the rects are copies, so editing the markup cannot corrupt the payload',
+    added[0].rects[0] !== payload.pages.get(0)[0]);
+  check('the words are carried along for the markup list and the CSV',
+    added[0].text === payload.text);
+  store.annotations.length = before;
+
+  const covers = RP.textsel.shape(payload, 'cover');
+  check('a shape is drawn per page too', covers === 2);
+  const cover = store.annotations[store.annotations.length - 1];
+  check('a cover is opaque — that is the whole difference from a filled box',
+    cover.opacity === 1 && cover.fill === undefined);
+  store.annotations.length = before;
+
+  check('a page reference is prefixed per page, in page order',
+    RP.textsel.referenced(payload).split('\n')[0].startsWith('p1  '));
+
+  // --- geometry of the new markups -----------------------------------------
+  // The rule scales with the run it crosses. A fixed weight either obliterates
+  // 3pt schedule text or reads as a hairline under a 24pt sheet title.
+  const small = RP.render.ruleWeight({ h: 4 });
+  const large = RP.render.ruleWeight({ h: 24 });
+  check('the rule weight follows the text size', large > small * 3, small + ' vs ' + large);
+  check('the rule never vanishes on very small text', RP.render.ruleWeight({ h: 0.1 }) >= 0.5);
+  for (const type of ['strikeout', 'underline']) {
+    const annot = { type, rects: [{ x: 10, y: 20, w: 100, h: 10 }] };
+    const bounds = RP.render.bbox(annot);
+    check('a ' + type + ' knows its own bounds',
+      bounds.x === 10 && bounds.y === 20 && bounds.w === 100 && bounds.h === 10);
+    check('a ' + type + ' hit-tests against its rects',
+      RP.render.hitTest(annot, 50, 25, 2) && !RP.render.hitTest(annot, 300, 25, 2));
+    RP.render.translate(annot, 5, -5);
+    check('a ' + type + ' moves with its rects',
+      annot.rects[0].x === 15 && annot.rects[0].y === 15);
+  }
+  check('every new type has a label rather than falling back to its id',
+    ['strikeout', 'underline', 'cover']
+      .every((type) => RP.store.typeLabel(type) !== type));
+
+  // --- wiring ---------------------------------------------------------------
+  const tools = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8');
+  const viewer = fs.readFileSync(path.join(ROOT, 'src', 'js', 'viewer.js'), 'utf8');
+  const clip = fs.readFileSync(path.join(ROOT, 'src', 'js', 'clip.js'), 'utf8');
+  const tabs = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tabs.js'), 'utf8');
+
+  check('the tool is on the toolbar and bound to a key',
+    /data-tool="textselect"/.test(html) && /x: 'textselect'/.test(app));
+  // The whole reason this is a separate tool: the ink layer keeps the press,
+  // so the browser's own selection is never started behind the marquee.
+  check('the text-select tool keeps the pointer on the ink layer',
+    /body\[data-tool="textselect"\]\s+\.page\s+\.ink-layer\s*\{[^}]*pointer-events:\s*auto/.test(css));
+  check('and takes the text layer out of the pointer path',
+    /body\[data-tool="textselect"\]\s+\.page\s+\.text-layer\s*\{[^}]*pointer-events:\s*none/.test(css));
+  // The payload is snapshotted at release; a handler that reached back for the
+  // live selection would find it collapsed by the menu that is asking.
+  check('the selection is turned into a payload before any menu opens',
+    /selectionPayload\(event\)[\s\S]{0,900}RP\.textsel\.open\(/.test(tools));
+  check('the standing selection is painted by the viewer',
+    /RP\.textsel && RP\.textsel\.draw/.test(viewer));
+  check('it is painted only for the focused document',
+    /isActive\(\)\)\s*\{[\s\S]{0,500}RP\.textsel\.draw/.test(viewer));
+  check('Ctrl+C sees a standing selection', /RP\.textsel\.has\(\)/.test(clip));
+  // Per-document state has to ride the tab switch or it leaks between drawings.
+  check('the selection is stashed and unstashed with its tab',
+    /RP\.textsel\.stash\(\)/.test(tabs) && /RP\.textsel\.unstash\(/.test(tabs));
+  check('Escape drops the selection without also resetting the tool',
+    /if \(RP\.textsel\.clear\(\)\) return;/.test(app));
+  check('a rebuilt page order clears it, since the rects no longer mean anything',
+    /pages:rebuilt'[\s\S]{0,60}RP\.textsel\.clear\(\)/.test(tools));
+}
+
 /** Read the sheet label back out of a page, to prove content moved with it. */
 async function pageLabel(bytes, index) {
   const pdfjs = await loadPdfjs();
@@ -1732,6 +2044,8 @@ async function pageLabel(bytes, index) {
     testChrome();
     testNativeAnnotations();
     testGeometry();
+    testHighlightGeometry();
+    testTextSelection();
     testCalloutText();
     testCompareMaths();
     testCompareGuards();

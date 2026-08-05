@@ -656,6 +656,10 @@
       }
       if (this.isActive()) {
         if (RP.search && RP.search.drawHits) RP.search.drawHits(ctx, record);
+        // The standing area text selection. Like the search hits it is state
+        // of the *focused* document, not of this pane's — a split showing two
+        // drawings must not paint one's selection over the other.
+        if (RP.textsel && RP.textsel.draw) RP.textsel.draw(ctx, record);
         if (RP.tools && RP.tools.drawPreview) RP.tools.drawPreview(ctx, record);
       }
     },

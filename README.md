@@ -62,6 +62,48 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.5
+
+**Selecting text asks what you want to do with it.** Dragging across text with
+the highlighter no longer commits a highlight the moment you let go. The
+selection is captured and a menu opens over it:
+
+| | |
+|---|---|
+| Highlight / Strike out / Underline | follow the words, the way a marker or a pen would |
+| Cloud / Box around it | the revision-cloud idiom, sized to what you selected |
+| Cover it | an opaque box — **not** redaction, see below |
+| Copy text | plain, or with a `p12` page reference for a comment log |
+| Callout / Sticky note with this text | pre-filled with the words you selected |
+| Find this in the drawing | hands it to `Ctrl+F` |
+
+Escape or click away and the selection is left alone — nothing is added.
+
+**A text-select tool (`X`).** Drag a box over any part of a sheet and every
+word inside it is selected. No dragging along a line, no fighting the order the
+plotter happened to write the entities in — the box says what you want. The
+selection stays put after you release, so `Ctrl+C` copies it and right-clicking
+it opens the same menu. Escape clears it.
+
+Text copied by either route comes out in **reading order** — rows top to
+bottom, words left to right, columns kept apart — rather than in the order the
+entities were plotted, which is what the browser's own selection gives you and
+why copying off a drawing has always produced a jumble.
+
+> **Cover is not redaction.** It draws an opaque box over the words. The text
+> is still in the file, still selectable, still searchable and still
+> extractable underneath it. Use it to tidy a print, never to hide something
+> confidential.
+
+0.5 also brings **typography for text and callout markups** — typeface, size,
+bold and a separate text colour, in the toolbar and in the properties dialog
+(see *Typography* further down) — and fixes three things that made rotated and
+long drawings behave oddly: the text layer not turning with a plotted landscape
+sheet, thumbnails opening the sheet before the one clicked, and a callout's
+inline editor opening away from its box. `CHANGELOG.md` has the detail.
+
+---
+
 ## What's new in 0.2
 
 **Saving — you choose, and the default is safe.**
@@ -245,7 +287,8 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 |---|---|---|---|---|
 | `V` | Select / edit | | `Ctrl+O` | Open |
 | `H` | Highlight (Shift flips mode) | | `Ctrl+S` | Save |
-| `N` | Sticky note | | `Ctrl+Shift+S` | Save As |
+| `X` | Select text by dragging a box | | `Ctrl+Shift+S` | Save As |
+| `N` | Sticky note | | `Right-click` | Act on the selection |
 | `P` | Freehand redline | | `Ctrl+P` | Print |
 | `L` | Line | | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `A` | Arrow | | `Ctrl+F` | Find |

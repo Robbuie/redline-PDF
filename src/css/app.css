@@ -921,6 +921,14 @@ body[data-tool="highlight"] .page .ink-layer { pointer-events: none; }
 body[data-tool="highlight"] .page .text-layer { cursor: text; }
 body[data-tool="highlight"].hl-area .page .ink-layer { pointer-events: auto; cursor: crosshair; }
 body[data-tool="highlight"].hl-area .page .text-layer { pointer-events: none; cursor: crosshair; }
+/* Text-select: the ink layer stays put and swallows the press, which is the
+   whole point of the tool being separate from `select`. The browser's own
+   selection is never involved — the marquee gathers words geometrically — so
+   the text layer must not take the pointer or it would start one behind the
+   box being dragged. That is also why this tool needs no `mousedown` refusal
+   in `bindPane` the way `select` does. */
+body[data-tool="textselect"] .page .ink-layer { pointer-events: auto; cursor: crosshair; }
+body[data-tool="textselect"] .page .text-layer { pointer-events: none; cursor: crosshair; }
 body[data-tool="note"] .page .ink-layer { cursor: copy; }
 body[data-tool="text"] .page .ink-layer { cursor: text; }
 body[data-tool="pen"] .page .ink-layer,

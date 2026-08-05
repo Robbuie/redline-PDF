@@ -6,6 +6,7 @@
 
   const HANDLE_TOL = 6;   // px
   const CLICK_TOL = 4;    // px of travel still counted as a click
+  const HL_GAP_RATIO = 1.2;  // bars bridge gaps up to 1.2x the row height
 
   const Tools = {
     tool: 'select',
@@ -25,6 +26,7 @@
     pan: null,
     calibrating: false,
     highlightMode: 'text',   // 'text' selects words, 'area' drags a box
+    hlPress: null,           // where a text-mode highlight drag started
     shiftHeld: false,
     spaceHeld: false,
     warnedNoText: false,
@@ -88,6 +90,10 @@
       });
 
       RP.bus.on('doc:loaded', () => { this.warnedNoText = false; });
+      // A standing selection is a set of rects on a particular page of a
+      // particular document. Both change under it here, so it goes.
+      RP.bus.on('doc:reset', () => { RP.textsel.current = null; });
+      RP.bus.on('pages:rebuilt', () => RP.textsel.clear());
 
       // Panning is wired per pane by `bindPane`, not here.
       this.initNotePopup();
@@ -336,6 +342,11 @@
       // from ever starting.
       if (this.tool === 'highlight' && this.effectiveHighlightMode() === 'text') {
         this.checkPageHasText(record);
+        // Where the press landed is the only record of what the user *meant*
+        // to sweep. `captureTextSelection` needs it because the browser's own
+        // selection cannot be trusted to describe the shape on screen — see
+        // the note there.
+        this.hlPress = { page: record.index, clientX: event.clientX, clientY: event.clientY };
         return;
       }
 
@@ -351,6 +362,19 @@
 
       if (this.tool === 'select') {
         this.beginSelectInteraction(record, event, pdf, local);
+      } else if (this.tool === 'textselect') {
+        // A fresh drag replaces whatever was standing, the way a click in a
+        // text editor does. Clearing on the way *down* rather than on the way
+        // up means the old selection does not sit under the new marquee.
+        this.checkPageHasText(record);
+        RP.textsel.clear();
+        this.drag = {
+          mode: 'textmarquee',
+          record,
+          startPdf: pdf,
+          startLocal: local,
+          movedPx: 0
+        };
       } else if (this.tool === 'zoomrect') {
         this.drag = {
           mode: 'zoomrect',
@@ -391,6 +415,7 @@
         case 'move': this.updateMove(drag, pdf); break;
         case 'resize': this.updateResize(drag, local, pdf); break;
         case 'marquee': break;
+        case 'textmarquee': break;
         case 'zoomrect': break;
         default: break;
       }
@@ -404,6 +429,7 @@
 
       if (drag.mode === 'create') this.finishDraft(drag);
       else if (drag.mode === 'marquee') this.finishMarquee(drag, event);
+      else if (drag.mode === 'textmarquee') this.finishTextMarquee(drag);
       else if (drag.mode === 'zoomrect') this.finishZoomRect(drag);
       else if (drag.mode === 'move' || drag.mode === 'resize') {
         if ((drag.movedPx || 0) < CLICK_TOL && drag.mode === 'move') {
@@ -733,7 +759,7 @@
 
       if (drag.mode === 'create' && drag.draft) {
         RP.render.drawAnnotation(ctx, drag.draft, record.viewport, {});
-      } else if ((drag.mode === 'marquee' || drag.mode === 'zoomrect') && drag.pdf) {
+      } else if ((drag.mode === 'marquee' || drag.mode === 'textmarquee' || drag.mode === 'zoomrect') && drag.pdf) {
         const zoom = drag.mode === 'zoomrect';
         const rect = RP.geom.normRect(drag.startPdf[0], drag.startPdf[1], drag.pdf[0], drag.pdf[1]);
         const view = RP.render.vpRect(record.viewport, rect);
@@ -752,6 +778,53 @@
     // Text-selection highlighting
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // Area text selection
+    // ---------------------------------------------------------------------
+
+    /**
+     * Turn the marquee into a standing text selection.
+     *
+     * This is the easy direction. The text-mode highlighter has to reconstruct
+     * what the user meant from the browser's selection, which arrives in DOM
+     * order — i.e. the order the plotter wrote the entities — and needs
+     * `HL.sweep` to throw out the runs it dragged in from elsewhere on the
+     * sheet. An area selection has no such problem: the box says exactly which
+     * words are wanted, and the browser's selection is never consulted at all.
+     *
+     * Single page by design, like the markup marquee: the drag is anchored to
+     * the page it started on, and a box spanning a page break on a continuous
+     * scroll is not a gesture anybody makes deliberately.
+     */
+    finishTextMarquee(drag) {
+      const record = drag.record;
+      const band = normBand(drag.startLocal, drag.local || drag.startLocal);
+      if (band.right - band.left < 3 || band.bottom - band.top < 3) return;
+
+      const words = wordsInBand(record, band);
+      if (!words.length) {
+        RP.status('No text in that area', 'warn');
+        return;
+      }
+
+      // Straight to rows and runs — no sweep. `bars` merges each row's words
+      // into the same stretches a highlight would paint, so an area selection
+      // and a dragged one produce identical geometry over identical words.
+      const rows = HL.rows(words);
+      const bars = [];
+      for (const row of rows) for (const bar of HL.bars(row.words)) bars.push(bar);
+      if (!bars.length) return;
+
+      const pages = new Map([[record.index, bars.map((bar) => toPdfBar(record, bar))]]);
+      const swept = new Map([[record.index, rows.map((row) => row.words)]]);
+      const payload = { pages, text: HL.textOf(swept) };
+
+      RP.textsel.set(payload);
+      const count = RP.textsel.wordCount(payload);
+      RP.status(count + (count === 1 ? ' word selected' : ' words selected') +
+        ' — Ctrl+C to copy, right-click for more');
+    },
+
     /** Warn once if the sheet is a scan with no text to select. */
     checkPageHasText(record) {
       if (this.warnedNoText || !record) return;
@@ -759,12 +832,69 @@
       const items = record.textContent && record.textContent.items ? record.textContent.items.length : 0;
       if (spans > 0 || items > 0) return;
       this.warnedNoText = true;
-      RP.toast('This page has no selectable text — use Area mode (or hold Shift) to highlight a region', 'warn', 6000);
+      RP.toast('This page has no selectable text — it is a scan. Use area highlight (hold Shift) to mark a region instead', 'warn', 6000);
     },
 
-    captureTextSelection() {
+    /**
+     * Read the browser's text selection and offer what to do with it.
+     *
+     * The selection used to become a highlight the instant the pointer came
+     * up, because a highlight was the only thing it could become. It now
+     * becomes a *payload* — see `textsel.js` — and a menu opens over it.
+     *
+     * The payload has to be built here and now. Opening a menu moves focus and
+     * takes a `pointerdown` listener of its own, and the browser's selection
+     * does not survive either; by the time an item's handler runs there is
+     * nothing left to read. So the geometry is snapshotted at release and
+     * every action downstream works from the snapshot.
+     */
+    captureTextSelection(event) {
+      const payload = this.selectionPayload(event);
+      this.hlPress = null;
+      if (!payload) return;
+
       const selection = window.getSelection();
-      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+      const at = event
+        ? { x: event.clientX, y: event.clientY }
+        : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+
+      // The browser selection is deliberately left on screen while the menu is
+      // open, so the words being acted on stay visible under it. It is dropped
+      // once an action has run; dismissing the menu leaves it alone, because
+      // "I did not mean that one" is not the same as "I did not mean to
+      // select anything".
+      RP.textsel.open(payload, at.x, at.y, {
+        after: () => { if (selection) selection.removeAllRanges(); }
+      });
+    },
+
+    /**
+     * The browser's text selection as a payload, or null.
+     *
+     * Two things make a drawing's text layer different from a document's, and
+     * both of them land here.
+     *
+     * The browser selects in *DOM order*, and pdf.js emits one span per text
+     * run in content-stream order — the order the plotter wrote the entities,
+     * which has nothing to do with reading order. Dragging down two lines of a
+     * description block therefore sweeps in every run the plotter happened to
+     * write in between, and those land all over the sheet. So the selection is
+     * read as a set of *candidates* and the shape actually swept is rebuilt
+     * geometrically, row by row, from the press point to the release point.
+     *
+     * And the glyphs in the text layer are not the glyphs on the page: pdf.js
+     * lays a substituted face over a CAD stick font and stretches it with
+     * `--scale-x` so only the run's total advance is guaranteed to line up.
+     * The caret therefore lands a fraction of a character from where it looks
+     * like it should — measured against a plotted sheet, bars came out inset
+     * 1 to 2.5pt at each end, about a third of a character, which reads as the
+     * first letter of a word refusing to highlight. Selections are rounded out
+     * to whole words before anything is measured.
+     */
+    selectionPayload(event) {
+      const selection = window.getSelection();
+      const press = this.hlPress;
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
 
       // Only act on selections that started inside a page's text layer —
       // otherwise selecting text in the sidebar would create markups. Checking
@@ -772,43 +902,42 @@
       // several pages working.
       const anchor = selection.anchorNode;
       const anchorEl = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
-      if (!anchorEl || !anchorEl.closest || !anchorEl.closest('.text-layer')) return;
+      if (!anchorEl || !anchorEl.closest || !anchorEl.closest('.text-layer')) return null;
+
+      const under = event ? RP.viewer.pageAt(event.clientX, event.clientY) : null;
+      const release = under
+        ? { page: under.index, clientX: event.clientX, clientY: event.clientY }
+        : null;
+      // Order the two ends by page, then down the page. Left/right on a single
+      // row is left to `HL.sweep`, which normalises that itself.
+      let from = press;
+      let to = release;
+      if (from && to && (from.page > to.page ||
+          (from.page === to.page && from.clientY > to.clientY + 2))) { from = release; to = press; }
 
       const byPage = new Map();
-      for (let i = 0; i < selection.rangeCount; i += 1) {
-        const range = selection.getRangeAt(i);
-        for (const clientRect of Array.from(range.getClientRects())) {
-          if (clientRect.width < 1 || clientRect.height < 1) continue;
-          const record = RP.viewer.pageAt(clientRect.left + clientRect.width / 2, clientRect.top + clientRect.height / 2);
-          if (!record) continue;
-          const box = record.container.getBoundingClientRect();
-          const p1 = record.viewport.convertToPdfPoint(clientRect.left - box.left, clientRect.top - box.top);
-          const p2 = record.viewport.convertToPdfPoint(clientRect.right - box.left, clientRect.bottom - box.top);
-          const rect = RP.geom.normRect(p1[0], p1[1], p2[0], p2[1]);
-          // Trim the leading/trailing sliver browsers add around line boxes.
-          rect.y += rect.h * 0.06;
-          rect.h *= 0.88;
-          if (!byPage.has(record.index)) byPage.set(record.index, []);
-          byPage.get(record.index).push(rect);
+      const sweptByPage = new Map();
+      for (const record of RP.viewer.pages) {
+        if (!record || !record.textDivs || !record.textDivs.length) continue;
+        const words = selectedWordRects(selection, record);
+        if (!words.length) continue;
+        const rows = HL.rows(words);
+        // The swept rows are kept as well as the bars they collapse into: the
+        // bars are the geometry, the rows still carry the words, and the text
+        // is rebuilt from those below.
+        const swept = HL.sweep(rows, endpointOn(rows, record, from, true),
+          endpointOn(rows, record, to, false));
+        const bars = [];
+        for (const rowWords of swept) {
+          for (const bar of HL.bars(rowWords)) bars.push(bar);
         }
+        if (!bars.length) continue;
+        sweptByPage.set(record.index, swept);
+        byPage.set(record.index, bars.map((bar) => toPdfBar(record, bar)));
       }
 
-      if (!byPage.size) return;
-      const text = selection.toString().replace(/\s+/g, ' ').trim();
-      let first = null;
-      for (const [pageIndex, rects] of byPage) {
-        const annot = RP.store.add({
-          page: pageIndex,
-          type: 'highlight',
-          color: this.style.highlightColor,
-          opacity: 0.4,
-          rects: mergeRowRects(rects),
-          text: text.slice(0, 400)
-        });
-        if (!first) first = annot;
-      }
-      selection.removeAllRanges();
-      RP.status('Highlighted ' + byPage.size + (byPage.size === 1 ? ' passage' : ' passages'), 'good');
+      if (!byPage.size) return null;
+      return { pages: byPage, text: HL.textOf(sweptByPage) };
     },
 
     // ---------------------------------------------------------------------
@@ -1038,13 +1167,23 @@
       const many = store.selection.size > 1;
       const hasText = RP.clip.hasTextSelection();
 
-      RP.menu.open(event.clientX, event.clientY, [
-        {
+      /* Right-clicking inside a standing area selection means "act on this",
+         so the full set of text actions is spliced in at the top and the bare
+         "Copy text" row is dropped — it would be the same command twice.
+         Right-clicking anywhere else leaves the selection alone but offers
+         only the plain copy, because the click was not about it. */
+      const inSelection = RP.textsel.hitTest(record.index, pdf[0], pdf[1]);
+      const textItems = inSelection
+        ? RP.textsel.items(RP.textsel.current, { after: () => RP.textsel.clear() })
+        : [{
           label: 'Copy text',
           hint: 'Ctrl+C',
           disabled: !hasText,
           run: () => RP.clip.copyText()
-        },
+        }];
+
+      RP.menu.open(event.clientX, event.clientY, [
+        ...textItems,
         hit ? { separator: true } : null,
         hit ? {
           label: 'Markup properties…',
@@ -1125,25 +1264,407 @@
            node.tagName === 'SELECT' || node.isContentEditable === true;
   }
 
-  /** Merge selection rects that sit on the same text row into one bar. */
-  function mergeRowRects(rects) {
-    const sorted = rects.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+  // ---------------------------------------------------------------------
+  // Highlight geometry
+  //
+  // Pure, and in page-local CSS pixels with y running down the screen, which
+  // is the space the pointer arrives in. Nothing here touches the DOM, so
+  // `test/verify.js` can drive it with plain rectangles — the ordering and
+  // bridging bugs it covers were all invisible until a sheet was in front of
+  // someone. Conversion to PDF space happens once, on the finished bars.
+  // ---------------------------------------------------------------------
+
+  const HL = {
+
+    /**
+     * Bucket word rects into visual rows, top of the page first.
+     *
+     * Rows are grown from the *middles* of the words against a shared band
+     * rather than by sorting on `top`: words on one row rarely share a top
+     * edge — a different face, a superscript or a taller glyph all shift it —
+     * and sorting on it interleaved rows, which then merged left-to-right in
+     * the wrong order and left fragments behind.
+     */
+    rows(words) {
+      const sorted = words.slice()
+        .sort((a, b) => (a.top + a.bottom) - (b.top + b.bottom) || a.left - b.left);
+      const rows = [];
+      for (const word of sorted) {
+        const middle = (word.top + word.bottom) / 2;
+        const row = rows[rows.length - 1];
+        if (row && middle >= row.top && middle <= row.bottom) {
+          row.top = Math.min(row.top, word.top);
+          row.bottom = Math.max(row.bottom, word.bottom);
+          row.words.push(word);
+        } else {
+          rows.push({ top: word.top, bottom: word.bottom, words: [word] });
+        }
+      }
+      for (const row of rows) row.words.sort((a, b) => a.left - b.left);
+      return rows;
+    },
+
+    /**
+     * The words the pointer actually swept, as one array per row.
+     *
+     * `from` and `to` are `{row, x}` in reading order; either being null means
+     * that end is unbounded, and both null means take the selection as it
+     * stands (a keyboard or double-click selection, where there is no drag to
+     * reconstruct).
+     *
+     * The filter is a walk rather than a box because a drawing has no single
+     * text block to bound: the run grows a horizontal *band* as it goes and
+     * each row is admitted only where it overlaps the band so far. That is
+     * what a reading-order selection actually is — spatially contiguous — and
+     * it is what rejects the far-away runs the browser hands over from
+     * elsewhere in the content stream while still letting a genuine paragraph
+     * widen past the two points that were clicked.
+     */
+    sweep(rows, from, to) {
+      if (!rows.length) return [];
+      if (!from || !to) return rows.map((row) => row.words.slice());
+
+      let a = from;
+      let b = to;
+      if (a.row > b.row || (a.row === b.row && a.x > b.x)) { a = to; b = from; }
+
+      const out = [];
+      let band = null;
+      for (let i = Math.max(0, a.row); i <= Math.min(rows.length - 1, b.row); i += 1) {
+        const runs = this.runs(rows[i].words);
+        // The first row that yields anything seeds the band, and it seeds it
+        // from *one* run — the one the press landed in, or the next one to its
+        // right. Admitting everything right of the press instead let the far
+        // column in on the very first row, and from there the band was wide
+        // enough to admit it on every row below.
+        const keep = band
+          ? runs.filter((run) => run.right > band[0] && run.left < band[1])
+          : runs.filter((run) => run.right > a.x).slice(0, 1);
+
+        let words = [];
+        for (const run of keep) words = words.concat(run.words);
+        if (i === a.row) words = words.filter((w) => w.right > a.x);
+        if (i === b.row) words = words.filter((w) => w.left < b.x);
+        if (!words.length) continue;
+
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const w of words) { lo = Math.min(lo, w.left); hi = Math.max(hi, w.right); }
+        band = band ? [Math.min(band[0], lo), Math.max(band[1], hi)] : [lo, hi];
+        out.push(words);
+      }
+      return out;
+    },
+
+    /**
+     * The words of one row grouped into contiguous runs.
+     *
+     * The gap rule lives here and nowhere else, so "words the sweep treats as
+     * one stretch of text" and "words a bar paints through" are the same
+     * question by construction. Drift between the two would show up as a bar
+     * that stops in the middle of a phrase the sweep had already accepted.
+     */
+    runs(rowWords, ratio) {
+      const gapRatio = ratio === undefined ? HL_GAP_RATIO : ratio;
+      const out = [];
+      let cur = null;
+      for (const word of rowWords.slice().sort((a, b) => a.left - b.left)) {
+        const gap = cur ? word.left - cur.right : Infinity;
+        const height = Math.max(word.bottom - word.top, cur ? cur.bottom - cur.top : 0);
+        if (cur && gap <= height * gapRatio) {
+          cur.right = Math.max(cur.right, word.right);
+          cur.top = Math.min(cur.top, word.top);
+          cur.bottom = Math.max(cur.bottom, word.bottom);
+          cur.words.push(word);
+        } else {
+          cur = {
+            left: word.left, top: word.top, right: word.right, bottom: word.bottom,
+            words: [word]
+          };
+          out.push(cur);
+        }
+      }
+      return out;
+    },
+
+    /**
+     * One bar per run of words on a row.
+     *
+     * The space between two highlighted words is painted through, so a phrase
+     * reads as one stroke of a pen rather than a box per word. Only *word*
+     * gaps though: anything wider than `ratio` times the row height starts a
+     * new bar, which is what stops a schedule row's separate columns being
+     * joined by a bar across blank paper. Measured on a plotted sheet the two
+     * populations are cleanly separated with nothing in between: letter gaps
+     * came in around 0.3 of the row height and word gaps around 0.93, with
+     * column gaps several times that.
+     *
+     * The union is a union of *edges*: carrying the larger of two heights
+     * instead, against the higher of two tops, quietly produced a bar shorter
+     * than the words it covered.
+     */
+    bars(rowWords, ratio) {
+      return this.runs(rowWords, ratio).map((run) => ({
+        left: run.left, top: run.top, right: run.right, bottom: run.bottom
+      }));
+    },
+
+    /**
+     * The swept words as text, in reading order.
+     *
+     * `selection.toString()` cannot be used for this. The browser concatenates
+     * in DOM order and pdf.js emits one span per run in *content-stream*
+     * order — the order the plotter wrote the entities — so a two-line
+     * description block comes back with its lines interleaved and runs from
+     * the far side of the sheet dropped in between. The rows have already been
+     * bucketed top-to-bottom and sorted left-to-right by `rows` and `runs`, so
+     * walking them is both correct and free.
+     *
+     * Takes `Map<pageIndex, rows[]>` where a row is an array of word rects
+     * carrying `text`. Runs on one row are joined by a double space, because a
+     * gap wide enough to break a bar is a column boundary on a schedule and
+     * running the two columns together would read as one phrase. Pure — no
+     * DOM, so `test/verify.js` drives it directly.
+     */
+    textOf(sweptByPage) {
+      // Whitespace is squeezed out of each word as it goes in, never off the
+      // finished string: a pass over the whole thing would collapse the double
+      // space that separates two columns back down to a word space, which is
+      // the distinction this is drawing in the first place.
+      const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const pages = [];
+      for (const pageIndex of Array.from(sweptByPage.keys()).sort((a, b) => a - b)) {
+        const lines = [];
+        for (const rowWords of sweptByPage.get(pageIndex) || []) {
+          const parts = this.runs(rowWords)
+            .map((run) => run.words.map((w) => clean(w.text)).filter(Boolean).join(' '))
+            .filter(Boolean);
+          if (parts.length) lines.push(parts.join('  '));
+        }
+        if (lines.length) pages.push(lines.join('\n'));
+      }
+      return pages.join('\n\n').trim();
+    }
+  };
+
+  /**
+   * One bar, in page-local CSS pixels, as a rect in PDF user space.
+   *
+   * The 6%/88% trim takes off the sliver browsers leave above and below a line
+   * box, which is leading rather than glyph and makes a highlight look like it
+   * is set in a taller face than the text it covers.
+   */
+  function toPdfBar(record, bar) {
+    const p1 = record.viewport.convertToPdfPoint(bar.left, bar.top);
+    const p2 = record.viewport.convertToPdfPoint(bar.right, bar.bottom);
+    const rect = RP.geom.normRect(p1[0], p1[1], p2[0], p2[1]);
+    rect.y += rect.h * 0.06;
+    rect.h *= 0.88;
+    return rect;
+  }
+
+  /**
+   * Which row of `rows` an endpoint sits on, in page-local pixels.
+   *
+   * An endpoint on another page means this page is swept from that side
+   * entirely; no endpoint at all means no drag was recorded and the caller
+   * should not filter. The row is the *nearest* one rather than the containing
+   * one, because a press in the leading between two lines still belongs to a
+   * line as far as the user is concerned.
+   */
+  function endpointOn(rows, record, point, atStart) {
+    if (!point || !rows.length) return null;
+    if (point.page !== record.index) {
+      return atStart ? { row: 0, x: -Infinity } : { row: rows.length - 1, x: Infinity };
+    }
+    const box = record.container.getBoundingClientRect();
+    const x = point.clientX - box.left;
+    const y = point.clientY - box.top;
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      const dist = y < row.top ? row.top - y : (y > row.bottom ? y - row.bottom : 0);
+      if (dist < bestDist) { bestDist = dist; best = i; }
+    }
+    return { row: best, x };
+  }
+
+  /** Two page-local points as a normalised band. Pure. */
+  function normBand(a, b) {
+    return {
+      left: Math.min(a.x, b.x),
+      top: Math.min(a.y, b.y),
+      right: Math.max(a.x, b.x),
+      bottom: Math.max(a.y, b.y)
+    };
+  }
+
+  /**
+   * True when a word rect belongs to `band`.
+   *
+   * The test is on the word's *centre*, not on any overlap. Overlap would drag
+   * in the whole of a long run whose first letter the box happened to clip,
+   * which on a schedule row means selecting the column you deliberately
+   * stopped short of. Containment would instead drop a word whose descender
+   * pokes out of the bottom edge. The centre is what a person means by "I put
+   * the box over this word". Pure — `test/verify.js` drives it.
+   */
+  function centreInBand(word, band) {
+    const cx = (word.left + word.right) / 2;
+    const cy = (word.top + word.bottom) / 2;
+    return cx >= band.left && cx <= band.right && cy >= band.top && cy <= band.bottom;
+  }
+
+  /**
+   * Every word of a page that falls inside `band`, in page-local pixels.
+   *
+   * Two passes for cost, not for correctness. Splitting a span into one Range
+   * per word and asking each for its client rects is the expensive part, and a
+   * plotted title block has hundreds of spans, so spans are first rejected —
+   * or accepted whole — on their own bounding box, and only the ones the band
+   * actually cuts through get word-split. The reads are all reads with no
+   * writes in between, so the browser can serve them from one layout rather
+   * than one per span.
+   */
+  function wordsInBand(record, band) {
+    const box = record.container.getBoundingClientRect();
     const out = [];
-    for (const rect of sorted) {
-      const last = out[out.length - 1];
-      if (last &&
-          Math.abs((last.y + last.h / 2) - (rect.y + rect.h / 2)) < Math.min(last.h, rect.h) * 0.6 &&
-          rect.x <= last.x + last.w + 2) {
-        const right = Math.max(last.x + last.w, rect.x + rect.w);
-        last.x = Math.min(last.x, rect.x);
-        last.w = right - last.x;
-        last.y = Math.min(last.y, rect.y);
-        last.h = Math.max(last.h, rect.h);
-      } else {
-        out.push(Object.assign({}, rect));
+    for (const div of record.textDivs || []) {
+      if (!div || !div.isConnected) continue;
+      const r = div.getBoundingClientRect();
+      const span = {
+        left: r.left - box.left,
+        top: r.top - box.top,
+        right: r.right - box.left,
+        bottom: r.bottom - box.top
+      };
+      if (span.right <= band.left || span.left >= band.right ||
+          span.bottom <= band.top || span.top >= band.bottom) continue;
+
+      const whole = span.left >= band.left && span.right <= band.right &&
+                    span.top >= band.top && span.bottom <= band.bottom;
+      if (whole) {
+        if (span.right - span.left < 0.5 || span.bottom - span.top < 0.5) continue;
+        out.push(Object.assign({ text: div.textContent || '' }, span));
+        continue;
+      }
+      for (const word of wordRectsOf(div, box)) {
+        if (centreInBand(word, band)) out.push(word);
       }
     }
     return out;
+  }
+
+  /**
+   * One span split into its whitespace-separated words, as page-local rects.
+   *
+   * A word that wraps gives more than one client rect; the text rides on the
+   * first, matching `selectedWordRects`, so `HL.textOf` picks each word up
+   * exactly once.
+   */
+  function wordRectsOf(div, box) {
+    const node = div.firstChild;
+    if (!node || node.nodeType !== 3) return [];
+    const text = node.data || '';
+    if (!text.trim()) return [];
+
+    const out = [];
+    const range = document.createRange();
+    const word = /\S+/g;
+    let match = word.exec(text);
+    while (match) {
+      range.setStart(node, match.index);
+      range.setEnd(node, match.index + match[0].length);
+      let first = true;
+      for (const rect of range.getClientRects()) {
+        if (rect.width < 0.5 || rect.height < 0.5) continue;
+        out.push({
+          left: rect.left - box.left,
+          top: rect.top - box.top,
+          right: rect.right - box.left,
+          bottom: rect.bottom - box.top,
+          text: first ? match[0] : ''
+        });
+        first = false;
+      }
+      match = word.exec(text);
+    }
+    return out;
+  }
+
+  /**
+   * The selected words of one page, as rects local to its container.
+   *
+   * Works off `record.textDivs` — pdf.js's own list of leaf spans — rather
+   * than the ranges' client rects, because a rect tells you nothing about
+   * which word it came from and rounding out to a word boundary is the whole
+   * point. `.text-layer` also contains `.markedContent` wrappers that are
+   * `display: contents` and have no box of their own; textDivs excludes them.
+   */
+  function selectedWordRects(selection, record) {
+    if (typeof selection.containsNode !== 'function') return [];
+    const box = record.container.getBoundingClientRect();
+    const out = [];
+    for (const div of record.textDivs) {
+      if (!div || !div.isConnected || !selection.containsNode(div, true)) continue;
+      const got = wholeWordRects(selection, div);
+      let first = true;
+      for (const rect of got.rects) {
+        if (rect.width < 0.5 || rect.height < 0.5) continue;
+        out.push({
+          left: rect.left - box.left,
+          top: rect.top - box.top,
+          right: rect.right - box.left,
+          bottom: rect.bottom - box.top,
+          // A span that wraps yields more than one client rect for one piece
+          // of text. The text rides on the *first* of them and the rest carry
+          // none, so rebuilding the text in reading order picks each span up
+          // exactly once, at the position of its leftmost/topmost rect.
+          text: first ? got.text : ''
+        });
+        first = false;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The client rects of one span's selected text, grown to whole words.
+   *
+   * A range that stops mid-word is nearly always the substituted face
+   * disagreeing with the plotted glyphs rather than an intention, so both ends
+   * are pushed out to the enclosing whitespace. Taking the rects from one
+   * range per span, rather than per word, also means the spaces *inside* the
+   * span come back inside the rect for free.
+   */
+  function wholeWordRects(selection, div) {
+    const node = div.firstChild;
+    if (!node || node.nodeType !== 3) {
+      return { rects: Array.from(div.getClientRects()), text: div.textContent || '' };
+    }
+    const text = node.data || '';
+    if (!text.trim()) return { rects: [], text: '' };
+
+    let from = text.length;
+    let to = 0;
+    for (let i = 0; i < selection.rangeCount; i += 1) {
+      const range = selection.getRangeAt(i);
+      if (typeof range.intersectsNode === 'function' && !range.intersectsNode(node)) continue;
+      from = Math.min(from, range.startContainer === node ? range.startOffset : 0);
+      to = Math.max(to, range.endContainer === node ? range.endOffset : text.length);
+    }
+    if (to <= from) return { rects: [], text: '' };
+    while (from > 0 && !/\s/.test(text[from - 1])) from -= 1;
+    while (to < text.length && !/\s/.test(text[to])) to += 1;
+
+    const range = document.createRange();
+    range.setStart(node, from);
+    range.setEnd(node, to);
+    // The substring is taken from the same offsets the rects were measured
+    // from, so the words a bar covers and the words that get copied are the
+    // same words by construction.
+    return { rects: Array.from(range.getClientRects()), text: text.slice(from, to) };
   }
 
   // -------------------------------------------------------------------------
@@ -1207,5 +1728,9 @@
   };
 
   RP.tools = Tools;
+  RP.tools.hl = HL;   // pure geometry, exposed so verify.js can drive it
+  // The area-selection predicates are pure too, and the band rule is exactly
+  // the kind of thing that is invisible until a sheet is in front of someone.
+  RP.tools.band = { normBand, centreInBand };
 
 })(window.RP);

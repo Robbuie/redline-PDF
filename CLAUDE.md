@@ -6,8 +6,13 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.4.0. See `README.md` for user-facing behaviour and
-`PLAN.md` for the roadmap and known engineering debt.
+PDF. Current version 0.5.0. See `README.md` for user-facing behaviour,
+`CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
+engineering debt.
+
+**Every user-visible change gets a `CHANGELOG.md` entry and a version bump in
+`package.json`**, and the version line above is part of that bump — it has gone
+stale before.
 
 ## Commands
 
@@ -53,6 +58,7 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `tabs.js` | open documents as tabs, the one-or-two panes they live in, and the tab strip |
 | `annots.js` | the file's *own* annotations — pdf.js annotation layer, link service |
 | `clip.js` | reading the text-layer selection and writing to the clipboard |
+| `textsel.js` | the selected-text *payload*, the standing area selection, and the action menu both gestures open |
 | `props.js` | the markup properties dialog |
 | `keys.js` | the `?` shortcut cheat sheet (documentation, not wiring) |
 | `tools.js` | pointer interaction — creating markups and the select/edit tool |
@@ -158,6 +164,21 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
 - **`getViewport({rotation})` is absolute, not additive.** Passing the view
   rotation alone silently flattens pages with their own `/Rotate`, which is most
   scanned or plotted sheets. Always go through `RP.viewer.rotationOf(pageProxy)`.
+- **Turning the text and annotation layers is the *stylesheet's* job, and the
+  three rules that do it live in `app.css` by hand.** pdf.js sizes both layers
+  from `viewport.rawDims` — the raw, never-rotated viewBox — places every child
+  as a percentage of that box, and then stamps `data-main-rotation` on the
+  container expecting CSS to turn it. Its own `pdf_viewer.css` carries those
+  rules at the top level; this app mirrors them rather than importing that
+  sheet, so they have to be repeated for `.text-layer` and `.native-annots`
+  both. Drop them and a sheet with its own `/Rotate` gets an upright text layer
+  over a landscape page: `overflow: clip` eats the overhang, the I-beam appears
+  over blank paper, highlights select nothing, and links and comment bubbles
+  stop being clickable. It reads as a broken document rather than as missing
+  CSS. `test/verify.js` asserts all three angles on both layers, and that they
+  rotate about the top-left corner — `rotate()` about the centre swings the
+  layer off the sheet, because the `translate()` in each transform assumes a
+  top-left origin.
 - **Printing must never come off the canvas.** The canvas is a zoom-dependent
   raster; the printer has to get vector content. `RP.print` builds bytes with
   pdf-lib (`RP.exporter.buildPdf({embed: false})` for markups-on,
@@ -205,6 +226,72 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   handler binary-searches them. Reading `getBoundingClientRect()` per page there
   forces a layout per page per frame, which was most of the scroll jank on a
   sheet set. Anything that changes page geometry must null `pageTops`.
+- **Page tops go through `RP.viewer.topOf`, never `offsetTop`.** `offsetTop` is
+  relative to the *offsetParent*, which is `.viewer` only for as long as nothing
+  positioned appears between it and `.page`; the day one does, every page top
+  comes back short at once and clicking a thumbnail opens the sheet before the
+  one clicked. `topOf` measures against the scroller itself. `goToPage` also
+  clamps to `maxScrollTop()` and schedules `confirmLanding`, which re-checks the
+  arrival, corrects a landing that is a whole page out, and logs the geometry it
+  saw to `diag.js` — that log is how a wrong landing gets diagnosed on a machine
+  you cannot attach DevTools to. It stands down if `userScrollAt` says the user
+  took the wheel mid-flight. `test/verify.js` covers all of it.
+- **The browser's text selection is a set of candidates, not the answer.** It
+  selects in *DOM order*, and pdf.js emits one span per run in content-stream
+  order — the order the plotter wrote the entities, which on a drawing has
+  nothing to do with reading order. Dragging down two lines of a description
+  block therefore sweeps in every run written in between, scattered across the
+  sheet. `RP.tools.hl.sweep` rebuilds what was actually swept from the press
+  point, growing a horizontal band row by row and admitting only runs that
+  overlap it. The gap rule that decides "one stretch of text" is
+  `RP.tools.hl.runs`, shared with the bar merging so the two cannot disagree.
+  Nor are the glyphs in the text layer the glyphs on the page: pdf.js stretches
+  a substituted face to the recorded advance with `--scale-x`, so the caret
+  lands a fraction of a character out and selections are rounded to whole words
+  before being measured. `test/verify.js` covers all of it.
+- **A text selection must be snapshotted before any menu opens.** Opening
+  `RP.menu` moves focus and installs a `pointerdown` listener of its own, and
+  the browser's selection survives neither — by the time an item's handler runs
+  there is nothing left to read. So `RP.tools.selectionPayload` builds a
+  `{pages: Map<pageIndex, rects[]>, text}` payload at *release* and every action
+  in `textsel.js` works from that snapshot. Nothing below `RP.textsel.items`
+  may call `window.getSelection()`. `test/verify.js` covers it.
+- **Text off a drawing has to be rebuilt in reading order, not read off the
+  selection.** `selection.toString()` concatenates in DOM order and pdf.js
+  emits one span per run in content-stream order — the order the plotter wrote
+  the entities — so a two-line description block comes back with its lines
+  interleaved and runs from the far side of the sheet dropped in between.
+  `RP.tools.hl.textOf` walks the rows `HL.rows`/`HL.runs` already bucketed and
+  sorted. It squeezes whitespace per *word* rather than over the finished
+  string, because a pass over the whole thing collapses the double space
+  separating two schedule columns back down to a word space.
+- **The text-select tool is separate from `select` on purpose.** Under `select`
+  the ink layer is transparent so the text layer beneath is reachable, which is
+  why `bindPane` has to refuse the browser's `mousedown` on every press that is
+  not on a glyph. `textselect` instead keeps the ink layer in the pointer path
+  and takes the text layer *out* of it, so the browser's selection is never
+  started behind the marquee and none of that dance is needed. Folding the two
+  tools together would put it back.
+- **An area selection admits a word by its *centre*.** Overlap drags in the
+  whole of a long run whose first letter the box happened to clip — on a
+  schedule that means selecting the column you deliberately stopped short of.
+  Containment drops a word whose descender pokes out of the bottom edge.
+  `RP.tools.band.centreInBand` is the rule and `test/verify.js` covers all
+  three cases. `wordsInBand` also rejects or accepts whole spans on their own
+  bounding box first and only word-splits the ones the band actually cuts
+  through: one Range per word per span is the expensive part, and a plotted
+  title block has hundreds of spans.
+- **`cover` is not redaction and must never be described as such.** It is an
+  opaque filled rectangle — deliberately its own type rather than `rect` with
+  `fill: true`, which exports at a quarter opacity. The text underneath is
+  untouched and still selectable, searchable and extractable. The menu row says
+  so, and so do `README.md` and `CHANGELOG.md`. If that ever needs to be real
+  redaction it is a different feature: the content stream has to be edited.
+- **Strikeout and underline size their rule from the text, not from
+  `annot.width`.** `RP.render.ruleWeight` takes the run's height, and both the
+  canvas and the exporter call it — an E-size sheet carries 3pt schedule text
+  and 24pt titles on one page, and a fixed weight either obliterates the first
+  or reads as a hairline under the second. The two callers must not drift.
 - **Compare is CPU-heavy and currently on the main thread.** Changes to
   `compare.js` should not add per-page work without measuring; moving the
   pipeline to a Web Worker is a tracked item in `PLAN.md`.
@@ -386,6 +473,15 @@ provider infers owner and repo from the `origin` remote, so there is nothing to
 configure — but the repo has to stay **public**, or the shipped updater would
 need a token baked into it to read releases. `verify.yml` runs the headless
 checks on every push.
+
+Before tagging, `CHANGELOG.md` needs the entry for what is going out and its
+heading needs the real date — `npm version` bumps `package.json` and the lock
+file but knows nothing about either. If `package.json` has already been bumped
+by hand, `npm version <same> --allow-same-version` still makes the commit and
+the tag; the point is that the tag, the manifest, the lock file, the changelog
+heading and the version line at the top of this file all say the same thing.
+Four separate pieces of work once reached `main` between 0.4.1 and 0.5.0 with
+none of them recorded anywhere, which is what this file now exists to stop.
 
 Builds are **unsigned**, deliberately: this is a personal tool and a
 certificate is not worth buying for it. Two consequences to keep in mind.

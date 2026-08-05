@@ -96,13 +96,28 @@
     },
 
     /**
-     * What Ctrl+C should do: text if any is selected, otherwise the selected
-     * markups. Returns true when something was copied, so the caller knows
-     * whether it is entitled to swallow the keystroke.
+     * What Ctrl+C should do, in the order the three things can be in front of
+     * you: a live text-layer selection, then a standing area selection, then
+     * the selected markups. Returns true when something was copied, so the
+     * caller knows whether it is entitled to swallow the keystroke.
+     *
+     * The live selection wins over the standing one because it is the more
+     * recent gesture — you cannot make one without the other having been made
+     * first, and a text-layer drag that did not clear the standing selection
+     * still means "this, now".
      */
     copySelection() {
       const text = this.selectedText();
       if (text) { this.copyText(); return true; }
+
+      if (RP.textsel && RP.textsel.has()) {
+        const selected = RP.textsel.text();
+        const words = RP.textsel.wordCount(RP.textsel.current);
+        this.write(selected).then((done) => {
+          if (done) RP.status('Copied ' + words + (words === 1 ? ' word' : ' words'));
+        });
+        return true;
+      }
 
       const markups = this.selectedMarkupText();
       if (markups) {
