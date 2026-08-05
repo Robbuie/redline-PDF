@@ -315,19 +315,20 @@
     // Saving
     // -----------------------------------------------------------------------
 
-    defaultCopyPath() {
-      const path = RP.store.docPath;
-      if (!path) return null;
-      const dir = RP.dirname(path);
-      const base = RP.stripExt(RP.basename(path));
-      const name = /-markup$/i.test(base) ? base : base + '-markup';
-      return RP.joinPath(dir, name + '.pdf');
+    defaultCopyPath(store) {
+      return RP.copyPath((store || RP.store).docPath);
     },
 
-    async resolveTarget() {
-      const store = RP.store;
+    /* Decides where a save goes. Returns null when the user backed out, which
+       is not the same as failing: App.save() turns it into `false` and the
+       tab-close and window-close guards stop rather than discarding work.
+
+       Every branch takes the store as an argument. There is a dialog inside
+       here and the user can switch tabs while it is up, so reading RP.store
+       after an await would resolve the target against a different drawing. */
+    async resolveTarget(store) {
       if (!store.docPath) {
-        return { path: await this.pickSavePath(), backup: false };
+        return { path: await this.pickSavePath(store), backup: false };
       }
 
       let mode = this.settings.saveMode;
@@ -352,40 +353,64 @@
       if (mode === 'overwrite') {
         return { path: store.docPath, backup: !!this.settings.backupOnOverwrite, overwrote: true };
       }
-      // Repeat saves reuse the copy we already made, instead of stacking files.
-      return { path: store.savedTo || this.defaultCopyPath(), backup: false };
+
+      /* Copy mode. The *first* save of a document asks where the copy goes,
+         with the `-markup` name pre-filled. Writing it silently is what this
+         used to do, and it meant the app chose a filename and a folder on the
+         user's behalf and only mentioned them afterwards in the toast — the
+         copy lands next to a drawing that may not be anywhere the user works.
+         Cancelling must write nothing and leave the document dirty.
+
+         Every later save reuses `store.savedTo`, so a repeat Ctrl+S neither
+         re-prompts nor stacks a second file. `savedTo` is deliberately the
+         *only* thing that moves: `docPath` still points at the drawing that
+         was opened, so the tab title, the recents entry, the crash snapshot
+         and a later switch to overwrite mode all keep meaning the original.
+         The copy is an output of this document, not a replacement for it. */
+      if (store.savedTo) return { path: store.savedTo, backup: false };
+      const picked = await this.pickSavePath(store);
+      return picked ? { path: picked, backup: false } : null;
     },
 
-    async pickSavePath() {
-      const suggestion = this.defaultCopyPath() || 'markup.pdf';
+    async pickSavePath(store) {
+      const suggestion = this.defaultCopyPath(store) || 'markup.pdf';
       return window.rp.files.saveAsDialog({ title: 'Save marked-up PDF', defaultPath: suggestion });
     },
 
     /** Returns false when the save did not happen, so the tab-close guard and
         the window-close guard can stop instead of discarding the work. */
     async save() {
-      if (!RP.store.doc) return false;
-      const target = await this.resolveTarget();
+      // Captured before the first await: resolveTarget can put a dialog up and
+      // the user can switch tabs under it.
+      const store = RP.store;
+      if (!store.doc) return false;
+      const target = await this.resolveTarget(store);
       if (!target || !target.path) return false;
-      return this.writeTo(target.path, target.backup, target.overwrote);
+      return this.writeTo(target.path, target.backup, target.overwrote, store);
     },
 
     async saveAs() {
-      if (!RP.store.doc) return false;
-      const path = await this.pickSavePath();
+      const store = RP.store;
+      if (!store.doc) return false;
+      const path = await this.pickSavePath(store);
       if (!path) return false;
-      return this.writeTo(path, false, false);
+      return this.writeTo(path, false, false, store);
     },
 
-    async writeTo(path, backup, overwrote) {
+    async writeTo(path, backup, overwrote, forStore) {
       RP.status('Saving…');
       // Captured up front: an await inside a save must not let a tab switch
       // land the bytes of one drawing on another one's store.
-      const store = RP.store;
+      const store = forStore || RP.store;
       try {
         const bytes = await RP.exporter.buildPdf({ store });
         await window.rp.files.write(path, bytes, backup);
-        store.savedTo = path;
+        /* `savedTo` means "the copy this document has been writing", and only a
+           copy may claim it. Recording an overwrite here too would leave
+           `savedTo` pointing at the *original*, and a later switch to copy mode
+           would then take that as a copy it had already been given and write
+           silently over the drawing — the one thing copy mode exists to avoid. */
+        if (!overwrote) store.savedTo = path;
         store.markDirty(false);
         if (store.docPath) await window.rp.recovery.clear(store.docPath);
         RP.status('');
@@ -767,9 +792,20 @@
       const order = ['copy', 'overwrite', 'ask'];
       const next = order[(order.indexOf(this.settings.saveMode) + 1) % order.length];
       this.settings = await window.rp.settings.patch({ saveMode: next });
-      RP.store.saveModeDecided = null;
+      this.clearSaveModeDecisions();
       this.updateSaveModeChip();
       RP.toast('Save mode: ' + this.saveModeLabel(next), next === 'overwrite' ? 'warn' : '');
+    },
+
+    /* The save mode is a global setting, so changing it has to reach every open
+       document — not just the focused one. A background drawing that already
+       answered the "ask each time" prompt keeps its answer in
+       `store.saveModeDecided`, and would otherwise go on honouring a mode the
+       user has since changed out from under it. */
+    clearSaveModeDecisions() {
+      const tabs = (RP.tabs && RP.tabs.all) ? RP.tabs.all() : [];
+      if (tabs.length) tabs.forEach((tab) => { tab.store.saveModeDecided = null; });
+      else if (RP.store) RP.store.saveModeDecided = null;
     },
 
     saveModeLabel(mode) {
@@ -901,7 +937,7 @@
 
       RP.$$('input[name="saveMode"]').forEach((radio) => {
         radio.addEventListener('change', () => {
-          if (radio.checked) { RP.store.saveModeDecided = null; patch({ saveMode: radio.value }); }
+          if (radio.checked) { this.clearSaveModeDecisions(); patch({ saveMode: radio.value }); }
         });
       });
       RP.$('#optBackup').addEventListener('change', (e) => patch({ backupOnOverwrite: e.target.checked }));

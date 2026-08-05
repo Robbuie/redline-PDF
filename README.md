@@ -112,9 +112,15 @@ Settings.
 
 | Mode | Ctrl+S writes | Safety net |
 |---|---|---|
-| **New copy** (default) | `drawing-markup.pdf` next to the original | original never touched |
+| **New copy** (default) | a copy you name — the first `Ctrl+S` on a drawing opens the save dialog with `drawing-markup.pdf` pre-filled | original never touched |
 | **Overwrite original** | back to `drawing.pdf` | one-time `drawing.bak.pdf` (toggleable) |
 | **Ask each time** | prompts on the first save of each document | remembers your answer for that document |
+
+In new-copy mode only the *first* save of a document asks. Once you have
+confirmed a name and a folder, every later `Ctrl+S` writes over that same copy
+without a dialog, so repeat saves never stack files. Cancel the dialog and
+nothing is written — the drawing stays unsaved. The tab itself goes on
+representing the original drawing; the copy is an output of it.
 
 Every write goes to a temp file and is renamed into place, so a crash mid-save can
 never truncate a drawing.

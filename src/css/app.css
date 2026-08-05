@@ -1068,12 +1068,20 @@ body.panning .viewer * { cursor: grabbing !important; }
 .st-msg { color: var(--txt-1); font-family: var(--font); }
 .st-msg.good { color: var(--good); }
 .st-msg.warn { color: var(--warn); }
+/* The save-mode chip is a control, not a caption, and it is the only thing in
+   the window that says how Ctrl+S behaves — so it has to read as pressable at
+   a glance. The caret is a pseudo-element deliberately: updateSaveModeChip
+   sets textContent, which would wipe a real child element. */
 .st-toggle {
-  height: 18px; padding: 0 8px;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 18px; padding: 0 7px 0 8px;
   background: var(--bg-3); border: 1px solid var(--line); border-radius: 9px;
   color: var(--txt-1); font: inherit; font-size: 10.5px; cursor: pointer;
 }
+.st-toggle::after { content: '\25BE'; font-size: 9px; line-height: 1; opacity: .65; }
 .st-toggle:hover { color: var(--txt-0); border-color: var(--txt-2); }
+.st-toggle:hover::after { opacity: 1; }
+.st-toggle:active { transform: translateY(1px); }
 .st-toggle.overwrite { background: rgba(255, 91, 74, .16); border-color: rgba(255, 91, 74, .45); color: #ff8375; }
 
 /* Go-to-page. A real input rather than a label, because typing a sheet number

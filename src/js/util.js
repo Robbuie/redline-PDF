@@ -103,6 +103,17 @@ window.RP = window.RP || {};
     return dir.replace(/[\\/]+$/, '') + sep + name;
   };
 
+  /* The name a "save to a new copy" defaults to. `-markup` is appended once
+     and once only: marking up a copy and saving it again must not walk off
+     into `E-101-markup-markup-markup.pdf`. Pure and path-shaped rather than a
+     method on App, so test/verify.js can check the naming without a DOM. */
+  RP.copyPath = function (docPath) {
+    if (!docPath) return null;
+    const base = RP.stripExt(RP.basename(docPath));
+    const name = /-markup$/i.test(base) ? base : base + '-markup';
+    return RP.joinPath(RP.dirname(docPath), name + '.pdf');
+  };
+
   RP.fmtDate = function (ts) {
     if (!ts) return '';
     const d = new Date(ts);

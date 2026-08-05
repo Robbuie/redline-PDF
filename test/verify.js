@@ -58,6 +58,8 @@ function measuringContext(record) {
 global.window = global;
 global.window.PDFLib = PDFLib;
 global.requestAnimationFrame = (fn) => setTimeout(() => fn(Date.now()), 0);
+// app.js registers a DOMContentLoaded handler at load time and nothing else.
+global.addEventListener = () => {};
 global.document = {
   createElement: () => ({
     style: {}, appendChild() {}, setAttribute() {}, addEventListener() {},
@@ -67,12 +69,15 @@ global.document = {
   querySelector: () => null,
   querySelectorAll: () => [],
   addEventListener() {},
-  body: { classList: { add() {}, remove() {}, contains: () => false }, dataset: {}, appendChild() {} }
+  body: {
+    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
+    dataset: {}, appendChild() {}
+  }
 };
 
 const globalEval = eval; // indirect eval => runs in global scope
 for (const file of ['util.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
-  'print.js', 'annots.js', 'viewer.js', 'textsel.js', 'tools.js']) {
+  'print.js', 'annots.js', 'viewer.js', 'textsel.js', 'tools.js', 'sidebar.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -2028,6 +2033,141 @@ function testTextSelection() {
     /pages:rebuilt'[\s\S]{0,60}RP\.textsel\.clear\(\)/.test(tools));
 }
 
+/**
+ * Where a save goes. The bug this covers: copy mode wrote `<drawing>-markup.pdf`
+ * next to the original on the very first Ctrl+S without ever asking, so the app
+ * chose a filename and a folder for the user and only mentioned them afterwards
+ * in the toast. The fix has two halves and both matter — the *first* save must
+ * ask, and every save after it must not.
+ */
+async function testSaveTargets() {
+  console.log('\nSave targets');
+
+  check('the suggested copy sits beside the original',
+    RP.copyPath('C:\\drawings\\E-101.pdf') === 'C:\\drawings\\E-101-markup.pdf',
+    RP.copyPath('C:\\drawings\\E-101.pdf'));
+  check('-markup is appended once, not once per generation',
+    RP.copyPath('C:\\drawings\\E-101-markup.pdf') === 'C:\\drawings\\E-101-markup.pdf');
+  check('a drawing that was never on disk has no suggestion',
+    RP.copyPath(null) === null);
+
+  const App = RP.app;
+  const keptStore = RP.store;
+  const keptSettings = App.settings;
+  const keptRp = global.window.rp;
+  const keptTabs = RP.tabs;
+
+  let prompts = 0;
+  let suggested = null;
+  let picks = 'C:\\approved\\E-101-markup.pdf';
+  global.window.rp = {
+    files: {
+      saveAsDialog: async (opts) => { prompts += 1; suggested = opts.defaultPath; return picks; }
+    },
+    dialog: { message: async () => ({ response: 0 }) }
+  };
+
+  const store = RP.createStore();
+  RP.store = store;
+  store.setDocument({ doc: null, path: 'C:\\drawings\\E-101.pdf', name: 'E-101.pdf', bytes: null });
+  App.settings = { saveMode: 'copy', backupOnOverwrite: true };
+
+  try {
+    let target = await App.resolveTarget(store);
+    check('the first copy-mode save asks instead of inventing a filename', prompts === 1,
+      prompts + ' dialog(s)');
+    check('the dialog opens on the -markup name', suggested === 'C:\\drawings\\E-101-markup.pdf',
+      String(suggested));
+    check('the confirmed path is what gets written', !!target && target.path === picks);
+    check('a copy is never taken as an overwrite',
+      !!target && target.backup === false && !target.overwrote);
+
+    // What writeTo does on success, and the only thing it changes about the doc.
+    store.savedTo = target.path;
+
+    target = await App.resolveTarget(store);
+    check('a repeat save does not ask again', prompts === 1, prompts + ' dialog(s)');
+    check('a repeat save goes over the same copy rather than stacking files',
+      target.path === 'C:\\approved\\E-101-markup.pdf');
+    check('saving to a copy leaves the tab pointing at the original',
+      store.docPath === 'C:\\drawings\\E-101.pdf');
+
+    // Cancelling is "did not save", not "saved somewhere" — App.save() turns a
+    // null target into false and the close guards stop on it.
+    const fresh = RP.createStore();
+    fresh.setDocument({ doc: null, path: 'C:\\drawings\\E-102.pdf', name: 'E-102.pdf', bytes: null });
+    picks = null;
+    target = await App.resolveTarget(fresh);
+    check('cancelling the first save resolves no target at all', target === null);
+    check('cancelling writes nothing and leaves the document unsaved', !fresh.savedTo);
+
+    // Overwrite mode is unchanged: no dialog, and the one-time .bak.
+    App.settings = { saveMode: 'overwrite', backupOnOverwrite: true };
+    const before = prompts;
+    target = await App.resolveTarget(store);
+    check('overwrite mode writes over the original without a dialog',
+      prompts === before && target.path === 'C:\\drawings\\E-101.pdf' && target.overwrote === true);
+    check('the overwrite asks for its backup', target.backup === true);
+
+    /* An overwrite must not leave `savedTo` behind it. `savedTo` means "the
+       copy this document has been writing", and copy mode reuses it without
+       asking — so an overwrite recording it there would make the next save in
+       copy mode write silently over the original drawing, which is the one
+       thing copy mode exists to prevent. */
+    const overwritten = RP.createStore();
+    overwritten.setDocument({ doc: null, path: 'C:\\drawings\\E-104.pdf', name: 'E-104.pdf', bytes: null });
+    const owTarget = await App.resolveTarget(overwritten);
+    if (!owTarget.overwrote) overwritten.savedTo = owTarget.path; // writeTo's rule
+    check('an overwrite claims no copy to reuse', !overwritten.savedTo, String(overwritten.savedTo));
+
+    App.settings = { saveMode: 'copy', backupOnOverwrite: true };
+    picks = 'C:\\approved\\E-104-markup.pdf';
+    const askedBefore = prompts;
+    const copyTarget = await App.resolveTarget(overwritten);
+    check('switching to copy mode after an overwrite asks where the copy goes',
+      prompts === askedBefore + 1 && copyTarget.path === 'C:\\approved\\E-104-markup.pdf',
+      copyTarget.path);
+
+    // The rule above is only true if writeTo actually applies it.
+    check('writeTo records savedTo for copies only',
+      /if \(!overwrote\)\s*store\.savedTo = path;/
+        .test(fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8')));
+
+    App.settings = { saveMode: 'overwrite', backupOnOverwrite: true };
+
+    // "Ask each time" is answered per document and remembered on the store.
+    App.settings = { saveMode: 'ask', backupOnOverwrite: true };
+    picks = 'C:\\approved\\E-102-markup.pdf';
+    const asked = RP.createStore();
+    asked.setDocument({ doc: null, path: 'C:\\drawings\\E-103.pdf', name: 'E-103.pdf', bytes: null });
+    await App.resolveTarget(asked);
+    check('answering "new copy" is remembered for that document',
+      asked.saveModeDecided === 'copy', String(asked.saveModeDecided));
+
+    /* Changing the mode has to reach documents nobody is looking at, or a
+       background drawing goes on honouring an answer the user has replaced. */
+    RP.tabs = { all: () => [{ store: asked }, { store }] };
+    store.saveModeDecided = 'overwrite';
+    App.clearSaveModeDecisions();
+    check('changing the save mode clears the answer on every open document',
+      asked.saveModeDecided === null && store.saveModeDecided === null);
+  } finally {
+    RP.tabs = keptTabs;
+    RP.store = keptStore;
+    App.settings = keptSettings;
+    global.window.rp = keptRp;
+  }
+
+  // The chip is the only thing in the window that says how Ctrl+S behaves, so
+  // it has to read as a control rather than a caption.
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+  check('the save-mode chip carries a dropdown affordance',
+    /\.st-toggle::after\s*\{[^}]*content:/.test(css));
+  check('the save-mode chip says what clicking it does',
+    /id="stSaveMode"[\s\S]{0,200}title="[^"]*click/i.test(html));
+}
+
 /** Read the sheet label back out of a page, to prove content moved with it. */
 async function pageLabel(bytes, index) {
   const pdfjs = await loadPdfjs();
@@ -2054,6 +2194,7 @@ async function pageLabel(bytes, index) {
     testScrollPage();
     testSessions();
     testPackaging();
+    await testSaveTargets();
     await testExport();
     await testPageManagement();
     await testPrinting();

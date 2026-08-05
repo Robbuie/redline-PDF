@@ -12,6 +12,33 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.5.1] — 2026-08-04
+
+### Changed
+
+- **`Ctrl+S` no longer invents a filename.** In the default *new copy* mode the
+  first save of a drawing now opens the save dialog with `drawing-markup.pdf`
+  pre-filled, so the name and the folder are yours rather than the app's.
+  Confirm it once and every later `Ctrl+S` writes over that same copy silently
+  — repeat saves neither re-prompt nor stack a second file. Cancelling the
+  dialog writes nothing and leaves the drawing unsaved, which the tab-close and
+  window-close guards see. Overwrite mode is unchanged: still no dialog, still
+  the one-time `.bak`.
+- **The `Save → …` chip in the status bar looks like the control it is** — a
+  dropdown caret, a press state, and a tooltip that names the three modes it
+  cycles through.
+
+### Fixed
+
+- Changing the save mode now clears the remembered "ask each time" answer on
+  **every** open document, not just the one in front. A drawing in a background
+  tab could otherwise keep saving the way you had answered for it earlier,
+  after you had changed the mode.
+- A save that resolves its target behind a dialog can no longer land on the
+  wrong drawing if you switch tabs while that dialog is up.
+
+---
+
 ## [0.5.0] — 2026-08-04
 
 Everything since the 0.4.1 release. Five separate pieces of work landed in

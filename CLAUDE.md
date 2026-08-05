@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.5.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.5.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -148,6 +148,38 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   renames it into place. Drawings are the user's work product; a truncating write
   is unacceptable. The one-time `.bak.pdf` on first overwrite is a separate
   safety net, not a replacement.
+- **The app never picks a save location on its own, and `savedTo` is what
+  stops it asking twice.** In copy mode the first save of a document goes
+  through `pickSavePath()` with `defaultCopyPath()` pre-filled; `store.savedTo`
+  records what the user confirmed and every save after it writes there
+  silently. Skip the prompt and the app chooses a filename and a folder on the
+  user's behalf and only mentions them afterwards in the toast — which is the
+  bug this replaced. Skip the `savedTo` reuse and repeat saves stack a new file
+  per `Ctrl+S`. A cancelled dialog must resolve to `null`, not to a guessed
+  path: `App.save()` reads `null` as "did not save" and returns `false`, and
+  that `false` is the only thing stopping the tab-close and window-close guards
+  from discarding the work. `savedTo` is recorded for *copies only*: an
+  overwrite that claimed it would leave it pointing at the original, and the
+  next save after a switch to copy mode would take that as a copy it had
+  already been given and write over the drawing without asking.
+  `test/verify.js` covers all of it.
+- **A copy-saved document keeps its original `docPath`.** `savedTo` moves,
+  `docPath` does not, so the tab title, the recents entry, the crash snapshot
+  and a later switch to overwrite mode all go on meaning the drawing that was
+  opened. That is a decision, not an oversight — the copy is an output of the
+  document, not a replacement for it. Re-pointing `docPath` at the copy would
+  make the next overwrite-mode save destroy the copy instead of the original,
+  which is not what "overwrite" says on the chip.
+- **The save mode is global, so changing it must reach every open store.**
+  `App.clearSaveModeDecisions()` walks `RP.tabs.all()`; clearing only
+  `RP.store.saveModeDecided` leaves a background drawing honouring an "ask each
+  time" answer the user has since replaced. Both the status-bar chip and the
+  Settings radios go through it.
+- **`resolveTarget` takes its store as an argument.** It puts a dialog up, and
+  the user can switch tabs while it is open — reading `RP.store` after that
+  await resolves the target against a different drawing. `App.save()` captures
+  the store before the first await and hands it to both `resolveTarget` and
+  `writeTo`.
 - **Re-save must stay idempotent.** Every save embeds the markup model in the PDF
   catalog under `RedlineMarkup` *along with the object refs of everything that
   save stamped*; the next save strips those refs first. Break this and markups
@@ -461,7 +493,10 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   nothing ever saves.
 - `test/verify.js` runs renderer sources in-process (not in a `vm` context) so
   pdf-lib `instanceof` checks work. Renderer modules must therefore stay free of
-  DOM access at load time — only inside `init()` and handlers.
+  DOM access at load time — only inside `init()` and handlers. `app.js` is in
+  that list too, so the only thing it may do at load time is register its
+  `DOMContentLoaded` handler; anything else it runs on load has to survive the
+  stub `document` at the top of the test.
 
 ## Releasing
 
