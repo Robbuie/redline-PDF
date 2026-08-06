@@ -103,6 +103,100 @@
       return params;
     },
 
+    /**
+     * The two reasons pdf.js asks for a password, as this build spells them.
+     *
+     * `PasswordResponses` hangs off the library object rather than being a
+     * bare global, and the ESM and UMD builds expose it in different places —
+     * so it is reached through `this.lib` and given defaults. The numbers are
+     * stable across every pdf.js that has shipped them, but a build that
+     * exported neither would otherwise make every prompt read as a first
+     * attempt, which is the one thing the message has to get right.
+     */
+    passwordReasons() {
+      const codes = (this.lib && this.lib.PasswordResponses) || {};
+      return {
+        need: typeof codes.NEED_PASSWORD === 'number' ? codes.NEED_PASSWORD : 1,
+        incorrect: typeof codes.INCORRECT_PASSWORD === 'number' ? codes.INCORRECT_PASSWORD : 2
+      };
+    },
+
+    /** True for the error pdf.js rejects with when a password was never given. */
+    isPasswordError(err) {
+      return !!(err && (err.name === 'PasswordException' || err.name === 'PasswordError'));
+    },
+
+    /**
+     * Attach password handling to a loading task. Returns the task.
+     *
+     * **`onPassword` belongs to the loading task, not to the `getDocument`
+     * parameters.** Putting it in the parameter object is the obvious guess,
+     * it is silently ignored, and what you get is the generic
+     * `PasswordException` with no prompt ever shown — which reads as "this
+     * app cannot open protected files" rather than as a wiring mistake. The
+     * test fixtures in `test/fixtures` exist because a stubbed pdf.js will
+     * happily agree with the wrong shape.
+     *
+     * pdf.js does not simply reject an encrypted file: it calls back and
+     * *waits*, so this is a callback bridging to an async prompt rather than a
+     * promise to await. Handing `updatePassword` an Error rejects the task,
+     * which is how both a cancel and a run of wrong answers get out — without
+     * it a user who backs out leaves a document loading forever.
+     *
+     * `ask({reason, attempt, attempts})` returns the password, or null to give
+     * up. Attempts are capped here rather than in the prompt so every caller
+     * gets the cap, and so a file that answers "incorrect" to a *correct*
+     * password — a broken encryption dictionary, which does happen — cannot
+     * loop forever.
+     *
+     * **How the outcome comes back matters.** The Error handed to
+     * `updatePassword` does *not* reach the caller: pdf.js rejects that
+     * internal capability, the rejection crosses the worker boundary, and what
+     * finally rejects `task.promise` is pdf.js's own `PasswordException` with
+     * its own message. Any property put on our Error is gone by then. So the
+     * outcome is recorded on *this* side, as `task.rpPassword` — the caller
+     * reads that in its `catch` to tell "the user backed out" from "the
+     * password was never right" from "this file is actually corrupt", which
+     * are three different things to say and only one of them is an error.
+     */
+    attachPassword(task, ask, opts) {
+      if (!task || typeof ask !== 'function') return task;
+      const limit = (opts && opts.attempts) || 3;
+      const reasons = this.passwordReasons();
+      let attempt = 0;
+
+      const giveUp = (updatePassword, outcome, message) => {
+        task.rpPassword = outcome;
+        updatePassword(new Error(message));
+      };
+
+      task.onPassword = (updatePassword, reason) => {
+        attempt += 1;
+        if (attempt > limit) {
+          giveUp(updatePassword, 'exhausted', 'Too many password attempts');
+          return;
+        }
+        Promise.resolve(ask({
+          reason: reason === reasons.incorrect ? 'incorrect' : 'need',
+          attempt,
+          attempts: limit
+        })).then((password) => {
+          // A cancel and an empty box are the same answer: an empty string is
+          // a *valid* password to try, and passing it would spend an attempt
+          // on nothing and report the wrong reason next time round.
+          if (password === null || password === undefined || password === '') {
+            giveUp(updatePassword, 'cancelled', 'Password entry cancelled');
+            return;
+          }
+          updatePassword(password);
+        }).catch((err) => {
+          task.rpPassword = 'failed';
+          updatePassword(err);
+        });
+      };
+      return task;
+    },
+
     /** True when this build uses the TextLayer class instead of renderTextLayer. */
     hasTextLayerClass() {
       return !!(this.lib && typeof this.lib.TextLayer === 'function');

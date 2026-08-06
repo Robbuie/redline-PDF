@@ -156,6 +156,14 @@
 
     show() {
       if (!RP.store.doc) { RP.toast('Open a drawing first', 'warn'); return; }
+      /* Printing goes through pdf-lib exactly as saving does — `buildPdf` for
+         markups-on, `RP.pages.buildBytes` for markups-off — and pdf-lib cannot
+         rewrite an encrypted file. The preview would come up empty or damaged,
+         which on the way to a plotter is worse than being told no. */
+      if (RP.store.encrypted) {
+        RP.toast('A password-protected drawing cannot be printed from here — open an unprotected copy', 'warn');
+        return;
+      }
       if (!this.els.modal) return;
       this.opts.markups = this.els.markups.checked = !!RP.store.annotations.length;
       this.els.modal.hidden = false;

@@ -119,14 +119,23 @@
     async pickBaseline() {
       const picked = await window.rp.files.openDialog({ title: 'Choose the baseline (older) revision' });
       if (!picked) return;
+      /* A baseline gets the same password handling as a drawing opened into a
+         tab. Comparing revisions is exactly where a protected issue turns up —
+         the old one came from the client and the new one is being checked
+         against it — and nothing here writes a PDF, so a protected baseline is
+         only ever read. The task is held outside the try because backing out
+         of the prompt is recorded on it, not on the error. */
+      const task = RP.pdfjs.attachPassword(
+        pdfjsLib.getDocument(RP.pdfjs.docParams({ data: new Uint8Array(picked.bytes) })),
+        (state) => RP.app.askPassword(picked.name, state)
+      );
       try {
-        const doc = await pdfjsLib.getDocument(
-          RP.pdfjs.docParams({ data: new Uint8Array(picked.bytes) })
-        ).promise;
+        const doc = await task.promise;
         this.baseline = { path: picked.path, name: picked.name, doc };
         RP.$('#cmpBaselineName').textContent = picked.name + '  (' + doc.numPages + ' pages)';
         this.updateRunState();
       } catch (err) {
+        if (task.rpPassword === 'cancelled') return;
         RP.toast('Could not read that PDF: ' + err.message, 'error');
       }
     },

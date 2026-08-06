@@ -191,14 +191,61 @@
       const bytes = split.bytes;
 
       let doc;
+      // Held outside the try because how a password attempt *ended* is
+      // recorded on the task, not on the error — pdf.js rejects with its own
+      // PasswordException and throws ours away.
+      let task = null;
       try {
         // pdf.js takes ownership of the buffer it is handed, so give it a copy
         // and keep the pristine original for pdf-lib.
-        doc = await pdfjsLib.getDocument(RP.pdfjs.docParams({ data: bytes.slice(0) })).promise;
+        // The password handler goes on the *loading task*, not into the
+        // parameters — see `RP.pdfjs.attachPassword`.
+        task = RP.pdfjs.attachPassword(
+          pdfjsLib.getDocument(RP.pdfjs.docParams({ data: bytes.slice(0) })),
+          (state) => this.askPassword(file.name, state)
+        );
+        doc = await task.promise;
       } catch (err) {
-        RP.toast('That file could not be read as a PDF: ' + err.message, 'error');
         RP.status('');
+        const gaveUp = task && task.rpPassword;
+        /* Three different things end up here and they are not the same news.
+           Backing out of the password box is a decision, not a failure, and
+           saying "could not be read" about it would suggest the drawing is
+           broken. Running out of attempts has to name the real reason, or a
+           protected file is indistinguishable from a corrupt one — which is
+           precisely the complaint this replaced. Everything else keeps the
+           generic message, so a genuinely unreadable file still reads as one
+           rather than as a password problem. */
+        if (gaveUp === 'cancelled') return null;
+        if (gaveUp === 'exhausted') {
+          RP.toast('That password was not accepted, so ' + file.name + ' was not opened', 'warn');
+          return null;
+        }
+        if (RP.pdfjs.isPasswordError(err)) {
+          RP.toast(file.name + ' is password-protected and could not be opened', 'warn');
+          return null;
+        }
+        RP.toast('That file could not be read as a PDF: ' + err.message, 'error');
         return null;
+      }
+
+      /* Whether the file is encrypted at all, which is not the same question as
+         whether it asked for a password. An *owner* password gates permissions
+         rather than opening, so a drawing issued "no editing, no printing"
+         opens with no prompt and looks exactly like an ordinary one — and
+         pdf-lib cannot rewrite either kind, so the save has to be stopped for
+         both. `getPermissions()` is the honest test: it is null on a file with
+         no /Encrypt dictionary and an array of granted flags on one that has
+         it. The permission flags themselves are deliberately ignored — see
+         README — but their presence is the signal. */
+      let encrypted = false;
+      try {
+        encrypted = (await doc.getPermissions()) !== null;
+      } catch (err) {
+        // A build that cannot answer is assumed unencrypted: refusing to save
+        // every drawing because the check failed is far worse than the case it
+        // guards against.
+        console.warn('Could not read the permissions of this PDF', err);
       }
 
       // An empty starting tab is filled rather than added to, so the first
@@ -209,7 +256,7 @@
       RP.tabs.prepare(tab);
 
       const store = tab.store;
-      store.setDocument({ doc, path: file.path, name: file.name, bytes });
+      store.setDocument({ doc, path: file.path, name: file.name, bytes, encrypted });
       // Already stripped above, so the Pages panel and Print need not do it again.
       if (embedded) store.baseBytes = bytes;
       RP.compare.close();
@@ -255,11 +302,89 @@
       // tab strip, thumbnails and toolbar into line with the new session.
       RP.tabs.afterSwitch(tab, { emitLoaded: false, rebuilt: true });
       RP.status(restored ? 'Reopened at ' + restored : '');
+      // Said on the way in rather than at the first Ctrl+S. Finding out that a
+      // drawing cannot be saved *after* an hour of marking it up is the
+      // version of this that wastes somebody's afternoon.
+      if (encrypted) {
+        RP.toast(file.name + ' is protected — you can review and copy from it, but markups cannot be saved into it', 'warn');
+      }
       if (file.path) {
         this.settings.recents = await window.rp.recents.add({ path: file.path, name: file.name });
         RP.sidebar.renderRecents(this.settings.recents);
       }
       return tab;
+    },
+
+    // -----------------------------------------------------------------------
+    // Password-protected drawings
+    // -----------------------------------------------------------------------
+
+    /**
+     * Ask for a drawing's password.
+     *
+     * A renderer modal rather than a native dialog, because `dialog.message`
+     * has no text input. The value is returned straight to the pdf.js callback
+     * and is never stored: not in `settings`, not on the recents entry, not in
+     * the crash snapshot, and not in any log line — `diag.js` streams
+     * everything it captures to a file on disk, so a password that reached a
+     * `console.error` would outlive the session in plain text. Nothing here
+     * logs the answer, and nothing may be added that does.
+     */
+    askPassword(name, state) {
+      const wrong = state && state.reason === 'incorrect';
+      const left = state ? (state.attempts - state.attempt + 1) : 0;
+      return RP.promptDialog({
+        title: wrong ? 'That password did not work' : 'This drawing is protected',
+        message: (wrong
+          ? 'The password was not accepted. '
+          : name + ' needs a password before it can be opened. ') +
+          (left > 1 ? left + ' attempts left.' : 'One attempt left.') +
+          '\n\nRedline PDF can open and review a protected drawing, but it cannot save markups back into one.',
+        fields: [{ name: 'password', label: 'Password', value: '', type: 'password' }],
+        confirm: 'Open',
+        cancel: 'Cancel'
+      }).then((answer) => (answer ? answer.password : null));
+    },
+
+    /**
+     * Whether this drawing can be written at all, and an explanation if not.
+     *
+     * pdf-lib is the only thing here that writes a PDF, and it cannot rewrite
+     * an encrypted one. It does not fail loudly either: `ignoreEncryption`
+     * makes it *parse* the file rather than decrypt it, so the content streams
+     * stay encrypted while the output is assembled around them. What comes out
+     * carries the original /Encrypt dictionary — so it still demands a
+     * password — over streams that no longer match it. The file is damaged,
+     * and until this guard existed the app wrote one and said "Saved".
+     *
+     * That was reachable in a shipped build. A user-password drawing could not
+     * be opened, but an owner-password one needs no prompt at all, so a
+     * "no editing" client set opened, marked up and saved perfectly happily,
+     * and produced a file nothing could read.
+     *
+     * The refusal offers the two exports that *do* work: both build a document
+     * from scratch rather than from the drawing's bytes, so neither is touched
+     * by any of this.
+     */
+    async confirmWritable(store) {
+      if (!store || !store.encrypted) return true;
+      const answer = await window.rp.dialog.message({
+        type: 'warning',
+        message: 'This drawing is password-protected and cannot be saved',
+        detail: store.docName + ' is encrypted. Redline PDF can open, review, print-preview and copy from it, ' +
+          'but it cannot write the markups back — rewriting an encrypted PDF here would produce a damaged ' +
+          'file rather than a protected one.\n\n' +
+          'Your markups are not lost. They stay in this tab for as long as it is open, and they can go out ' +
+          'as a summary or a report.\n\n' +
+          'To save markups into the drawing itself, remove the password protection first — in Acrobat or ' +
+          'whatever applied it — and open the unprotected copy.',
+        buttons: ['Export markup report…', 'Export CSV…', 'Close'],
+        defaultId: 2,
+        cancelId: 2
+      });
+      if (answer.response === 0) await this.exportReport();
+      else if (answer.response === 1) await this.exportCsv();
+      return false;
     },
 
     // -----------------------------------------------------------------------
@@ -397,6 +522,9 @@
       // the user can switch tabs under it.
       const store = RP.store;
       if (!store.doc) return false;
+      // Before `resolveTarget`, deliberately: asking where the copy should go
+      // and only then saying it cannot be written is the wrong way round.
+      if (!(await this.confirmWritable(store))) return false;
       const target = await this.resolveTarget(store);
       if (!target || !target.path) return false;
       return this.writeTo(target.path, target.backup, target.overwrote, store);
@@ -405,6 +533,7 @@
     async saveAs() {
       const store = RP.store;
       if (!store.doc) return false;
+      if (!(await this.confirmWritable(store))) return false;
       const path = await this.pickSavePath(store);
       if (!path) return false;
       return this.writeTo(path, false, false, store);
@@ -607,6 +736,7 @@
       RP.$('#btnZoomOut').addEventListener('click', () => RP.viewer.setZoom(RP.viewer.zoom / 1.2));
       RP.$('#btnFitWidth').addEventListener('click', () => RP.viewer.fitWidth());
       RP.$('#btnFitPage').addEventListener('click', () => RP.viewer.fitPage());
+      RP.$('#btnViewMode').addEventListener('click', (event) => this.openViewMenu(event.currentTarget));
       RP.$('#btnRotate').addEventListener('click', () => RP.viewer.rotate());
       RP.$('#btnNight').addEventListener('click', () => this.toggleNight());
 
@@ -664,7 +794,13 @@
         if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? RP.search.prev() : RP.search.next(); }
       });
 
-      RP.$('#stSaveMode').addEventListener('click', () => this.cycleSaveMode());
+      RP.$('#stSaveMode').addEventListener('click', () => {
+        // On a protected drawing the chip is a statement rather than a
+        // control: cycling a save mode that cannot take effect on the document
+        // in front of you is worse than useless, so the press explains instead.
+        if (RP.store && RP.store.encrypted) { this.confirmWritable(RP.store); return; }
+        this.cycleSaveMode();
+      });
       RP.$('#stScale').addEventListener('click', () => RP.tools.recalibrate());
     },
 
@@ -732,6 +868,12 @@
           run: () => viewer.fitPage()
         },
         {
+          label: 'Fit visible',
+          hint: 'Ctrl+3',
+          checked: viewer.fitMode === 'visible',
+          run: () => viewer.fitVisible()
+        },
+        {
           label: 'Actual size',
           hint: 'Ctrl+0',
           checked: !viewer.fitMode && current === 100,
@@ -743,6 +885,94 @@
         checked: !viewer.fitMode && current === pct,
         run: () => { viewer.fitMode = null; viewer.setZoom(pct / 100); }
       }))));
+    },
+
+    // -----------------------------------------------------------------------
+    // Page layout
+    // -----------------------------------------------------------------------
+
+    /**
+     * The four layouts, plus the way into presentation mode.
+     *
+     * Presentation belongs here rather than on a toolbar button of its own
+     * because it *is* a layout — one sheet, fitted, with the chrome out of the
+     * way — and because a button you can hit by accident on a drawing you are
+     * marking up is a worse trade than one extra click.
+     */
+    openViewMenu(anchor) {
+      const viewer = RP.viewer;
+      if (!viewer) { RP.status('Open a drawing first', 'warn'); return; }
+      RP.menu.openUnder(anchor, RP.views.MODES.map((mode) => ({
+        label: RP.views.LABELS[mode],
+        hint: RP.views.HINTS[mode],
+        checked: viewer.viewMode === mode,
+        run: () => {
+          viewer.setViewMode(mode);
+          RP.status(RP.views.LABELS[mode]);
+        }
+      })).concat([
+        { separator: true },
+        {
+          label: 'Presentation',
+          hint: 'F11',
+          checked: this.presenting,
+          run: () => this.togglePresent()
+        }
+      ]));
+    },
+
+    // -----------------------------------------------------------------------
+    // Presentation mode
+    // -----------------------------------------------------------------------
+
+    presenting: false,
+    presentSaved: null,
+
+    /**
+     * Fullscreen, one sheet at a time, fitted, with every panel and both
+     * toolbars gone. What the drawing looked like beforehand is put back on
+     * the way out — including the view mode, which is the part that would
+     * otherwise leave someone in single-page after a site meeting wondering
+     * why the set stopped scrolling.
+     */
+    async togglePresent() {
+      if (this.presenting) return this.endPresent();
+
+      const viewer = RP.viewer;
+      if (!viewer || !viewer.pages.length) { RP.status('Open a drawing first', 'warn'); return; }
+      this.presentSaved = {
+        viewMode: viewer.viewMode,
+        fitMode: viewer.fitMode,
+        zoom: viewer.zoom
+      };
+      this.presenting = true;
+      // The chrome goes by stylesheet, not by calling every panel's own hide:
+      // one class is one thing to undo, and the sidebar's collapsed state, the
+      // armed tool and the tab strip all come back exactly as they were.
+      document.body.classList.add('presenting');
+      try { await window.rp.window.setFullScreen(true); } catch (err) { /* windowed is fine */ }
+      viewer.setViewMode('single');
+      // After the fullscreen transition, or the fit is measured against a pane
+      // that is about to grow by the height of two toolbars.
+      viewer.fitPage();
+      RP.status('Presentation mode — Esc or F11 to leave');
+    },
+
+    async endPresent() {
+      if (!this.presenting) return;
+      this.presenting = false;
+      document.body.classList.remove('presenting');
+      const saved = this.presentSaved || {};
+      this.presentSaved = null;
+      try { await window.rp.window.setFullScreen(false); } catch (err) { /* ignore */ }
+      const viewer = RP.viewer;
+      if (viewer) {
+        viewer.setViewMode(saved.viewMode || 'continuous');
+        // Restored last: `setViewMode` re-applies whatever fit is standing,
+        // and the pane is only back to its real size after the class came off.
+        if (saved.fitMode) { viewer.fitMode = saved.fitMode; viewer.applyFit(); }
+        else if (Number.isFinite(saved.zoom)) { viewer.fitMode = null; viewer.setZoom(saved.zoom); }
+      }
     },
 
     // -----------------------------------------------------------------------
@@ -864,9 +1094,26 @@
     updateSaveModeChip() {
       const chip = RP.$('#stSaveMode');
       const mode = this.settings.saveMode;
+      RP.$$('input[name="saveMode"]').forEach((radio) => { radio.checked = radio.value === mode; });
+
+      /* A protected drawing overrides the chip entirely. The save mode is a
+         global setting and still says what it says, but on this document none
+         of the three modes can happen — and a chip reading "Save → new copy"
+         over a drawing that cannot be saved is the app telling a straight lie
+         about what Ctrl+S is going to do. */
+      if (RP.store && RP.store.encrypted) {
+        chip.textContent = 'Protected — read-only';
+        chip.classList.remove('overwrite');
+        chip.classList.add('readonly');
+        chip.title = 'This drawing is password-protected. It can be reviewed and copied from, ' +
+          'but markups cannot be saved into it — export a report or a CSV instead.';
+        return;
+      }
+
       chip.textContent = 'Save → ' + this.saveModeLabel(mode);
       chip.classList.toggle('overwrite', mode === 'overwrite');
-      RP.$$('input[name="saveMode"]').forEach((radio) => { radio.checked = radio.value === mode; });
+      chip.classList.remove('readonly');
+      chip.title = 'Save mode — click to cycle: new copy → overwrite original → ask each time';
     },
 
     // -----------------------------------------------------------------------
@@ -877,7 +1124,7 @@
       const toolKeys = {
         v: 'select', h: 'highlight', x: 'textselect', n: 'note', p: 'pen',
         l: 'line', a: 'arrow', r: 'rect', e: 'ellipse', c: 'cloud', t: 'text',
-        o: 'callout', m: 'measure', g: 'pan', z: 'zoomrect'
+        o: 'callout', m: 'measure', g: 'pan', z: 'zoomrect', s: 'snapshot'
       };
 
       document.addEventListener('keydown', (event) => {
@@ -905,6 +1152,7 @@
           if (key === '0') { event.preventDefault(); RP.viewer.fitMode = null; RP.viewer.setZoom(1); return; }
           if (key === '1') { event.preventDefault(); RP.viewer.fitWidth(); return; }
           if (key === '2') { event.preventDefault(); RP.viewer.fitPage(); return; }
+          if (key === '3') { event.preventDefault(); RP.viewer.fitVisible(); return; }
           if (key === '=' || key === '+') { event.preventDefault(); RP.viewer.setZoom(RP.viewer.zoom * 1.2); return; }
           if (key === '-') { event.preventDefault(); RP.viewer.setZoom(RP.viewer.zoom / 1.2); return; }
           if (key === 'a' && !typing) {
@@ -916,9 +1164,18 @@
           return;
         }
 
+        // F11 is ours: the main window has no application menu, so nothing
+        // else claims it, and Chromium's own fullscreen would leave the
+        // toolbars up — which is the half of the feature that matters.
+        if (event.key === 'F11') { event.preventDefault(); this.togglePresent(); return; }
+
         if (typing) return;
 
         if (event.key === 'Escape') {
+          // Ahead of the rest: leaving presentation is what Escape means while
+          // it is on, and the branch below would instead reset the tool and
+          // clear the selection without appearing to do anything at all.
+          if (this.presenting) { this.endPresent(); return; }
           if (RP.print.open) { RP.print.hide(); return; }
           if (RP.compare.active) { RP.compare.close(); return; }
           // Dropping a standing text selection is the whole gesture — it must
@@ -935,8 +1192,10 @@
           this.deleteSelection();
           return;
         }
-        if (event.key === 'PageDown') { event.preventDefault(); RP.viewer.goToPage(RP.viewer.currentPage + 1); return; }
-        if (event.key === 'PageUp') { event.preventDefault(); RP.viewer.goToPage(RP.viewer.currentPage - 1); return; }
+        // By row, not by page: in a facing spread the page next door is
+        // already in front of you, so stepping by index would not move.
+        if (event.key === 'PageDown') { event.preventDefault(); RP.viewer.stepRow(1, {}); return; }
+        if (event.key === 'PageUp') { event.preventDefault(); RP.viewer.stepRow(-1, {}); return; }
         if (event.key === 'Home') { event.preventDefault(); RP.viewer.goToPage(0); return; }
         if (event.key === 'End') {
           event.preventDefault();
@@ -1071,15 +1330,20 @@
     },
 
     applyWindowState(state) {
+      // Fullscreen messages carry no `maximized`, and treating a missing one
+      // as false would flip the restore button under a maximized window.
+      if (state && state.fullScreen === false && this.presenting) this.endPresent();
+      if (!state || state.maximized === undefined) return;
       const btn = RP.$('#winMax');
       if (!btn) return;
       btn.innerHTML = '';
-      btn.appendChild(RP.icon(state && state.maximized ? 'restore' : 'max'));
+      btn.appendChild(RP.icon(state.maximized ? 'restore' : 'max'));
     },
 
     wireBusListeners() {
       RP.bus.on('zoom:changed', () => { this.updateStatus(); this.rememberView(); });
       RP.bus.on('page:changed', () => { this.updateStatus(); this.rememberView(); });
+      RP.bus.on('viewmode:changed', () => this.updateStatus());
       RP.bus.on('scale:changed', () => this.updateStatus());
       RP.bus.on('dirty:changed', () => this.updateTitle());
       RP.bus.on('annots:changed', () => {
@@ -1088,7 +1352,12 @@
       });
       RP.bus.on('tool:changed', () => this.syncSwatchesToTool());
       RP.bus.on('viewer:ready', () => this.updateStatus());
-      RP.bus.on('doc:loaded', () => this.updateStatus());
+      // The chip carries a *per-document* fact now (whether this drawing is
+      // protected) as well as the global save mode, so it has to be rebuilt
+      // whenever the focused document changes and not only when the setting
+      // does — otherwise switching from a protected tab to an ordinary one
+      // leaves "read-only" over a drawing that saves perfectly well.
+      RP.bus.on('doc:loaded', () => { this.updateStatus(); this.updateSaveModeChip(); });
       RP.bus.on('selection:changed', () => this.updateSelectionStatus());
       // A markup's own text is part of how the status bar describes it, so an
       // edit has to refresh the line as well as a change of selection.
@@ -1123,7 +1392,15 @@
       RP.$('#zoomInput').value = String(zoomPct);
       RP.$('#stZoom').textContent = zoomPct + '%' +
         (RP.viewer.fitMode === 'width' ? '  fit width'
-          : RP.viewer.fitMode === 'page' ? '  fit page' : '');
+          : RP.viewer.fitMode === 'page' ? '  fit page'
+            : RP.viewer.fitMode === 'visible' ? '  fit visible' : '') +
+        (RP.viewer.viewMode === 'continuous' ? '' : '  ·  ' + RP.views.LABELS[RP.viewer.viewMode].toLowerCase());
+
+      // Derived here rather than only off `viewmode:changed`, so a tab switch
+      // — which restores a mode without going through `setViewMode` — cannot
+      // leave the button lit for a layout the pane is no longer in.
+      const viewModeBtn = RP.$('#btnViewMode');
+      if (viewModeBtn) viewModeBtn.classList.toggle('active', RP.viewer.viewMode !== 'continuous');
 
       // The page box is an input, so it must not be rewritten under someone
       // who is halfway through typing a sheet number into it.

@@ -1,5 +1,36 @@
 # Roadmap
 
+## Done — v0.9
+
+- **Page layouts.** Continuous, single page, facing spreads with the cover
+  sheet on its own, and facing continuous. The page column is a list of *rows*
+  now: `RP.views` owns the grouping and the paged/spread predicates as pure
+  functions, and `viewer.js` holds the rows themselves. In the paged modes only
+  the current row is in the column, which is also what makes the existing
+  IntersectionObserver release the rest without a special case — so the
+  observer still observes pages, not rows
+- **Fit visible** — fits the ink on the sheet rather than the sheet, measured
+  by rendering the page small on its own and taking the ink bounding box.
+  Asynchronous, cached per page, and thrown away on rotate
+- **Presentation mode** on `F11` — fullscreen, single page, fitted, chrome
+  hidden by one class on `<body>`. `leave-full-screen` comes back over
+  `window:state` so the OS cannot strand the app with no toolbars
+
+## Done — v0.8
+
+- **Copy an area as a picture** (`S`, or the right-click menu). The region is
+  re-rendered from the page proxy at a density chosen for the crop rather than
+  composited off the screen canvases, so a detail stays legible whatever the
+  zoom was. `RP.snapshot.plan` holds the density rules; `clipboard:write-image`
+  puts a real bitmap on the clipboard
+- **Password-protected drawings open read-only.** Prompt with three attempts on
+  the loading task, encryption detected through `getPermissions()` so
+  owner-password files are caught too, and save, print and page edits refused
+  with an explanation — pdf-lib cannot rewrite an encrypted PDF and fails by
+  producing a damaged file rather than by throwing
+- Fixed: an owner-password drawing used to open silently and save to a file
+  nothing could read
+
 ## Done — v0.6
 
 - **Markup status** — open / closed / rejected on every markup, set from the
@@ -78,14 +109,7 @@
 - Recents, per-document autosave/crash recovery, optional tray-resident fast open
 - Dark CAD-pro UI with a light theme, custom title bar, drag-and-drop open
 
-## Next — v0.5
-
-**View modes** *(the one architectural item left in this batch)*
-Continuous scroll is still the only layout. Wanted: single-page, facing/spread
-with a cover page on its own, fit-visible, and a fullscreen presentation mode on
-`F11`. `viewer.js` `layout()` and the `IntersectionObserver` setup both assume a
-single vertical stack of pages, so `layout()` has to become row-based and the
-observer has to observe rows rather than pages.
+## Next
 
 **Finishing the page manager**
 - Merge: pull pages in from another PDF. `store.sources` and the descriptor's
@@ -124,8 +148,11 @@ stored as embedded images so they export cleanly.
 - Import/export a markup-only file (`.rpmk`) to send comments without the drawing
 - Merge two reviewers' markup files onto the same drawing
 
-## Later — v0.5+
+## Later
 
+- Decrypt protected drawings (RC4, AES-128/256) in the main process so they can
+  be saved rather than only reviewed. A real crypto implementation that has to
+  be exactly right or it corrupts drawings silently — its own release
 - OCR (Tesseract) so scanned sheets get a text layer for search and true highlight
 - Sheet-set awareness: open a folder of drawings, jump between sheets, search all
 - Batch operations: apply a stamp or compare a whole folder against a baseline set

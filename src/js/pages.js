@@ -378,6 +378,14 @@
     async ensureBase() {
       const store = RP.store;
       if (!store.docBytes) throw new Error('No document is open');
+      /* Every page operation rebuilds the file through pdf-lib, which cannot
+         read an encrypted one — it would strip to garbage here and rebuild a
+         damaged document from it. Thrown rather than returned so it lands in
+         `run()`'s catch and reaches the user as a toast, whichever of the
+         half-dozen page operations asked for it. */
+      if (store.encrypted) {
+        throw new Error('this drawing is password-protected, so its pages cannot be changed');
+      }
       if (!store.baseBytes) store.baseBytes = await RP.exporter.stripToBaseBytes(store.docBytes);
       if (!store.pageOrder) store.pageOrder = ops.fromDocument(store.numPages);
       return store.baseBytes;

@@ -62,6 +62,58 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.9
+
+**Page layouts.** The button beside Fit page offers continuous scroll (the
+default), one sheet at a time, facing spreads with the cover sheet on its own,
+or spreads in a scrolling column. `Page Up` / `Page Down` move by a spread when
+two sheets are facing. Each tab remembers its own layout.
+
+**Fit visible** (`Ctrl+3`) fits the ink on the sheet rather than the sheet —
+the drawing, not the plot margin.
+
+**Presentation mode** (`F11`) goes fullscreen with one sheet fitted to the
+screen and every toolbar and panel out of the way. `Esc` or `F11` puts it all
+back where it was.
+
+## What's new in 0.8
+
+**Copy an area as a picture.** Press `S`, drag a box around a detail, and it is
+on the clipboard ready to paste into an email or an RFI — with your markups on
+it, and with the drawing's own stamps and comments. `Copy area as image` and
+`Copy this page as image` are on the right-click menu too, and a Words
+selection can be copied as a picture as well as as text, which is usually what
+you want for a schedule.
+
+The crop is redrawn rather than screenshotted, at a density picked for the
+picture rather than for your current zoom, so a detail copied from a
+zoomed-out view is still readable at the other end. Night mode never travels
+into the copy — you get the real drawing.
+
+**Password-protected drawings open — and are read-only.** A drawing that needs
+a password now asks for one, with three attempts and a clear message when one
+is wrong, instead of reporting the file as unreadable. You can review, search,
+measure, mark up and copy from a protected drawing.
+
+What you cannot do is save the markups back into it, or print it, or change its
+pages. That is a limit of the PDF library this app writes with: it cannot
+rewrite an encrypted file, and attempting it produces a damaged one. A
+protected drawing therefore says so as it opens, the status-bar chip reads
+`Protected — read-only`, and the refusal offers the two exports that do work —
+the CSV summary and the markup report. To get markups into the drawing itself,
+remove the protection first and open the unprotected copy.
+
+**Permission flags are ignored, deliberately.** A PDF can carry an *owner*
+password that grants opening but withholds printing, editing or extraction.
+Redline PDF opens those drawings and does not enforce those flags: it is a
+local single-user review tool, not a rights boundary, and half-enforcing them
+would obstruct the person doing the work without stopping anybody else. It does
+recognise those drawings as encrypted, because they cannot be written either —
+which is a change, and a fix. Before 0.8 they opened silently, saved silently,
+and produced a file nothing could read.
+
+---
+
 ## What's new in 0.6
 
 **The markup list is a punch list.** Every markup now carries a review status —
@@ -327,26 +379,30 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 | `A` | Arrow | | `Ctrl+F` | Find |
 | `R` | Rectangle | | `F3` / `Shift+F3` | Next / previous hit |
 | `E` | Ellipse | | `Ctrl+0` | 100% |
-| `C` | Revision cloud | | `Ctrl+1` / `Ctrl+2` | Fit width / fit page |
+| `C` | Revision cloud | | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Fit width / page / visible |
 | `T` | Typewriter text | | `Ctrl` + wheel | Zoom at cursor |
 | `O` | Callout | | `Ctrl+A` | Select all on page |
 | `M` | Measure | | `Del` | Delete selection |
 | `G` | Pan (hand) | | `Esc` | Deselect / back to Select |
 | `Z` | Marquee zoom | | `Space` + drag | Pan, from any tool |
+| `S` | Copy an area as a picture | | | |
 
 | Tabs | | | Getting around | |
 |---|---|---|---|---|
 | `Ctrl+T` | Open another drawing | | `Ctrl+G` | Go to page |
 | `Ctrl+W` | Close this drawing | | `Home` / `End` | First / last page |
-| `Ctrl+Shift+T` | Reopen the tab you closed | | `Ctrl+C` | Copy selected text |
-| `Ctrl+\\` | Split / rejoin the view | | `Ctrl+Shift+N` | Night mode |
+| `Ctrl+Shift+T` | Reopen the tab you closed | | `Page Up` / `Page Down` | Previous / next sheet or spread |
+| `Ctrl+\\` | Split / rejoin the view | | `F11` | Presentation mode |
+| | | | `Ctrl+C` | Copy selected text |
+| | | | `Ctrl+Shift+N` | Night mode |
 | `Ctrl+Tab` | Next tab | | `?` | Show every shortcut |
 | `Alt+1`…`Alt+9` | Jump to a tab | | `Ctrl+Shift+D` | Diagnostics |
 
 Press **`?`** at any time for the full list, grouped by what you are trying to do.
 
-**Right-click anywhere on a drawing** for copy text, markup properties, delete,
-"add note here" and print. Right-click a page thumbnail for the page operations.
+**Right-click anywhere on a drawing** for copy text, copy an area or the page as
+an image, markup properties, delete, "add note here" and print. Right-click a
+page thumbnail for the page operations.
 
 **Selecting and copying text.** The Select tool now yields to the drawing's own
 text: press on actual words and you get a normal text selection, press anywhere
@@ -359,9 +415,24 @@ white E-size sheet is not a floodlight at 11pm. Your markups are drawn on a
 separate canvas and keep their real colours — red stays red.
 
 **Zoom.** The percentage box takes a typed value, and the caret beside it drops a
-list of presets (25–400%, fit width, fit page, actual size). `Ctrl` + wheel zooms
-at the pointer; a trackpad pinch does the same, scaled by how far you pinched
-rather than in fixed steps.
+list of presets (25–400%, fit width, fit page, fit visible, actual size). `Ctrl`
++ wheel zooms at the pointer; a trackpad pinch does the same, scaled by how far
+you pinched rather than in fixed steps. **Fit visible** (`Ctrl+3`) fits the ink
+on the sheet instead of the sheet, which on a plotted drawing means the part
+with the drawing on it rather than the paper it was plotted on.
+
+**Page layout.** The button beside Fit page picks how the sheets are arranged:
+continuous scroll, one sheet at a time, facing spreads (with the cover sheet on
+its own, so sheet 2 backs sheet 1), or spreads in a scrolling column. In the
+one-at-a-time layouts the wheel turns the sheet once there is nothing left to
+scroll, and `Page Up` / `Page Down` move by a spread rather than by a sheet when
+two are facing. Each tab keeps its own layout, so a split view can show one
+drawing continuously and the other a spread at a time.
+
+**Presentation mode** (`F11`, or the last row of the layout menu) goes
+fullscreen with one sheet fitted to the screen and every toolbar, panel and the
+status bar out of the way. `Esc` or `F11` restores the layout, zoom and panels
+exactly as they were — as does leaving fullscreen any other way.
 
 **Open Recent** hangs off the caret next to the Open button, and off the tray
 icon when Redline PDF is staying resident. Pin a drawing to keep it at the top of
@@ -445,6 +516,7 @@ src/css/app.css    dark CAD-pro theme (light theme included)
 src/js/util.js     helpers, geometry, event bus
 src/js/store.js    one document's annotation model and undo/redo
 src/js/render.js   canvas drawing, hit testing, transforms
+src/js/views.js    page layout modes: row grouping and fit maths (pure)
 src/js/viewer.js   one pane's page rendering, zoom, text layer, thumbnails
 src/js/tabs.js     open documents as tabs, and the panes they live in
 src/js/tools.js    pointer interaction, creation and editing
@@ -485,7 +557,14 @@ build, so `pdfjs-dist` can be upgraded without the app going dark.
 - Rotated-view editing is supported, but markups are stored unrotated — rotating
   the view does not rotate existing markups relative to the sheet, which is what
   you want.
-- Encrypted PDFs open read-only if the owner password blocks modification.
+- **Encrypted PDFs are read-only, whichever kind of password they carry.** They
+  open — with a prompt for a user password, without one for an owner password —
+  and can be reviewed, searched, measured, marked up and copied from, but they
+  cannot be saved, printed or re-paginated. `pdf-lib` cannot rewrite an
+  encrypted file: it neither decrypts the content streams nor drops the
+  encryption dictionary, so what it writes still demands a password and no
+  longer matches it. Markups go out as a CSV or a report instead. Permission
+  flags on an owner-password file are not enforced.
 - A page edit rebuilds the document in memory, which takes a moment on very large
   sheet sets — the status bar says when it is working.
 - Crash recovery snapshots cover markups only. If the app dies after a page edit

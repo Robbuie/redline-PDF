@@ -1,5 +1,12 @@
-/* Continuous-scroll PDF viewer: lazy page rendering, HiDPI canvases,
-   a real text layer for selection/search, and a per-page annotation overlay.
+/* PDF viewer: lazy page rendering, HiDPI canvases, a real text layer for
+   selection/search, and a per-page annotation overlay.
+
+   The page column is a list of *rows*, not of pages. A row holds one page in
+   the single-page modes and two in a facing spread, and `RP.views` decides the
+   grouping — including the cover page sitting alone, which is why a page's row
+   is never `index >> 1`. In the paged modes only the current row is in the
+   column at all; the rest are `hidden`, which is also what makes the
+   IntersectionObserver release their canvases without a special case.
 
    One viewer per *pane*, not per document. A pane owns a scroll container and
    the page DOM inside it; `RP.viewer` is a live pointer to the focused pane's
@@ -50,6 +57,11 @@
   const PAGE_LEAD = 16;
   const LANDING_CHECK_MS = 550;
 
+  /* In a paged mode there is nothing below the last row to scroll onto, so a
+     wheel at the bottom edge steps to the next row instead. The cooldown is
+     what stops one flick of an inertial trackpad from turning five sheets. */
+  const PAGE_FLIP_MS = 320;
+
   /**
    * @param {HTMLElement} root a `.pane` element holding `.viewer > .pages`
    * @param {object} store the document store this pane is currently showing
@@ -61,11 +73,14 @@
     store: store || RP.store,
     zoom: 1,
     rotation: 0,
-    fitMode: 'width',
+    fitMode: 'width',   // 'width' | 'page' | 'visible' | null
+    viewMode: 'continuous',
     pages: [],          // page records, index 0-based
+    rows: [],           // [{index, pages: [record], el}] — see RP.views.rowsFor
     currentPage: 0,
     userScrollAt: 0,    // last gesture that means "I am steering now"
     landingTimer: 0,    // pending goToPage landing check
+    flipAt: 0,          // last wheel-driven row step, for the flip cooldown
     dpr: Math.min(window.devicePixelRatio || 1, 2),
 
     renderQueue: [],    // page indices waiting on a raster slot
@@ -145,6 +160,26 @@
         this.setZoom(this.zoom * factor, { anchor: { x: event.clientX, y: event.clientY } });
       }, { passive: false });
 
+      /* Paged modes: a wheel with nowhere left to scroll turns the sheet.
+         Without this a fit-page single-page view is inert to the wheel, which
+         reads as a broken scroll rather than as a deliberate layout. The
+         edge test is done *before* the browser has scrolled, so a flick that
+         still has column to travel scrolls it first and only turns on the
+         next one. */
+      this.els.viewer.addEventListener('wheel', (event) => {
+        if (event.ctrlKey || !RP.views.isPaged(this.viewMode)) return;
+        if (Math.abs(event.deltaY) < 1) return;
+        const viewer = this.els.viewer;
+        const atEnd = event.deltaY > 0
+          ? viewer.scrollTop >= this.maxScrollTop() - 1
+          : viewer.scrollTop <= 1;
+        if (!atEnd) return;
+        const now = Date.now();
+        if (now - this.flipAt < PAGE_FLIP_MS) return;
+        if (!this.stepRow(event.deltaY > 0 ? 1 : -1)) return;
+        this.flipAt = now;
+      }, { passive: true });
+
       /* Safari/Chromium also emit non-standard gesture events for a trackpad
          pinch on some platforms, and they arrive *instead of* the wheel stream
          rather than alongside it. Harmless where they never fire. */
@@ -186,6 +221,7 @@
         zoom: this.zoom,
         rotation: this.rotation,
         fitMode: this.fitMode,
+        viewMode: this.viewMode,
         currentPage: this.currentPage,
         scrollTop: this.els.viewer ? this.els.viewer.scrollTop : 0,
         scrollLeft: this.els.viewer ? this.els.viewer.scrollLeft : 0
@@ -196,6 +232,10 @@
     applyViewState(state) {
       if (!state || !this.pages.length) return false;
       this.rotation = state.rotation || 0;
+      // Before the zoom, not after: the mode decides how many pages share a
+      // row and therefore what a fit is a fit *to*.
+      const mode = RP.views.normalize(state.viewMode);
+      if (mode !== this.viewMode) { this.viewMode = mode; this.buildRows(); }
       if (Number.isFinite(state.zoom) && state.zoom > 0) {
         // Explicitly cleared: setZoom bails out early when the incoming zoom
         // matches the fit it just applied, which would leave fitMode set and
@@ -205,10 +245,14 @@
       }
       this.fitMode = state.fitMode || null;
       this.currentPage = RP.clamp(state.currentPage || 0, 0, this.pages.length - 1);
+      // A paged mode restores by showing the row, not by restoring a scrollTop
+      // measured against a column that no longer exists.
+      if (RP.views.isPaged(this.viewMode)) this.showRow(this.rowIndexOf(this.currentPage));
       this.els.viewer.scrollTop = state.scrollTop || 0;
       this.els.viewer.scrollLeft = state.scrollLeft || 0;
       this.highlightThumb();
       this.emit('page:changed', this.currentPage);
+      this.emit('viewmode:changed', this.viewMode);
       return true;
     },
 
@@ -232,7 +276,7 @@
         const inkLayer = RP.el('div', { class: 'ink-layer' });
         const tag = RP.el('span', { class: 'page-tag', text: 'Page ' + (i + 1) });
         container.append(pdfCanvas, textLayer, nativeLayer, annotCanvas, inkLayer, tag);
-        this.els.pages.appendChild(container);
+        // Parented by `buildRows` below — the column holds rows, not pages.
 
         records.push({
           index: i,
@@ -252,6 +296,7 @@
           nativeAnnots: null,     // parsed once, the DOM is rebuilt per zoom
           nativeLayerObj: null,
           annotCanvasMap: null,
+          contentBox: undefined,  // fit-visible ink box; undefined = not measured
           visible: false
         });
       }
@@ -259,11 +304,92 @@
       this.pages = records;
       this.currentPage = 0;
       this.thumbCurrent = -1;
+      this.buildRows();
       this.layout();
       for (const record of records) this.pageObserver.observe(record.container);
       this.buildThumbs();
       this.applyFit();
       this.emit('viewer:ready', this);
+    },
+
+    // -- rows ---------------------------------------------------------------
+
+    /**
+     * Re-parent the page containers into rows for the current view mode.
+     *
+     * The page DOM itself is reused: a row change is a move, not a rebuild, so
+     * nothing is re-rastered and nothing is re-parsed. `layout()` is what
+     * re-sizes them afterwards, and the caller runs it — switching mode and
+     * changing zoom both end up there and one pass is enough for both.
+     */
+    buildRows() {
+      const host = this.els.pages;
+      if (!host) { this.rows = []; return; }
+      const groups = RP.views.rowsFor(this.pages.length, this.viewMode);
+      host.innerHTML = '';
+      this.rows = groups.map((indices, rowIndex) => {
+        const el = RP.el('div', { class: 'page-row', 'data-row': String(rowIndex) });
+        const pages = [];
+        for (const index of indices) {
+          const record = this.pages[index];
+          if (!record) continue;
+          record.row = rowIndex;
+          el.appendChild(record.container);
+          pages.push(record);
+        }
+        host.appendChild(el);
+        return { index: rowIndex, pages, el };
+      });
+      host.classList.toggle('paged', RP.views.isPaged(this.viewMode));
+      this.pageTops = null;
+      if (RP.views.isPaged(this.viewMode)) this.showRow(this.rowIndexOf(this.currentPage));
+      else for (const row of this.rows) row.el.hidden = false;
+    },
+
+    /** Which row a page index sits in. Arithmetic, so it works before layout. */
+    rowIndexOf(pageIndex) {
+      return RP.views.rowOfPage(RP.clamp(pageIndex, 0, Math.max(0, this.pages.length - 1)), this.viewMode);
+    },
+
+    /**
+     * Show one row and hide the rest. Paged modes only.
+     *
+     * `record.visible` is set here rather than being left to the observer,
+     * which does not report until the next frame: `pumpRenders` skips records
+     * that are not visible, so a row shown and immediately requested would
+     * queue and then drop every page in it. The observer still runs and still
+     * has the last word — this only stops the gap.
+     */
+    showRow(rowIndex) {
+      if (!this.rows.length) return;
+      const wanted = RP.clamp(rowIndex, 0, this.rows.length - 1);
+      for (const row of this.rows) {
+        const on = row.index === wanted;
+        row.el.hidden = !on;
+        for (const record of row.pages) {
+          record.visible = on;
+          if (!on) this.releasePage(record);
+        }
+      }
+      this.pageTops = null;
+      for (const record of this.rows[wanted].pages) this.requestPage(record.index);
+    },
+
+    /**
+     * Switch layout. Keeps the sheet you were on, and re-applies the fit
+     * because a spread is a different thing to fit than a single page.
+     */
+    setViewMode(mode) {
+      const next = RP.views.normalize(mode);
+      if (next === this.viewMode) return;
+      this.viewMode = next;
+      if (!this.pages.length) { this.emit('viewmode:changed', next); return; }
+      this.currentPage = RP.views.rowStartOf(this.currentPage, next);
+      this.buildRows();
+      this.layout();
+      if (this.fitMode) this.applyFit();
+      this.goToPage(this.currentPage, { instant: true });
+      this.emit('viewmode:changed', next);
     },
 
     destroyPages() {
@@ -278,7 +404,9 @@
       this.thumbCurrent = -1;
       if (this.landingTimer) { clearTimeout(this.landingTimer); this.landingTimer = 0; }
       this.pages = [];
+      this.rows = [];
       this.els.pages.innerHTML = '';
+      this.els.pages.classList.remove('paged');
       if (this.els.thumbs) this.els.thumbs.innerHTML = '';
     },
 
@@ -374,21 +502,136 @@
       viewerEl.scrollTop = relY * ratio - (anchor.y - rect.top);
     },
 
+    /**
+     * The pages a fit is a fit *to* — the whole row, not one page.
+     *
+     * A facing spread is two sheets and a gutter across the pane; fitting the
+     * left-hand one alone puts the right-hand one off the edge, which is the
+     * obvious version of this and is wrong at every zoom.
+     */
+    fitRow() {
+      const row = this.rows[this.rowIndexOf(this.currentPage)];
+      if (row && row.pages.length) return row.pages;
+      const record = this.pages[this.currentPage] || this.pages[0];
+      return record ? [record] : [];
+    },
+
     applyFit() {
       if (!this.pages.length || !this.fitMode) return;
-      const record = this.pages[this.currentPage] || this.pages[0];
-      const available = this.els.viewer.clientWidth - 60;
-      const availableH = this.els.viewer.clientHeight - 60;
-      const base = record.pageProxy.getViewport({ scale: 1, rotation: this.rotationOf(record.pageProxy) });
-      let target = available / base.width;
-      if (this.fitMode === 'page') target = Math.min(target, availableH / base.height);
+      const records = this.fitRow();
+      if (!records.length) return;
+
+      const widths = [];
+      const heights = [];
+      for (const record of records) {
+        const base = record.pageProxy.getViewport({ scale: 1, rotation: this.rotationOf(record.pageProxy) });
+        // Fit-visible fits the ink rather than the paper. An unmeasured or
+        // blank page falls back to its page box, so the fit is never worse
+        // than fit-width while the measurement is still in flight.
+        const box = this.fitMode === 'visible' ? record.contentBox : null;
+        widths.push(box ? base.width * box.w : base.width);
+        heights.push(box ? base.height * box.h : base.height);
+      }
+
+      const target = RP.views.fitScale(widths, heights, {
+        availWidth: this.els.viewer.clientWidth - RP.views.COLUMN_PAD,
+        availHeight: this.els.viewer.clientHeight - RP.views.COLUMN_PAD,
+        gap: RP.views.SPREAD_GAP,
+        mode: this.fitMode === 'page' ? 'page' : 'width'
+      });
+
       const mode = this.fitMode;
       this.setZoom(target, { keepFit: true });
       this.fitMode = mode;
+      if (mode === 'visible') this.revealContent(records);
     },
 
     fitWidth() { this.fitMode = 'width'; this.applyFit(); },
     fitPage() { this.fitMode = 'page'; this.applyFit(); },
+
+    /**
+     * Fit the ink on the sheet rather than the sheet.
+     *
+     * Measuring is a render, so it is asynchronous and cached per page; the
+     * fit is applied twice — once immediately from whatever is already known
+     * (page box on a first visit) and again when the measurement lands. That
+     * is deliberately visible: a fit that waited on a raster would read as a
+     * dead button on the sheet where it matters most.
+     */
+    fitVisible() {
+      this.fitMode = 'visible';
+      this.applyFit();
+      const records = this.fitRow();
+      const pending = records.filter((record) => record.contentBox === undefined);
+      if (!pending.length) return;
+      Promise.all(pending.map((record) => this.measureContent(record))).then(() => {
+        // Still on the same sheet in the same mode, or the user has moved on
+        // and re-fitting would yank the view out from under them.
+        if (this.fitMode !== 'visible') return;
+        if (this.fitRow().some((record) => pending.indexOf(record) !== -1)) this.applyFit();
+      });
+    },
+
+    /**
+     * The ink bounding box of a page, as fractions of its viewport.
+     *
+     * Rendered small and on its own rather than read back off the page canvas:
+     * the page canvas may not be rastered when the fit is asked for, is at
+     * whatever zoom the user happens to be at, and carries the markup canvas's
+     * sibling — none of which the measurement wants. `MEASURE_PX` is small
+     * enough that this is cheap against the single pdf.js worker and large
+     * enough that a hairline border survives it.
+     */
+    measureContent(record) {
+      if (record.contentBox !== undefined) return Promise.resolve(record.contentBox);
+      if (record.measuring) return record.measuring;
+      const MEASURE_PX = 220;
+      const base = record.pageProxy.getViewport({ scale: 1, rotation: this.rotationOf(record.pageProxy) });
+      const scale = MEASURE_PX / Math.max(1, base.width);
+      const viewport = record.pageProxy.getViewport({ scale, rotation: this.rotationOf(record.pageProxy) });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      record.measuring = record.pageProxy.render({ canvasContext: ctx, viewport }).promise
+        .then(() => {
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          const box = RP.views.inkBoxOf(data, canvas.width, canvas.height);
+          // A sheet whose ink already fills it has nothing to gain, and a
+          // blank one has nothing to fit — both fall back to the page box.
+          record.contentBox = (!box || (box.w > canvas.width * 0.97 && box.h > canvas.height * 0.97))
+            ? null
+            : {
+              x: box.x / canvas.width,
+              y: box.y / canvas.height,
+              w: box.w / canvas.width,
+              h: box.h / canvas.height
+            };
+          return record.contentBox;
+        })
+        .catch(() => { record.contentBox = null; return null; })
+        .then((box) => { record.measuring = null; return box; });
+
+      return record.measuring;
+    },
+
+    /** Put the measured ink of a fitted row in the middle of the pane. */
+    revealContent(records) {
+      const record = records.find((r) => r.contentBox) || null;
+      if (!record || !record.viewport) return;
+      const viewer = this.els.viewer;
+      const box = record.contentBox;
+      const left = this.leftOf(record) + box.x * record.viewport.width;
+      const top = this.topOf(record) + box.y * record.viewport.height;
+      viewer.scrollTo({
+        top: RP.clamp(top - 8, 0, this.maxScrollTop()),
+        left: Math.max(0, left - 8),
+        behavior: 'auto'
+      });
+    },
 
     /**
      * Zoom so a PDF-space rect on `pageIndex` fills the viewport.
@@ -418,9 +661,13 @@
       this.rotation = (this.rotation + 90) % 360;
       for (const record of this.pages) {
         record.baseViewport = record.pageProxy.getViewport({ scale: 1, rotation: this.rotationOf(record.pageProxy) });
+        // The ink box is a fraction of the *rotated* viewport, so turning the
+        // view invalidates it. Cheap to take again; wrong to keep.
+        record.contentBox = undefined;
       }
       this.layout();
       this.buildThumbs();
+      if (this.fitMode) this.applyFit();
     },
 
     // -- rendering ---------------------------------------------------------
@@ -433,6 +680,10 @@
     requestPage(index) {
       const record = this.pages[index];
       if (!record || record.rendered || record.renderTask) return;
+      // `buildRows` shows a row before `layout()` has sized anything, so the
+      // first pass through here on open has no viewport to render against.
+      // `layout()` re-requests every visible page, so nothing is lost.
+      if (!record.viewport) return;
       if (this.renderQueue.indexOf(index) === -1) this.renderQueue.push(index);
       this.pumpRenders();
     },
@@ -710,6 +961,14 @@
         + viewer.scrollTop;
     },
 
+    /** The same measurement across. A spread's second page is not at x = 0. */
+    leftOf(record) {
+      const viewer = this.els.viewer;
+      return record.container.getBoundingClientRect().left
+        - viewer.getBoundingClientRect().left
+        + viewer.scrollLeft;
+    },
+
     /** Largest scrollTop the container will actually accept. */
     maxScrollTop() {
       const viewer = this.els.viewer;
@@ -720,6 +979,12 @@
         and the landing check so the two cannot disagree. */
     pageIndexAt(scrollTop) {
       if (!this.pages.length) return 0;
+      /* In a paged mode the hidden rows are `display: none`, so their pages
+         measure as zero-height boxes at the top of the column and the tops
+         stop being sorted — the binary search below would answer nonsense.
+         There is only one row on screen anyway, so the question has one
+         answer and it is the state we already hold. */
+      if (RP.views.isPaged(this.viewMode)) return this.currentPage;
       if (!this.pageTops || this.pageTops.length !== this.pages.length) this.measurePages();
       const probe = scrollTop + Math.min(140, this.els.viewer.clientHeight * 0.3);
       // Last page whose top is at or above the probe line.
@@ -736,7 +1001,10 @@
 
     onScroll() {
       if (!this.pages.length) return;
-      const current = this.pageIndexAt(this.els.viewer.scrollTop);
+      // A spread reports itself by its left-hand sheet: "page 3 of 10" while
+      // 2 and 3 are both in front of you would be true of the wrong one.
+      const current = RP.views.rowStartOf(
+        this.pageIndexAt(this.els.viewer.scrollTop), this.viewMode);
 
       if (current !== this.currentPage) {
         this.currentPage = current;
@@ -749,12 +1017,40 @@
       const record = this.pages[RP.clamp(index, 0, this.pages.length - 1)];
       if (!record) return;
       const behavior = opts && opts.instant ? 'auto' : 'smooth';
+
+      /* Paged: the row is swapped rather than scrolled to. There is no column
+         to travel down, so a smooth scroll has nothing to animate and the
+         landing check below has nothing to check. */
+      if (RP.views.isPaged(this.viewMode)) {
+        this.showRow(this.rowIndexOf(record.index));
+        this.els.viewer.scrollTo({ top: 0, behavior: 'auto' });
+        this.currentPage = RP.views.rowStartOf(record.index, this.viewMode);
+        this.highlightThumb();
+        this.emit('page:changed', this.currentPage);
+        return;
+      }
+
       const top = RP.clamp(this.topOf(record) - PAGE_LEAD, 0, this.maxScrollTop());
       this.els.viewer.scrollTo({ top, behavior });
-      this.currentPage = record.index;
+      this.currentPage = RP.views.rowStartOf(record.index, this.viewMode);
       this.highlightThumb();
-      this.emit('page:changed', record.index);
+      this.emit('page:changed', this.currentPage);
       this.confirmLanding(record.index, top);
+    },
+
+    /**
+     * Move by a *row*, which is what PageUp/PageDown mean once two sheets can
+     * share one. Stepping by a page index instead would leave a spread where
+     * it was, because the page next door is already on screen.
+     */
+    stepRow(delta, opts) {
+      if (!this.pages.length) return false;
+      const rows = RP.views.rowsFor(this.pages.length, this.viewMode);
+      const from = this.rowIndexOf(this.currentPage);
+      const to = RP.clamp(from + delta, 0, rows.length - 1);
+      if (to === from) return false;
+      this.goToPage(rows[to][0], opts || { instant: true });
+      return true;
     },
 
     /**
@@ -807,18 +1103,21 @@
     revealRect(pageIndex, rect, opts) {
       const record = this.pages[pageIndex];
       if (!record) return;
+      // A markup on a hidden row cannot be revealed by scrolling to it —
+      // jumping from the list or a search hit has to bring its row up first.
+      if (RP.views.isPaged(this.viewMode) && this.rowIndexOf(pageIndex) !== this.rowIndexOf(this.currentPage)) {
+        this.showRow(this.rowIndexOf(pageIndex));
+      }
       const view = RP.render.vpRect(record.viewport, rect);
       const viewer = this.els.viewer;
       const targetTop = this.topOf(record) + view.y - viewer.clientHeight / 2 + view.h / 2;
-      const targetLeft = record.container.getBoundingClientRect().left
-        - viewer.getBoundingClientRect().left + viewer.scrollLeft
-        + view.x - viewer.clientWidth / 2 + view.w / 2;
+      const targetLeft = this.leftOf(record) + view.x - viewer.clientWidth / 2 + view.w / 2;
       viewer.scrollTo({
         top: RP.clamp(targetTop, 0, this.maxScrollTop()),
         left: Math.max(0, targetLeft),
         behavior: (opts && opts.instant) ? 'auto' : 'smooth'
       });
-      this.currentPage = pageIndex;
+      this.currentPage = RP.views.rowStartOf(pageIndex, this.viewMode);
       this.highlightThumb();
     },
 
@@ -841,12 +1140,16 @@
          under an overlay that is not part of one. */
       const hit = document.elementFromPoint(clientX, clientY);
       const container = hit && hit.closest ? hit.closest('.page') : null;
-      if (container && container.parentNode === this.els.pages) {
+      // Two hops now, not one: pages hang off a `.page-row`, not off `.pages`.
+      if (container && container.parentNode && container.parentNode.parentNode === this.els.pages) {
         const record = this.pages[Number(container.dataset.page)];
         if (record) return record;
       }
       for (const record of this.pages) {
         const rect = record.container.getBoundingClientRect();
+        // A hidden row measures as a zero box at the origin, which would
+        // otherwise claim a press at the very top-left of the window.
+        if (!rect.width || !rect.height) continue;
         if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
           return record;
         }

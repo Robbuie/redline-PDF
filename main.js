@@ -337,6 +337,13 @@ function createWindow() {
     rememberWindowBounds();
   });
 
+  /* Fullscreen can also be left by the OS — the title-bar gesture, a second
+     display being unplugged, Windows' own accelerator. The renderer is the
+     half of presentation mode that hid the toolbars, so it has to be told, or
+     the app comes back windowed with no way to reach anything. */
+  mainWindow.on('leave-full-screen', () => send('window:state', { fullScreen: false }));
+  mainWindow.on('enter-full-screen', () => send('window:state', { fullScreen: true }));
+
   // Resize and move fire continuously; `saveSettings` is already debounced, so
   // the disk only sees the position the drag came to rest at.
   mainWindow.on('resize', rememberWindowBounds);
@@ -969,6 +976,26 @@ ipcMain.handle('clipboard:write-text', async (event, text) => {
   } catch (err) { return fail(err); }
 });
 
+/**
+ * Copy a region of a drawing as a picture.
+ *
+ * The renderer hands over PNG bytes rather than a data URL: a detail off an
+ * E-size sheet runs to several megabytes, and base64 would inflate that by a
+ * third to cross the bridge as a string. `nativeImage` is what puts a real
+ * bitmap on the Windows clipboard — writing a data URL as *text* is what a
+ * naive version of this does, and it pastes into an email as gibberish.
+ */
+ipcMain.handle('clipboard:write-image', async (event, bytes) => {
+  try {
+    const buffer = Buffer.from(bytes);
+    if (!buffer.length) return fail(new Error('No image data'));
+    const image = nativeImage.createFromBuffer(buffer);
+    if (image.isEmpty()) return fail(new Error('That region could not be turned into an image'));
+    clipboard.writeImage(image);
+    return ok(true);
+  } catch (err) { return fail(err); }
+});
+
 /* A check the user asked for. Everything it has to say it says in a native
    dialog from updater.js, so the renderer only needs the outcome for a toast. */
 ipcMain.handle('update:check', async () => {
@@ -1164,6 +1191,17 @@ ipcMain.handle('window:cancel-close', () => {
   return ok(true);
 });
 ipcMain.handle('window:is-maximized', () => ok(!!mainWindow?.isMaximized()));
+/**
+ * Presentation mode. The renderer owns the decision — it is the half that
+ * hides the toolbars — so this only moves the window and reports back what it
+ * actually managed, which is not always what was asked for on a display that
+ * refuses fullscreen.
+ */
+ipcMain.handle('window:set-fullscreen', (event, on) => {
+  if (!mainWindow) return ok(false);
+  mainWindow.setFullScreen(!!on);
+  return ok(mainWindow.isFullScreen());
+});
 ipcMain.handle('window:set-title', (event, title) => {
   mainWindow?.setTitle(title || 'Redline PDF');
   return ok(true);

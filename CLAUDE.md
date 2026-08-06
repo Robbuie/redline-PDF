@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.7.3. See `README.md` for user-facing behaviour,
+PDF. Current version 0.9.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -54,7 +54,8 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `pdfjs-loader.js` | loads PDF.js (ESM v4+ or UMD v3), worker path, `docParams()` |
 | `store.js` | `createStore()` — one document's model: annotations, selection, snapshot undo/redo, measurement scale |
 | `render.js` | canvas drawing and hit-testing for every markup type |
-| `viewer.js` | `createViewer(paneEl, store)` — one pane's continuous-scroll rendering, zoom, text layer, thumbnails |
+| `views.js` | the page-layout modes: row grouping, paged/spread predicates, fit maths, the fit-visible ink box — all pure, no DOM |
+| `viewer.js` | `createViewer(paneEl, store)` — one pane's rendering, zoom, text layer, thumbnails |
 | `tabs.js` | open documents as tabs, the one-or-two panes they live in, and the tab strip |
 | `annots.js` | the file's *own* annotations — pdf.js annotation layer, link service |
 | `clip.js` | reading the text-layer selection and writing to the clipboard |
@@ -65,6 +66,7 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `search.js` | per-document text index and find |
 | `sidebar.js` | panel switching, markup list, recents |
 | `outline.js` | the file's *own* bookmarks — outline tree, dest jumps |
+| `snapshot.js` | copying a region of a drawing to the clipboard as a picture |
 | `compare.js` | revision-compare engine and UI |
 | `exporter.js` | pdf-lib export, embedded markup model, CSV/PDF reports |
 | `pages.js` | page order model, pdf-lib rebuild, and the Pages panel UI |
@@ -215,6 +217,43 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   the same index twice returns the *same* page node, so a duplicated page would
   alias its original and share its rotation. `buildBytes` copies in passes for
   exactly this reason — one pass per extra copy needed.
+- **The page column holds rows, not pages, and a page's row is not
+  `index >> 1`.** A facing spread puts two sheets in one row and leaves the
+  *cover* alone, so the arithmetic has an off-by-one at exactly one index.
+  `RP.views.rowsFor` builds the grouping and `RP.views.rowOfPage` answers it
+  without building anything; the two disagreeing is how a thumbnail click opens
+  the spread next door, so `test/verify.js` walks every index in every mode
+  against both. Nothing else may divide by the spread. Two consequences in
+  `viewer.js`: `pageAt` looks *two* hops up from a `.page` to reach `.pages`,
+  and anything measuring a page across the column goes through `leftOf`, since
+  the second sheet of a spread does not start at x = 0.
+- **In a paged mode the hidden rows are `display: none`, so `pageTops` stops
+  being sorted.** Their pages measure as zero boxes at the origin, which makes
+  the binary search in `pageIndexAt` answer nonsense and makes the fallback
+  loop in `pageAt` claim any press at the top-left of the window. Both have
+  guards; there is only ever one row on screen, so `pageIndexAt` returns the
+  state already held rather than measuring. `showRow` also sets `record.visible`
+  itself instead of waiting for the IntersectionObserver — the observer does not
+  report until the next frame and `pumpRenders` drops anything not visible, so a
+  row shown and immediately requested would queue and then throw away every page
+  in it.
+- **The spread gutter and the column padding are fixed CSS pixels and do not
+  scale.** `RP.views.fitScale` subtracts them before dividing by the page
+  widths; dividing the pane by the two widths alone overshoots by exactly the
+  gutter and the right-hand sheet sits off the edge at every zoom. The two
+  numbers live in `RP.views` (`SPREAD_GAP`, `COLUMN_PAD`) and are duplicated in
+  `.page-row` / `.pages` in `app.css` — `test/verify.js` reads the stylesheet
+  and fails if they drift. `.page-row[hidden]` needs its own `display: none`
+  rule, because the `hidden` attribute loses to `display: flex`.
+- **Fit-visible measures ink, and the measurement is asynchronous.** It renders
+  the page small on its own rather than reading back the page canvas, which may
+  not be rastered, is at whatever zoom the user is at, and has the markup canvas
+  as a sibling. The fit is therefore applied twice — once from the page box and
+  again when the box lands — deliberately, because a fit that waited on a raster
+  reads as a dead button. `RP.views.inkBoxOf` needs a run of marked pixels
+  rather than one: a single speck in the corner of a scan would otherwise pull
+  the box out to the whole sheet and make the mode a worse fit-page. The box is
+  a fraction of the *rotated* viewport, so `rotate()` throws it away.
 - **`getViewport({rotation})` is absolute, not additive.** Passing the view
   rotation alone silently flattens pages with their own `/Rotate`, which is most
   scanned or plotted sheets. Always go through `RP.viewer.rotationOf(pageProxy)`.
@@ -399,6 +438,50 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   npm packages loaded from `node_modules` and list their dist paths in the
   `build.files` array in `package.json`, or they will be missing from the
   installer.
+- **pdf-lib cannot rewrite an encrypted PDF, and does not fail loudly about
+  it.** `ignoreEncryption: true` — which every call site passes — makes it
+  *parse* an encrypted file rather than decrypt one. The content streams are
+  copied through still encrypted and the original `/Encrypt` dictionary is
+  carried out with them, so what lands on disk still demands a password and no
+  longer matches it. With object streams it does not parse at all and throws in
+  the loader. So `store.encrypted` gates every path that writes a PDF from the
+  drawing's bytes: `App.confirmWritable` (save and Save As), `RP.print.show`,
+  and `RP.pages.ensureBase`. The CSV and the markup report are exempt because
+  they build a document from scratch. **The detector is
+  `doc.getPermissions()`, not "did we prompt for a password"** — an *owner*
+  password gates permissions rather than opening, so those drawings never
+  prompt, and they are exactly the ones that were opening silently and saving
+  to a damaged file with a success toast up to 0.7.3. `test/verify.js` holds
+  two real encrypted fixtures and asserts the pdf-lib limitation directly, so
+  if pdf-lib ever learns to decrypt, that check fails and the guard can be
+  revisited.
+- **`onPassword` belongs to the pdf.js loading *task*, not to the
+  `getDocument` parameters**, and putting it in the params is silently ignored
+  — you get a bare `PasswordException` and no prompt, which reads as "this app
+  cannot open protected files" rather than as a wiring mistake. Worse for
+  debugging: **the Error handed to `updatePassword` never reaches the caller.**
+  pdf.js rejects its own internal capability with it, that crosses the worker
+  boundary, and `task.promise` rejects with a fresh `PasswordException`
+  carrying none of your properties. `RP.pdfjs.attachPassword` therefore records
+  the outcome as `task.rpPassword`, and callers read it in their `catch` — it
+  is the only thing keeping "the user backed out", "the password was never
+  right" and "this file is corrupt" as three different messages. Attempts are
+  capped there rather than in the prompt, because a broken encryption
+  dictionary answers *incorrect* to the correct password and would loop.
+- **A copied area is re-rendered, never composited off the screen canvases.**
+  The obvious implementation of `RP.snapshot` reads `pdfCanvas` and
+  `annotCanvas` over the dragged box, and it ties the resolution of the copy to
+  whatever zoom the user happened to be at — a detail copied at fit-width on an
+  E-size sheet is about one device pixel per three PDF points, i.e. unreadable,
+  for a reason invisible in the result. `RP.snapshot.plan` picks a density
+  instead (2x target, floored at the current zoom, capped at 24 megapixels
+  because a canvas Chromium refuses to allocate comes back *blank* rather than
+  as an error), and pdf.js's `transform` parameter renders only the crop rather
+  than the whole sheet at 4x. Two consequences worth keeping: the crop passes
+  **no `annotationCanvasMap`** — that map hands stamps and some free text to a
+  live annotation layer, and a crop has none, so passing one makes a stamped
+  sheet copy without its stamp — and night mode cannot leak into a copy,
+  because it is a CSS filter on `.pdf-canvas` that a fresh render never sees.
 - **Never assume a PDF.js flavour.** v3 is UMD (`build/pdf.js`, `renderTextLayer`,
   `--scale-factor`); v4+ is ESM (`build/pdf.mjs`, `TextLayer` class,
   `--total-scale-factor` plus `--scale-round-x/y`). `pdfjs-loader.js` picks one
@@ -425,6 +508,18 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   must either be `position: absolute/fixed` or declare its own `flex`, and
   exactly one (`.workspace`) may grow. `test/verify.js` asserts this — add a new
   top-level element and it will tell you if you forgot to size it.
+- **Presentation mode is one class on `<body>`, not each panel hiding itself.**
+  `body.presenting` takes the two toolbars, the title bar, the sidebar, the tab
+  strip and the status bar out of flow; `.workspace` is the one child that
+  grows, so nothing needs re-sizing. Doing it panel by panel means the sidebar's
+  collapsed state, the armed tool and the scroll position all have to be saved
+  and restored by hand, and one of them will be missed. Fullscreen itself is
+  `window:set-fullscreen`, and main reports `leave-full-screen` back over
+  `window:state` — the OS can drop out of fullscreen on its own, and the
+  renderer is the half holding the toolbars, so without that message the app
+  comes back windowed with nothing on screen to click. `applyWindowState`
+  therefore has to ignore a message with no `maximized` in it rather than
+  reading the missing field as false.
 - **Icons are `<use href="#symbol">`, which clones into a shadow tree.**
   Stylesheet selectors like `svg path {}` do not apply inside it — only
   *inherited* properties (fill, stroke, stroke-width, stroke-linecap/linejoin)

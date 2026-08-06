@@ -77,7 +77,8 @@ global.document = {
 
 const globalEval = eval; // indirect eval => runs in global scope
 for (const file of ['util.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
-  'print.js', 'annots.js', 'viewer.js', 'textsel.js', 'tools.js', 'sidebar.js', 'app.js']) {
+  'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'tools.js',
+  'sidebar.js', 'pdfjs-loader.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -1299,6 +1300,193 @@ function testMarqueeZoom() {
 }
 
 /* ---------------------------------------------------------------------------
+   View modes
+
+   Three things here are easy to get plausibly wrong and hard to spot:
+
+   - the row a page belongs to. With the cover sheet on its own it is *not*
+     `index >> 1`, and two call sites derive it independently — `rowsFor`
+     builds the DOM, `rowOfPage` answers questions about it without building
+     anything. They disagreeing means clicking a thumbnail opens the spread
+     next door.
+   - the gap in a facing fit. It is a fixed number of CSS pixels and does not
+     scale, so dividing the pane width by the two page widths overshoots by
+     exactly the gutter and the right-hand sheet sits a sliver off the edge at
+     every zoom.
+   - the ink box behind fit-visible. A single speck in the corner of a scan
+     would otherwise pull the box out to the whole sheet and turn the mode
+     into a worse fit-page.
+   --------------------------------------------------------------------------- */
+function testViewModes() {
+  console.log('\nView modes');
+  const V = RP.views;
+
+  check('an unknown mode falls back to continuous rather than throwing',
+    V.normalize('spiral') === 'continuous' && V.normalize(undefined) === 'continuous' &&
+    V.normalize('facing') === 'facing');
+  check('only the two single-row modes are paged',
+    V.MODES.filter(V.isPaged).join(',') === 'single,facing',
+    V.MODES.filter(V.isPaged).join(','));
+  check('only the two facing modes lay out a spread',
+    V.MODES.filter((m) => V.spreadOf(m) === 2).join(',') === 'facing,facing-continuous',
+    V.MODES.filter((m) => V.spreadOf(m) === 2).join(','));
+
+  check('a single-page mode is one page per row',
+    JSON.stringify(V.rowsFor(4, 'single')) === '[[0],[1],[2],[3]]',
+    JSON.stringify(V.rowsFor(4, 'single')));
+  check('a spread leaves the cover sheet on its own',
+    JSON.stringify(V.rowsFor(5, 'facing')) === '[[0],[1,2],[3,4]]',
+    JSON.stringify(V.rowsFor(5, 'facing')));
+  check('an odd tail sheet is not paired with nothing',
+    JSON.stringify(V.rowsFor(4, 'facing')) === '[[0],[1,2],[3]]',
+    JSON.stringify(V.rowsFor(4, 'facing')));
+  check('an empty document has no rows', V.rowsFor(0, 'facing').length === 0);
+
+  /* The invariant that matters: the arithmetic answer and the built rows are
+     the same answer, at every index, in every mode. */
+  {
+    const wrong = [];
+    for (const mode of V.MODES) {
+      const rows = V.rowsFor(77, mode);
+      for (let i = 0; i < 77; i += 1) {
+        const row = V.rowOfPage(i, mode);
+        if (!rows[row] || rows[row].indexOf(i) === -1) wrong.push(mode + ' p' + i);
+        else if (V.rowStartOf(i, mode) !== rows[row][0]) wrong.push(mode + ' start p' + i);
+      }
+    }
+    check('rowOfPage and rowStartOf agree with the rows that get built',
+      wrong.length === 0, wrong.slice(0, 4).join(', '));
+  }
+
+  /* Fit maths. The gutter is the whole point of the facing case. */
+  {
+    const one = V.fitScale([612], [792], { availWidth: 1000, availHeight: 800, gap: V.SPREAD_GAP });
+    check('a single page fits the pane width exactly',
+      Math.abs(612 * one - 1000) < 1e-9, '612 x ' + one.toFixed(5));
+
+    const two = V.fitScale([612, 612], [792, 792], { availWidth: 1000, availHeight: 800, gap: V.SPREAD_GAP });
+    check('a spread fits the pane once the gutter is taken off',
+      Math.abs(612 * two * 2 + V.SPREAD_GAP - 1000) < 1e-9,
+      'spread ' + (612 * two * 2 + V.SPREAD_GAP).toFixed(3) + 'px into 1000');
+    check('the gutter makes the spread fit tighter than half the pane',
+      two < 1000 / 2 / 612, 'scale ' + two.toFixed(5));
+
+    // Fit-page takes the taller sheet of the two, not the first one.
+    const mixed = V.fitScale([612, 612], [500, 1000], {
+      availWidth: 4000, availHeight: 800, gap: V.SPREAD_GAP, mode: 'page'
+    });
+    check('fit-page on a spread is bounded by the taller sheet',
+      Math.abs(1000 * mixed - 800) < 1e-9, '1000 x ' + mixed.toFixed(5));
+  }
+
+  /* The ink box. Built by hand so the expected answer is not in doubt. */
+  {
+    const W = 12;
+    const H = 12;
+    const raster = (marks) => {
+      const data = new Uint8ClampedArray(W * H * 4).fill(255);
+      for (const [x, y] of marks) {
+        const p = (y * W + x) * 4;
+        data[p] = 10; data[p + 1] = 10; data[p + 2] = 10;
+      }
+      return data;
+    };
+    const block = [];
+    for (let y = 2; y < 6; y += 1) for (let x = 3; x < 7; x += 1) block.push([x, y]);
+
+    const box = V.inkBoxOf(raster(block), W, H);
+    check('the ink box is the box the ink is actually in',
+      box && box.x === 3 && box.y === 2 && box.w === 4 && box.h === 4, JSON.stringify(box));
+
+    const specked = V.inkBoxOf(raster(block.concat([[0, 0], [11, 11]])), W, H);
+    check('a lone speck in the corner of a scan does not become the box',
+      specked && specked.x === 3 && specked.y === 2 && specked.w === 4 && specked.h === 4,
+      JSON.stringify(specked));
+
+    check('a blank sheet reports no box rather than an empty one',
+      V.inkBoxOf(raster([]), W, H) === null);
+  }
+
+  /* Paging by row. In a spread the sheet next door is already in front of
+     you, so a step that moved by one page index would not move at all. */
+  {
+    const scroller = {
+      clientWidth: 1000, clientHeight: 800, scrollTop: 0, scrollLeft: 0, scrollHeight: 900,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
+      scrollTo: (opts) => { if (opts.top !== undefined) scroller.scrollTop = opts.top; }
+    };
+    const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+    viewer.els = { viewer: scroller };
+    viewer.highlightThumb = function () {};
+    viewer.isActive = function () { return true; };
+    viewer.showRow = function () {};          // the DOM half, exercised in the app
+    viewer.pages = [];
+    for (let i = 0; i < 7; i += 1) viewer.pages.push({ index: i });
+    viewer.viewMode = 'facing';
+    viewer.currentPage = 0;
+
+    const walk = [];
+    for (let i = 0; i < 4; i += 1) { viewer.stepRow(1); walk.push(viewer.currentPage); }
+    check('a spread steps by the spread, not by one sheet',
+      walk.join(',') === '1,3,5,5', walk.join(','));
+    viewer.stepRow(-1);
+    check('stepping back lands on the left-hand sheet of the previous spread',
+      viewer.currentPage === 3, 'page ' + (viewer.currentPage + 1));
+    check('the last spread is the end of the walk',
+      viewer.stepRow(1) && viewer.stepRow(1) === false, 'ran past the last row');
+
+    // Going to the right-hand sheet of a spread means going to the spread.
+    viewer.goToPage(4);
+    check('a jump to the right-hand sheet reports the spread it is in',
+      viewer.currentPage === 3, 'page ' + (viewer.currentPage + 1));
+  }
+
+  /* Continuous facing: the pages of a spread share a top, and the scroll
+     handler has to name the left-hand one. `pageIndexAt` on its own answers
+     with the *last* page at or above the probe, which is the right-hand one. */
+  {
+    const PAGE_H_PX = 500;
+    const GAP = 18;
+    const PAD = 22;
+    const topFor = (i) => PAD + RP.views.rowOfPage(i, 'facing-continuous') * (PAGE_H_PX + GAP);
+    const scroller = {
+      clientWidth: 1000, clientHeight: 800, scrollTop: 0, scrollLeft: 0, scrollHeight: 4000,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
+      scrollTo: (opts) => { if (opts.top !== undefined) scroller.scrollTop = opts.top; }
+    };
+    const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+    viewer.els = { viewer: scroller };
+    viewer.highlightThumb = function () {};
+    viewer.isActive = function () { return true; };
+    viewer.viewMode = 'facing-continuous';
+    viewer.pages = [];
+    for (let i = 0; i < 7; i += 1) {
+      viewer.pages.push({
+        index: i,
+        container: { getBoundingClientRect: () => ({ top: topFor(i) - scroller.scrollTop, left: 0 }) }
+      });
+    }
+
+    scroller.scrollTop = topFor(3);
+    viewer.onScroll();
+    check('a spread on screen reports itself by its left-hand sheet',
+      viewer.currentPage === 3, 'page ' + (viewer.currentPage + 1));
+  }
+
+  /* The fit constants and the stylesheet are the same two numbers. Drift here
+     is invisible until a fitted spread is a few pixels wide of the pane. */
+  {
+    const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+    const rowRule = (css.match(/\n\.page-row\s*\{([^}]*)\}/) || [])[1] || '';
+    const gap = parseFloat((rowRule.match(/gap:\s*([\d.]+)px/) || [])[1]);
+    check('the spread gutter in app.css is the one the fit subtracts',
+      gap === RP.views.SPREAD_GAP, 'css ' + gap + ' vs views ' + RP.views.SPREAD_GAP);
+    check('a hidden row is actually hidden, despite display:flex',
+      /\.page-row\[hidden\]\s*\{[^}]*display:\s*none/.test(css));
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Canvas retention
 
    Nothing frees a page canvas on its own. A 77-sheet set at fit-width holds
@@ -2424,6 +2612,448 @@ async function testSaveTargets() {
 }
 
 /* ---------------------------------------------------------------------------
+   Copying an area as a picture
+
+   The whole value of this feature is that the copy is legible, and legibility
+   is entirely a question of the density it renders at. Compositing the
+   on-screen canvases — the obvious implementation — ties that density to
+   whatever zoom the user happens to be at, so a detail copied at fit-width is
+   unreadable and nobody can say why. `plan` is where the density is decided,
+   it is pure, and these are the three rules it has to hold to at once: never
+   coarser than the target, never coarser than the screen, never bigger than
+   Chromium will allocate.
+   --------------------------------------------------------------------------- */
+function testSnapshotGeometry() {
+  console.log('\nCopy area as image');
+
+  const PAGE_H = 792;
+  // A scale-1 pdf.js viewport. PDF space is origin bottom-left and viewport
+  // space top-left, which is the flip `plan` has to go through `vpRect` for.
+  const upright = {
+    scale: 1,
+    width: 612,
+    height: PAGE_H,
+    viewBox: [0, 0, 612, PAGE_H],
+    convertToViewportPoint: (x, y) => [x, PAGE_H - y],
+    convertToPdfPoint: (x, y) => [x, PAGE_H - y]
+  };
+
+  {
+    const plan = RP.snapshot.plan(upright, { x: 100, y: 300, w: 200, h: 100 });
+    check('a crop is placed in viewport pixels, not PDF points',
+      plan.x === 100 && plan.y === PAGE_H - 400, `${plan.x},${plan.y}`);
+    check('a crop is sized from the rect it was given',
+      plan.w === 200 && plan.h === 100, `${plan.w}x${plan.h}`);
+    check('a crop renders at the 2x target rather than at screen scale',
+      plan.scale === 2 && plan.pixelW === 400 && plan.pixelH === 200,
+      `scale ${plan.scale}, ${plan.pixelW}x${plan.pixelH}`);
+  }
+
+  {
+    // Somebody at 400% has already said what density they want the detail at.
+    const plan = RP.snapshot.plan(upright, { x: 100, y: 300, w: 200, h: 100 }, { floor: 4 });
+    check('a crop is never coarser than what is already on screen',
+      plan.scale === 4 && plan.pixelW === 800, `scale ${plan.scale}`);
+  }
+
+  {
+    // Zoomed out, the floor must not *lower* the target — that would put the
+    // rule the wrong way round and make fit-width crops the blurry ones again.
+    const plan = RP.snapshot.plan(upright, { x: 100, y: 300, w: 200, h: 100 }, { floor: 0.25 });
+    check('being zoomed out does not drag the crop below the target',
+      plan.scale === 2, `scale ${plan.scale}`);
+  }
+
+  {
+    /* A whole E-size sheet. At the 2x target this is 31 megapixels, and a
+       canvas Chromium refuses to allocate comes back *blank* rather than as an
+       error — so the cap is the difference between a big crop and a white
+       rectangle with no explanation. */
+    const eSize = {
+      scale: 1, width: 2448, height: 3168, viewBox: [0, 0, 2448, 3168],
+      convertToViewportPoint: (x, y) => [x, 3168 - y],
+      convertToPdfPoint: (x, y) => [x, 3168 - y]
+    };
+    const plan = RP.snapshot.plan(eSize, { x: 0, y: 0, w: 2448, h: 3168 });
+    check('a whole-sheet crop is capped rather than allocated at 31 megapixels',
+      plan.pixelW * plan.pixelH <= 24e6 + 1, (plan.pixelW * plan.pixelH / 1e6).toFixed(1) + ' MP');
+    check('the cap lowers the density instead of cropping the region',
+      plan.scale < 2 && plan.w === 2448 && plan.h === 3168, `scale ${plan.scale.toFixed(3)}`);
+    // Even capped, the sheet must not come back below 1:1 by accident.
+    check('a capped crop is still at least readable', plan.scale > 1, `scale ${plan.scale.toFixed(3)}`);
+  }
+
+  {
+    /* A landscape sheet stored portrait with /Rotate 90 — which is most plotted
+       drawings. The crop has to come out the way the sheet *looks*, so it goes
+       through the display viewport and its width and height swap. Get this
+       wrong and every crop off a plotted sheet is rotated. */
+    const turned = {
+      scale: 1, width: PAGE_H, height: 612, viewBox: [0, 0, 612, PAGE_H],
+      // 90° clockwise about the page: PDF (x,y) -> viewport (y, x).
+      convertToViewportPoint: (x, y) => [y, x],
+      convertToPdfPoint: (x, y) => [y, x]
+    };
+    const plan = RP.snapshot.plan(turned, { x: 100, y: 300, w: 200, h: 100 });
+    check('a crop off a rotated sheet is taken in display orientation',
+      plan.w === 100 && plan.h === 200, `${plan.w}x${plan.h}`);
+    check('a rotated crop is placed by its displayed corner',
+      plan.x === 300 && plan.y === 100, `${plan.x},${plan.y}`);
+  }
+
+  check('a degenerate rect plans no crop at all',
+    RP.snapshot.plan(upright, { x: 100, y: 300, w: 0, h: 100 }) === null);
+  check('a slipped click is not a region',
+    !RP.snapshot.isRegion({ x: 0, y: 0, w: 3, h: 40 }) &&
+    !RP.snapshot.isRegion({ x: 0, y: 0, w: 40, h: 2 }) &&
+    RP.snapshot.isRegion({ x: 0, y: 0, w: 40, h: 40 }));
+
+  // --- the wiring the crop needs to exist at all ----------------------------
+  const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
+  const snapshot = fs.readFileSync(path.join(ROOT, 'src', 'js', 'snapshot.js'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+
+  check('the image clipboard IPC exists on all three required sides',
+    /ipcMain\.handle\(\s*'clipboard:write-image'/.test(main) &&
+    /call\(\s*'clipboard:write-image'/.test(preload) &&
+    /window\.rp\.clipboard\.writeImage/.test(snapshot));
+  check('the image goes onto the clipboard as a bitmap, not as text',
+    /nativeImage\.createFromBuffer/.test(main) && /clipboard\.writeImage/.test(main));
+  check('snapshot.js is loaded, and after the modules it draws through',
+    html.indexOf('js/snapshot.js') > html.indexOf('js/render.js') &&
+    html.indexOf('js/snapshot.js') > html.indexOf('js/viewer.js') &&
+    html.indexOf('js/snapshot.js') < html.indexOf('js/tools.js'));
+
+  /* Re-rendering rather than compositing is the entire point, and it is the
+     thing a later "simplification" would undo — the composite version is
+     shorter and looks equivalent until you paste one. */
+  check('a crop is re-rendered from the page proxy, not scraped off the screen',
+    /pageProxy\.render\(/.test(snapshot) &&
+    !/pdfCanvas/.test(snapshot) && !/annotCanvas/.test(snapshot));
+  /* No annotationCanvasMap: with one, pdf.js diverts stamps and some free text
+     into canvases meant for a live annotation layer, and a crop has none — so
+     a stamped sheet would copy without its stamp. */
+  check('a crop lets the file\'s own stamps render into the page canvas',
+    !/annotationCanvasMap/.test(snapshot.replace(/\/\*[\s\S]*?\*\//g, '')));
+  check('night mode is not baked into a copied crop',
+    !/invert|hue-rotate|night/i.test(snapshot.replace(/\/\*[\s\S]*?\*\//g, '')));
+}
+
+/* ---------------------------------------------------------------------------
+   Password-protected drawings
+
+   Two halves, and the second one is the one that matters. Prompting is a state
+   machine with three exits — got it, gave up, ran out — and each has to be
+   told apart from the others or a user who cancels is shown a "corrupt file"
+   message. Refusing the save is the half that protects work: pdf-lib cannot
+   rewrite an encrypted PDF and does not fail loudly about it, so without the
+   guard the app writes a damaged file and reports success.
+   --------------------------------------------------------------------------- */
+async function testProtectedDrawings() {
+  console.log('\nPassword-protected drawings');
+
+  const NEED = 1;
+  const INCORRECT = 2;
+
+  /** Drive `onPassword` the way pdf.js does and report how it came out. */
+  function run(answers, opts) {
+    const asked = [];
+    // A stand-in loading task. The handler hangs off *this*, not off the
+    // getDocument parameters — see the fixture tests below, which are what
+    // caught that being the other way round.
+    const params = RP.pdfjs.attachPassword({}, (state) => {
+      asked.push(state);
+      const answer = answers[asked.length - 1];
+      return Promise.resolve(answer);
+    }, opts);
+    const settled = { value: undefined, error: null };
+    const updatePassword = (value) => {
+      if (value instanceof Error) settled.error = value;
+      else settled.value = value;
+    };
+    return { params, asked, settled, updatePassword };
+  }
+
+  /** Let the ask() promise chain settle. */
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  {
+    const r = run(['letmein']);
+    check('the handler is attached to the loading task, not to the parameters',
+      typeof r.params.onPassword === 'function');
+    r.params.onPassword(r.updatePassword, NEED);
+    await tick();
+    check('a first prompt is described as a first attempt',
+      r.asked[0].reason === 'need' && r.asked[0].attempt === 1, JSON.stringify(r.asked[0]));
+    check('the password reaches pdf.js unchanged', r.settled.value === 'letmein');
+  }
+
+  {
+    const r = run(['wrong', 'letmein']);
+    r.params.onPassword(r.updatePassword, NEED);
+    await tick();
+    r.params.onPassword(r.updatePassword, INCORRECT);
+    await tick();
+    check('a retry is described as a wrong password, not as a fresh one',
+      r.asked[1].reason === 'incorrect' && r.asked[1].attempt === 2, JSON.stringify(r.asked[1]));
+    check('the second answer is the one used', r.settled.value === 'letmein');
+  }
+
+  {
+    // Backing out is a decision, not a failure, and the two get different
+    // messages — so they must be distinguishable at the catch.
+    const r = run([null]);
+    r.params.onPassword(r.updatePassword, NEED);
+    await tick();
+    check('cancelling rejects the load rather than leaving it hanging',
+      r.settled.error instanceof Error, String(r.settled.error));
+    /* The outcome is recorded on the task, not on the error. pdf.js does not
+       reject with the Error it is handed — it rejects its own capability,
+       that crosses the worker boundary, and what reaches the caller is a
+       fresh PasswordException with nothing of ours on it. The fixture tests
+       below are what established that; a stub happily carried the tag. */
+    check('a cancel is recorded on the task', r.params.rpPassword === 'cancelled',
+      String(r.params.rpPassword));
+  }
+
+  {
+    /* An empty box is a cancel, not a password. An empty string is a *valid*
+       password as far as pdf.js is concerned, so passing it through would burn
+       an attempt on nothing and report the wrong reason next time round. */
+    const r = run(['']);
+    r.params.onPassword(r.updatePassword, NEED);
+    await tick();
+    check('an empty box is treated as backing out',
+      !!r.settled.error && r.params.rpPassword === 'cancelled');
+  }
+
+  {
+    /* The cap has to live here rather than in the prompt: a file whose
+       encryption dictionary is broken answers "incorrect" to the *right*
+       password, and without a cap that is an infinite prompt loop. */
+    const r = run(['a', 'b', 'c', 'd'], { attempts: 3 });
+    for (let i = 0; i < 4; i += 1) {
+      r.params.onPassword(r.updatePassword, i === 0 ? NEED : INCORRECT);
+      await tick();
+    }
+    check('attempts are capped', r.asked.length === 3, r.asked.length + ' prompt(s)');
+    check('running out of attempts is recorded apart from a cancel',
+      !!r.settled.error && r.params.rpPassword === 'exhausted', String(r.params.rpPassword));
+  }
+
+  check('a pdf.js password rejection is recognised',
+    RP.pdfjs.isPasswordError({ name: 'PasswordException' }) &&
+    !RP.pdfjs.isPasswordError({ name: 'InvalidPDFException' }));
+  check('the password reason codes have working defaults',
+    RP.pdfjs.passwordReasons().need === 1 && RP.pdfjs.passwordReasons().incorrect === 2);
+
+  // --- the save guard -------------------------------------------------------
+  const App = RP.app;
+  const keptStore = RP.store;
+  const keptRp = global.window.rp;
+  let dialogs = 0;
+  let saveDialogs = 0;
+
+  global.window.rp = {
+    files: { saveAsDialog: async () => { saveDialogs += 1; return 'C:\\x.pdf'; } },
+    dialog: { message: async () => { dialogs += 1; return { response: 2 }; } }
+  };
+
+  try {
+    const plain = RP.createStore();
+    plain.setDocument({ doc: null, path: 'C:\\d\\E-101.pdf', name: 'E-101.pdf', bytes: null });
+    check('an ordinary drawing is not marked encrypted', plain.encrypted === false);
+    check('an ordinary drawing is writable', (await App.confirmWritable(plain)) === true);
+    check('a writable drawing puts no dialog up', dialogs === 0);
+
+    const locked = RP.createStore();
+    locked.setDocument({
+      doc: null, path: 'C:\\d\\E-102.pdf', name: 'E-102.pdf', bytes: null, encrypted: true
+    });
+    check('a protected drawing is marked encrypted', locked.encrypted === true);
+
+    RP.store = locked;
+    const allowed = await App.confirmWritable(locked);
+    check('a protected drawing is refused rather than saved', allowed === false);
+    check('the refusal explains itself', dialogs === 1, dialogs + ' dialog(s)');
+    check('the refusal never reaches the save-location dialog', saveDialogs === 0);
+
+    /* The flag is a fact about the bytes, so it must survive being asked twice
+       — a second Ctrl+S has to be refused as firmly as the first. There is no
+       "accepted" escape hatch here on purpose: unlike the save-mode question,
+       this one has no answer that makes the write work. */
+    await App.confirmWritable(locked);
+    check('a protected drawing stays refused on the second attempt',
+      locked.encrypted === true && dialogs === 2, dialogs + ' dialog(s)');
+  } finally {
+    RP.store = keptStore;
+    global.window.rp = keptRp;
+  }
+
+  // --- everything else that writes a PDF from the drawing's bytes -----------
+  const app = fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8');
+  const print = fs.readFileSync(path.join(ROOT, 'src', 'js', 'print.js'), 'utf8');
+  const pages = fs.readFileSync(path.join(ROOT, 'src', 'js', 'pages.js'), 'utf8');
+  const store = fs.readFileSync(path.join(ROOT, 'src', 'js', 'store.js'), 'utf8');
+
+  check('the guard runs before the save resolves a target',
+    /confirmWritable\(store\)[\s\S]{0,200}resolveTarget\(store\)/.test(app));
+  check('Save As is guarded too', (app.match(/confirmWritable\(store\)/g) || []).length >= 2);
+  /* Print builds its bytes through pdf-lib exactly as a save does, so it is
+     broken on a protected drawing in the same way — and a damaged preview on
+     the way to a plotter is worse than being told no. */
+  check('printing a protected drawing is blocked', /RP\.store\.encrypted/.test(print));
+  /* So does every page operation: they rebuild the whole file. */
+  check('page edits on a protected drawing are blocked',
+    /store\.encrypted/.test(pages) && /ensureBase\(\)/.test(pages));
+  check('the encrypted flag is set from the document, not guessed later',
+    /setDocument\(\{[^}]*encrypted[^}]*\}\)/.test(store) && /this\.encrypted = !!encrypted/.test(store));
+
+  /* Detection has to be `getPermissions`, not "did we prompt". An owner
+     password gates editing rather than opening, so those files never prompt —
+     and they are exactly the ones that were being corrupted silently. */
+  check('encryption is detected even when nothing prompted for it',
+    /getPermissions\(\)/.test(app));
+
+  // The password must not reach anything that outlives the session. diag.js
+  // streams what it captures to a log file on disk.
+  check('the password field is masked', /type: 'password'/.test(app));
+  check('nothing logs the password',
+    !/console\.(log|warn|error)\([^)]*password/i.test(app));
+
+  await testProtectedFixtures();
+}
+
+/* ---------------------------------------------------------------------------
+   The same thing against real encrypted files
+
+   Everything above drives `onPassword` the way pdf.js is understood to drive
+   it. This drives it the way pdf.js actually does, because the whole feature
+   rests on a contract that is only documented by the source: pdf.js does not
+   reject an encrypted file, it *calls back and waits*, and hands an Error to
+   `updatePassword` to give up. A stub can agree with a misreading of that all
+   day.
+
+   The two fixtures were made with qpdf from a one-page pdf-lib document:
+
+     qpdf --allow-weak-crypto --object-streams=disable \
+          --encrypt redline ownerpw 128 -- in.pdf encrypted-user-password.pdf
+     qpdf --allow-weak-crypto --object-streams=disable \
+          --encrypt "" ownerpw 128 --print=none --modify=none -- \
+          in.pdf encrypted-owner-password.pdf
+
+   The second is the important one. It has no *user* password, so it opens with
+   no prompt and looks like any other drawing — and it is the case that was
+   being saved to a damaged file without anybody being told.
+   --------------------------------------------------------------------------- */
+async function testProtectedFixtures() {
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) { check('pdf.js available for the encryption fixtures', false); return; }
+
+  const dir = path.join(ROOT, 'test', 'fixtures');
+  const read = (name) => new Uint8Array(fs.readFileSync(path.join(dir, name)));
+  if (!fs.existsSync(path.join(dir, 'encrypted-user-password.pdf'))) {
+    check('the encryption fixtures are present', false, 'test/fixtures is missing');
+    return;
+  }
+
+  /** Open exactly the way `App.loadDocument` does. */
+  async function open(name, answers) {
+    const asked = [];
+    const task = RP.pdfjs.attachPassword(
+      pdfjs.getDocument({ data: read(name) }),
+      (state) => { asked.push(state.reason); return answers[asked.length - 1]; }
+    );
+    try {
+      return { doc: await task.promise, asked, error: null, outcome: task.rpPassword };
+    } catch (err) {
+      return { doc: null, asked, error: err, outcome: task.rpPassword };
+    }
+  }
+
+  {
+    const r = await open('encrypted-user-password.pdf', ['redline']);
+    check('a user-password drawing prompts once and opens',
+      !!r.doc && r.asked.length === 1 && r.asked[0] === 'need',
+      r.error ? String(r.error) : r.asked.join(','));
+    if (r.doc) {
+      check('an opened protected drawing is readable',
+        r.doc.numPages === 1, String(r.doc && r.doc.numPages));
+      check('a decrypted drawing still reports as encrypted',
+        (await r.doc.getPermissions()) !== null);
+    }
+  }
+
+  {
+    const r = await open('encrypted-user-password.pdf', ['nope', 'redline']);
+    check('a wrong password is re-asked as a wrong password, not as a new file',
+      !!r.doc && r.asked.length === 2 && r.asked[1] === 'incorrect', r.asked.join(','));
+  }
+
+  {
+    const r = await open('encrypted-user-password.pdf', [null]);
+    check('backing out of a real password prompt rejects the load',
+      !r.doc && !!r.error, r.doc ? 'opened anyway' : 'rejected');
+    /* And it is still tellable from a corrupt file afterwards. This is the
+       check that would have caught the tag being put on the error: pdf.js
+       replaces that error entirely, so `err.rpPassword` is undefined here
+       however carefully it was set. */
+    check('a real cancel is distinguishable from an unreadable file',
+      r.outcome === 'cancelled' && r.error.name === 'PasswordException',
+      r.outcome + ' / ' + (r.error && r.error.name));
+  }
+
+  {
+    const r = await open('encrypted-user-password.pdf', ['a', 'b', 'c', 'd']);
+    check('a run of wrong passwords stops rather than looping forever',
+      !r.doc && r.asked.length === 3 && r.outcome === 'exhausted',
+      r.asked.length + ' prompt(s), ' + r.outcome);
+  }
+
+  {
+    /* The regression that motivated all of this. This file opens with no
+       prompt at all, so "did we ask for a password" is not a usable test for
+       whether it can be written — `getPermissions` is. */
+    const r = await open('encrypted-owner-password.pdf', []);
+    check('an owner-password drawing opens without ever prompting',
+      !!r.doc && r.asked.length === 0, r.asked.join(','));
+    if (r.doc) {
+      const perms = await r.doc.getPermissions();
+      check('an owner-password drawing is still detected as encrypted',
+        perms !== null, perms === null ? 'getPermissions() was null' : 'permission flags present');
+    }
+  }
+
+  {
+    /* And the reason it must be detected: pdf-lib cannot rewrite these bytes.
+       It does not throw — it assembles a document around content streams it
+       never decrypted and carries the original /Encrypt dictionary out with
+       it, so what lands on disk still demands a password *and* no longer
+       matches the one it names. If this check ever starts failing because the
+       output opens cleanly, pdf-lib has learned to decrypt and the guard in
+       `App.confirmWritable` can be revisited. */
+    let output = null;
+    try {
+      const doc = await PDFLib.PDFDocument.load(read('encrypted-owner-password.pdf'),
+        { ignoreEncryption: true, updateMetadata: false });
+      output = await doc.save();
+    } catch (err) {
+      output = null;   // some encrypted files do not even parse
+    }
+    let readable = false;
+    if (output) {
+      try {
+        await pdfjs.getDocument({ data: new Uint8Array(output) }).promise;
+        readable = true;
+      } catch (err) { readable = false; }
+    }
+    check('pdf-lib still cannot write a usable file from an encrypted one',
+      !readable, readable ? 'it round-tripped — the save guard may be revisitable' : 'confirmed');
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Reopening a drawing this app saved
 
    A save writes the markups twice over — stamped into the page content for
@@ -2576,10 +3206,13 @@ async function pageLabel(bytes, index) {
     testCompareMaths();
     testCompareGuards();
     testMarqueeZoom();
+    testViewModes();
     testCanvasRetention();
     testScrollPage();
     testSessions();
     testPackaging();
+    testSnapshotGeometry();
+    await testProtectedDrawings();
     await testSaveTargets();
     await testExport();
     await testReopen();

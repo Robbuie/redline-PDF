@@ -5,9 +5,11 @@ one item you want to work on, and it should have enough context to start without
 re-reading the whole codebase. `CLAUDE.md` covers the architecture and the
 landmines; every item assumes it has been read.
 
-Suggested order: start at **7** (1–6 have shipped). Items 7–16 are
-independent and can be picked up in any order. Items 17–21 are pre-release
-hardening.
+Suggested order: **7** is the one architectural item left. 1–6, **15** and
+**22–24** have shipped; 17 and 19–21 are settled or superseded. What remains is
+**7** (view modes), **18** (large-file guard rails, mostly overtaken by the
+canvas budget and the render queue), **21**'s headless smoke test, and **25**
+(polyline / area / perimeter), which is the biggest and most valuable of them.
 
 ---
 
@@ -290,9 +292,37 @@ wired to `RP.viewer.goToPage()`.
 Recents only appear in the empty state (`#recentList`). Add an Open Recent menu,
 a tray submenu, and pin/remove per entry.
 
-### 15. Copy area as image
-Drag a region, get a PNG on the clipboard. Extremely useful for pasting a detail
-into an email or RFI. Composite `pdf-canvas` + `annot-canvas` for the region.
+### 15. Copy area as image — **done** (0.8.0)
+
+Shipped as `src/js/snapshot.js` (`RP.snapshot`) plus a `snapshot` tool on the
+`S` key, two rows on the viewer context menu, and one in the text-selection
+action menu. New IPC `clipboard:write-image`, which puts a real bitmap on the
+clipboard through `nativeImage` — writing a data URL as *text* is the naive
+version and it pastes into an email as gibberish.
+
+**The spec above says composite the two canvases. That was the wrong call and
+the code deliberately does not do it.** The screen canvas is a raster at
+whatever zoom you happen to be at, so a detail copied at fit-width on an E-size
+sheet lands at roughly one device pixel per three PDF points — unreadable, and
+unreadable for a reason nobody can see from the result. The region is instead
+re-rendered from the page proxy at a density chosen for the crop, via pdf.js's
+`transform` parameter so only the crop is rasterised rather than the whole
+sheet at 4x. Three things fell out of that and all three are load-bearing:
+
+- **Density is `plan()`, and it is pure.** Target 2x, floored at the current
+  zoom so somebody who zoomed to 400% for a detail gets it at 400%, capped at
+  24 megapixels because a canvas Chromium refuses to allocate comes back
+  *blank* rather than as an error. `test/verify.js` covers all three rules.
+- **No `annotationCanvasMap`,** unlike `viewer.renderPage`. The map exists to
+  hand stamps and some free text to a live annotation layer; a crop has none,
+  so passing one diverts those marks into canvases nothing reads and a stamped
+  sheet copies without its stamp.
+- **Night mode cannot travel.** It is a CSS filter on `.pdf-canvas` and a fresh
+  render never sees it, so the copy is always the real drawing. Compositing
+  would have made this a question; re-rendering makes it impossible.
+
+Nice-to-haves left: "save area as PNG…" beside the copy, and a copy at a chosen
+scale for people pasting into a fixed-width template.
 
 ### 16. Status bar
 There is no persistent status bar — page number, zoom, measurement scale,
@@ -498,7 +528,74 @@ says so.
 
 ---
 
-### 24. Password-protected PDFs
+### 24. Password-protected PDFs — **done** (0.8.0), but not as specified
+
+**Read this before touching anything encrypted.** The spec below is kept
+because its reasoning is sound and its warning was right; its central factual
+claim was not, and the difference changed what got built.
+
+**What the spec got wrong.** It says `ignoreEncryption: true` "does not
+preserve encryption, it bypasses it: pdf-lib reads the file and writes an
+**unencrypted** one", and proposes announcing that in the toast. pdf-lib does
+no such thing. Tested against RC4-128, AES-256 and owner-password-only files:
+
+- It does **not** decrypt the content streams. They are copied through still
+  encrypted, so the output is corrupt — pdf.js reports
+  `Unknown compression method in flate stream` on it.
+- It does **not** drop the `/Encrypt` dictionary. The output still demands a
+  password, over streams that no longer match the one it names.
+- With object streams — qpdf's default, and common in modern protected PDFs —
+  it does not even parse the file; it throws in the loader.
+
+So there was no unencrypted output to announce. "Save it and say so" was not an
+option that existed.
+
+**What the spec got right, and understated.** It says the pdf-lib problem "is
+already live" but assumed it was unreachable because nothing could open a
+protected file yet. It was reachable. An *owner* password gates permissions
+rather than opening, so a "no editing" client set opened with no prompt, marked
+up, saved, and produced a file nothing could read — with a success toast. That
+was shipped behaviour through 0.7.3.
+
+**What landed.** A protected drawing opens read-only.
+
+- `RP.pdfjs.attachPassword(task, ask)` wires the prompt. **`onPassword` belongs
+  to the loading task, not to the `getDocument` parameters** — putting it in
+  the params is the obvious guess, it is silently ignored, and the result is a
+  generic `PasswordException` with no prompt ever shown. A stubbed pdf.js
+  agrees with the wrong shape all day, which is why `test/fixtures` holds two
+  real encrypted PDFs; they caught it within a minute of existing.
+- **How an attempt ended is recorded on the task, not on the error.** pdf.js
+  discards the Error handed to `updatePassword`, rejects its own internal
+  capability, and that crosses the worker boundary — what reaches the caller is
+  a fresh `PasswordException` with nothing of ours on it. `task.rpPassword` is
+  how "backed out", "ran out of attempts" and "actually corrupt" stay three
+  different messages. Attempts are capped at three in `attachPassword` rather
+  than in the prompt, because a broken encryption dictionary answers
+  "incorrect" to the *correct* password and would otherwise loop forever.
+- **Detection is `doc.getPermissions()`, not "did we prompt".** It is null with
+  no `/Encrypt` dictionary and an array of flags with one, so it catches the
+  owner-password case that never prompts — the one that was corrupting files.
+- `store.encrypted` gates `App.confirmWritable` (before `resolveTarget`, so the
+  refusal comes before the where-to-save dialog), `RP.print.show` and
+  `RP.pages.ensureBase`. All three write PDFs through pdf-lib. The refusal
+  offers the CSV and the markup report, which build documents from scratch and
+  are unaffected.
+- The status-bar chip reads `Protected — read-only` and explains on click
+  rather than cycling a save mode that cannot take effect.
+
+**Permission flags are ignored**, as the spec suggested, and it is in
+`README.md`. The presence of the encryption dictionary is what matters here,
+not what it permits.
+
+**Still open.** Making protected drawings *saveable* means decrypting them
+ourselves — RC4 and AES-128/256 in the main process with Node crypto — which is
+a real crypto implementation that has to be exactly right or it silently
+corrupts drawings. Its own item, if it is ever wanted.
+
+---
+
+### 24a. The original spec, for its reasoning
 
 Supersedes item 17. Client-issued sets are frequently protected and the app
 currently gives up with a generic toast.

@@ -29,7 +29,7 @@
       keys: [
         ['Ctrl+G', 'Go to page'],
         ['Home / End', 'First / last page'],
-        ['Page Up / Down', 'Previous / next page'],
+        ['Page Up / Down', 'Previous / next sheet — or spread, when two are facing'],
         ['Ctrl+Tab', 'Next tab'],
         ['Alt+1…9', 'Jump to a tab'],
         ['Ctrl+\\', 'Split the view in two'],
@@ -45,6 +45,8 @@
         ['Ctrl+0', 'Actual size'],
         ['Ctrl+1', 'Fit width'],
         ['Ctrl+2', 'Fit page'],
+        ['Ctrl+3', 'Fit visible — fits the ink, not the paper'],
+        ['F11', 'Presentation mode'],
         ['Ctrl+Shift+N', 'Night mode'],
         ['Ctrl+F', 'Find in the drawing'],
         ['F3 / Shift+F3', 'Next / previous hit']
@@ -67,7 +69,8 @@
         ['O', 'Callout'],
         ['M', 'Measure'],
         ['G', 'Pan'],
-        ['Z', 'Zoom to a box']
+        ['Z', 'Zoom to a box'],
+        ['S', 'Copy an area as a picture']
       ]
     },
     {

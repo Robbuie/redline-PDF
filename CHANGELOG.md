@@ -12,6 +12,97 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.9.0] — 2026-08-05
+
+### Added
+
+- **Page layouts.** Continuous scroll is no longer the only way to read a
+  drawing. The new button beside Fit page offers four:
+
+  - **Continuous** — one column, scroll straight through the set. The default,
+    and unchanged.
+  - **Single page** — one sheet at a time. The wheel turns the sheet once there
+    is nothing left to scroll, so a fitted drawing is not inert.
+  - **Two pages** — a facing spread at a time, with the cover sheet on its own
+    so sheet 2 backs sheet 1 the way the set was issued.
+  - **Two pages, continuous** — spreads in one scrolling column.
+
+  `Page Up` / `Page Down` move by a *spread* in the facing layouts, not by one
+  sheet — the sheet next door is already in front of you. The layout is
+  remembered per tab, so two drawings open side by side can be read
+  differently.
+
+- **Fit visible** (`Ctrl+3`, or the zoom dropdown) fits the ink on the sheet
+  rather than the sheet. On a plotted drawing that is the difference between
+  the border-to-border paper and the part with the drawing on it; on a scan it
+  ignores the margin the sheet was scanned onto. A blank sheet, or one whose
+  ink already fills it, is left at fit width rather than being fitted to
+  nothing.
+
+- **Presentation mode** (`F11`, or the bottom of the layout menu). Fullscreen,
+  one sheet at a time, fitted to the screen, with both toolbars, the sidebar,
+  the tab strip and the status bar out of the way. `Esc` or `F11` puts
+  everything back exactly as it was, including the layout and zoom you were on
+  — leaving fullscreen by any other route does the same.
+
+### Changed
+
+- The status bar names the layout beside the zoom when it is not the default,
+  and the zoom dropdown ticks Fit visible alongside the other two fits.
+
+## [0.8.0] — 2026-08-05
+
+### Added
+
+- **Copy an area of a drawing as a picture.** Press `S` or pick the new
+  toolbar button, drag a box around a detail, and it goes onto the clipboard
+  ready to paste into an email or an RFI. There is a `Copy area as image` row
+  on the right-click menu too, and `Copy this page as image` beside it. A
+  selection made with the Words tool can be copied as a picture as well as as
+  text — which is usually what you want for a schedule, where pasting the
+  words loses the column alignment that made them readable.
+
+  The copy is **not** a screenshot of what is on screen. The area is redrawn at
+  a density chosen for the crop, so a detail copied while you are zoomed out to
+  the whole sheet is still legible at the far end — and one copied while you
+  are zoomed in comes out at least as sharp as it looked. Your markups are in
+  the picture, the drawing's own stamps and comments are in it, and night mode
+  is not: you always get the real drawing rather than the inverted one.
+
+- **Password-protected drawings open.** A drawing that needs a password now
+  asks for one instead of reporting that the file could not be read. You get
+  three attempts, a wrong one says so, and backing out leaves you where you
+  were rather than with an empty tab. The same prompt appears when you pick a
+  protected file as a comparison baseline.
+
+### Changed
+
+- **A protected drawing is read-only, and says so before you start.** You can
+  review it, search it, measure on it, copy text and pictures out of it and
+  mark it up — but the markups cannot be saved back into it, and a protected
+  drawing now says that when it opens rather than when you first press
+  `Ctrl+S`. The status-bar chip reads `Protected — read-only`, and printing and
+  page edits are blocked for the same reason. Markups on a protected drawing
+  can still go out as a CSV or as a markup report, and the refusal offers both.
+
+  This is a real limit rather than a caution: the library this app writes PDFs
+  with cannot rewrite an encrypted one. To save markups into the drawing
+  itself, remove the protection first and open the unprotected copy.
+
+### Fixed
+
+- **A drawing protected against editing no longer saves to a damaged file.**
+  Not every protected PDF asks for a password — a drawing issued "no editing"
+  or "no printing" carries an *owner* password, which gates changes rather than
+  opening, so it opened like any other sheet. Marking one up and saving
+  produced a file that no viewer could open, and the app reported it as saved.
+  Anyone who did that got no warning at the time and a broken file afterwards.
+  Those drawings are now recognised as protected on the way in and handled like
+  any other protected drawing. **If you have saved a marked-up copy of a
+  protected drawing with an earlier version, check that it still opens.**
+
+---
+
 ## [0.7.3] — 2026-08-05
 
 ### Fixed

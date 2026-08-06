@@ -291,6 +291,10 @@
       if (RP.viewer) { RP.viewer.buildThumbs(); RP.viewer.redrawAll(); }
       RP.app.updateTitle();
       RP.app.updateStatus();
+      // Per-document, so it follows the switch. `doc:loaded` covers a fresh
+      // load; this covers switching back to a tab that was already open, which
+      // does not re-emit it.
+      RP.app.updateSaveModeChip();
       this.syncEmpty();
       RP.bus.emit('tab:changed', tab);
       if (opts && opts.rebuilt) RP.app.rememberView();

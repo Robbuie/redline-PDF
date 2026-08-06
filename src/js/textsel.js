@@ -336,6 +336,21 @@
             });
           }
         },
+        {
+          /* The same box, as a picture rather than as words. On a drawing this
+             is often the one that is wanted: a schedule row pasted as text
+             loses the column alignment that made it readable, and a detail has
+             no text to copy at all. It goes through `firstPage` because a
+             picture is of one sheet — a selection spanning a page break has no
+             single image to be. */
+          label: 'Copy as image',
+          run: () => {
+            const pageIndex = this.firstPage(payload);
+            const box = pageIndex < 0 ? null : this.boxOn(payload, pageIndex);
+            if (box) RP.snapshot.copy(pageIndex, box, RP.store);
+            if (typeof options.after === 'function') options.after();
+          }
+        },
         { separator: true },
         {
           label: 'Callout with this text',

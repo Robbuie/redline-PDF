@@ -35,7 +35,8 @@ contextBridge.exposeInMainWorld('rp', {
   },
 
   clipboard: {
-    writeText: (text) => call('clipboard:write-text', text)
+    writeText: (text) => call('clipboard:write-text', text),
+    writeImage: (bytes) => call('clipboard:write-image', bytes)
   },
 
   updates: {
@@ -107,6 +108,8 @@ contextBridge.exposeInMainWorld('rp', {
     /** Answer to `closeRequest` when the user backed out. */
     cancelClose: () => call('window:cancel-close'),
     isMaximized: () => call('window:is-maximized'),
+    /** Presentation mode. Resolves to the state the window actually reached. */
+    setFullScreen: (on) => call('window:set-fullscreen', !!on),
     setTitle: (title) => call('window:set-title', title)
   },
 

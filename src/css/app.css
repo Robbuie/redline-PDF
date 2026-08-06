@@ -705,11 +705,45 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
     var(--canvas-bg);
 }
 
+/* The column holds *rows*, and a row holds one page or a facing pair. The
+   gap here and the one on `.page-row` are the two numbers `viewer.js` fits
+   against (COLUMN_PAD / SPREAD_GAP) — change one and change the other, or
+   fit-page leaves a spread a sliver over the edge. */
 .pages {
   display: flex; flex-direction: column; align-items: center;
   gap: 18px; padding: 22px 22px 60px;
   min-height: 100%;
 }
+
+.page-row { display: flex; align-items: flex-start; gap: 14px; }
+/* `hidden` alone loses to `display: flex`. Paged modes rely on this. */
+.page-row[hidden] { display: none; }
+
+/* One row in the column, centred in the pane. `safe` matters: a plain
+   `center` on a row taller than the pane pushes its top out of the scroll
+   container's reach, so the head of an E-size sheet becomes unscrollable. */
+.pages.paged {
+  justify-content: safe center;
+  padding-bottom: 22px;
+}
+
+/* Presentation mode (F11).
+
+   Everything but the drawing goes, by one class on <body> rather than by each
+   panel hiding itself: the sidebar's collapsed state, the armed tool, the tab
+   strip and the scroll position all come back untouched when the class does.
+   `body` is a flex column and the workspace is the one child that grows, so
+   removing the others from flow is enough — no re-sizing is needed.
+
+   The paper keeps its drop shadow but loses the page tag: a sheet number
+   floating under a projected drawing reads as part of the drawing. */
+body.presenting > .titlebar,
+body.presenting > .toolbar,
+body.presenting > .statusbar,
+body.presenting .sidebar,
+body.presenting .pane-tabs { display: none; }
+body.presenting .page-tag { display: none; }
+body.presenting .viewer { background: #0b0d10; }
 
 .page {
   position: relative;
@@ -970,6 +1004,10 @@ body[data-tool="cloud"] .page .ink-layer,
 body[data-tool="callout"] .page .ink-layer,
 body[data-tool="measure"] .page .ink-layer { cursor: crosshair; }
 body[data-tool="zoomrect"] .page .ink-layer { cursor: zoom-in; }
+/* Snapshot has to take the pointer the way the area tools do, or the press
+   lands on the text layer and starts a selection behind the band. */
+body[data-tool="snapshot"] .page .ink-layer { pointer-events: auto; cursor: crosshair; }
+body[data-tool="snapshot"] .page .text-layer { pointer-events: none; cursor: crosshair; }
 
 body:not([data-tool="select"]):not([data-tool="highlight"]) .page .text-layer { pointer-events: none; }
 
@@ -1113,6 +1151,11 @@ body.panning .viewer * { cursor: grabbing !important; }
 .st-toggle:hover::after { opacity: 1; }
 .st-toggle:active { transform: translateY(1px); }
 .st-toggle.overwrite { background: rgba(255, 91, 74, .16); border-color: rgba(255, 91, 74, .45); color: #ff8375; }
+/* A protected drawing. The caret goes, because in this state the chip does not
+   cycle — it explains. Leaving the caret up would promise a control that is not
+   there, which is the same lie the chip's old label told about Ctrl+S. */
+.st-toggle.readonly { background: rgba(255, 176, 46, .16); border-color: rgba(255, 176, 46, .45); color: #ffc46b; }
+.st-toggle.readonly::after { content: none; }
 
 /* Go-to-page. A real input rather than a label, because typing a sheet number
    is how anyone navigates a 200-page set. */

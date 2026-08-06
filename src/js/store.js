@@ -123,9 +123,15 @@
       this.emit('doc:reset');
     },
 
-    setDocument({ doc, path, name, bytes }) {
+    setDocument({ doc, path, name, bytes, encrypted }) {
       this.doc = doc;
       this.docPath = path || null;
+      /* Set once, at open, and never cleared while the document is open: it is
+         a fact about the bytes, not a state of the session. Everything that
+         writes a PDF from those bytes has to check it, because pdf-lib cannot
+         rewrite an encrypted file and fails by producing a damaged one rather
+         than by throwing. See `App.confirmWritable`. */
+      this.encrypted = !!encrypted;
       this.docName = name || RP.basename(path) || 'Untitled.pdf';
       this.docBytes = bytes || null;
       this.baseBytes = null;

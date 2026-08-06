@@ -151,6 +151,8 @@
         RP.status('Drag to move around the sheet — holding Space or the middle button does this from any tool');
       } else if (tool === 'zoomrect') {
         RP.status('Drag a box around what you want to see — click to zoom in a step. Esc returns to Select');
+      } else if (tool === 'snapshot') {
+        RP.status('Drag a box around a detail to copy it as a picture. Esc returns to Select');
       }
       // Locking is invisible otherwise: the button looks the same as an armed
       // one until the second markup you did not expect appears.
@@ -464,6 +466,14 @@
           startClient: { x: event.clientX, y: event.clientY },
           movedPx: 0
         };
+      } else if (this.tool === 'snapshot') {
+        this.drag = {
+          mode: 'snapshot',
+          record,
+          startPdf: pdf,
+          startLocal: local,
+          movedPx: 0
+        };
       } else if (this.tool === 'note') {
         this.createNote(record, pdf);
       } else if (this.tool === 'text') {
@@ -497,6 +507,7 @@
         case 'marquee': break;
         case 'textmarquee': break;
         case 'zoomrect': break;
+        case 'snapshot': break;
         default: break;
       }
       RP.viewer.redrawPage(record.index);
@@ -511,6 +522,7 @@
       else if (drag.mode === 'marquee') this.finishMarquee(drag, event);
       else if (drag.mode === 'textmarquee') this.finishTextMarquee(drag);
       else if (drag.mode === 'zoomrect') this.finishZoomRect(drag);
+      else if (drag.mode === 'snapshot') this.finishSnapshot(drag);
       else if (drag.mode === 'move' || drag.mode === 'resize') {
         if ((drag.movedPx || 0) < CLICK_TOL && drag.mode === 'move') {
           // A plain click on an already-selected markup: keep the selection.
@@ -705,6 +717,47 @@
     },
 
     // ---------------------------------------------------------------------
+    // Copy an area as a picture
+    // ---------------------------------------------------------------------
+
+    /**
+     * Turn the dragged box into a PNG on the clipboard.
+     *
+     * The drag is dropped before the copy starts, for the same reason
+     * `finishZoomRect` drops it: the rubber band is painted by `drawPreview`
+     * and the region is re-rendered asynchronously, so a band left standing
+     * would still be on the canvas — and, worse, in the crop if the repaint
+     * landed first.
+     *
+     * The store is captured here rather than read inside `RP.snapshot`: the
+     * render is asynchronous and the user can switch tabs across it, which
+     * would otherwise draw the wrong drawing's markups into the picture.
+     */
+    finishSnapshot(drag) {
+      const record = drag.record;
+      const store = RP.store;
+      this.drag = null;
+      RP.viewer.redrawPage(record.index);
+
+      if (!drag.pdf || (drag.movedPx || 0) < CLICK_TOL) {
+        RP.status('Drag a box around the detail you want to copy', 'warn');
+        return;
+      }
+      const rect = RP.geom.normRect(drag.startPdf[0], drag.startPdf[1], drag.pdf[0], drag.pdf[1]);
+      const view = RP.render.vpRect(record.viewport, rect);
+      if (!RP.snapshot.isRegion(view)) {
+        RP.status('That area was too small to copy', 'warn');
+        return;
+      }
+      // A one-shot like the markup tools: it has produced something, so the
+      // tool hands back to Select unless it was locked on for a run of
+      // details. A drag too small to be a region returns above, so a slipped
+      // click does not cost a trip back to the toolbar.
+      this.afterCreate();
+      RP.snapshot.copy(record.index, rect, store);
+    },
+
+    // ---------------------------------------------------------------------
     // Creation
     // ---------------------------------------------------------------------
 
@@ -847,13 +900,20 @@
 
       if (drag.mode === 'create' && drag.draft) {
         RP.render.drawAnnotation(ctx, drag.draft, record.viewport, {});
-      } else if ((drag.mode === 'marquee' || drag.mode === 'textmarquee' || drag.mode === 'zoomrect') && drag.pdf) {
-        const zoom = drag.mode === 'zoomrect';
+      } else if ((drag.mode === 'marquee' || drag.mode === 'textmarquee' ||
+                  drag.mode === 'zoomrect' || drag.mode === 'snapshot') && drag.pdf) {
+        // Three bands, three meanings, so three colours: blue selects, amber
+        // zooms, green takes a picture. A snapshot band deliberately does not
+        // tint its interior — the fill would be in the crop if the repaint
+        // beat the render, and a wash of green over a detail is the one thing
+        // this feature must not produce.
+        const band = drag.mode === 'zoomrect' ? 'zoom' : (drag.mode === 'snapshot' ? 'shot' : 'select');
         const rect = RP.geom.normRect(drag.startPdf[0], drag.startPdf[1], drag.pdf[0], drag.pdf[1]);
         const view = RP.render.vpRect(record.viewport, rect);
         ctx.save();
-        ctx.strokeStyle = zoom ? '#ffb02e' : '#2f8fff';
-        ctx.fillStyle = zoom ? 'rgba(255,176,46,.10)' : 'rgba(47,143,255,.12)';
+        ctx.strokeStyle = band === 'zoom' ? '#ffb02e' : (band === 'shot' ? '#3ecf7a' : '#2f8fff');
+        ctx.fillStyle = band === 'zoom' ? 'rgba(255,176,46,.10)'
+          : (band === 'shot' ? 'rgba(0,0,0,0)' : 'rgba(47,143,255,.12)');
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 3]);
         ctx.fillRect(view.x, view.y, view.w, view.h);
@@ -1335,6 +1395,27 @@
           danger: true,
           run: () => RP.app.deleteSelection()
         } : null,
+        { separator: true },
+        /* Copying a picture of an area is offered two ways round, because the
+           two are different gestures. Inside a standing selection the box is
+           already drawn and the region is known, so it copies then and there.
+           Anywhere else there is nothing to copy yet, so the row arms the tool
+           and the drag is the next thing you do. */
+        inSelection ? {
+          label: 'Copy area as image',
+          run: () => {
+            const box = RP.textsel.boxOn(RP.textsel.current, record.index);
+            if (box) RP.snapshot.copy(record.index, box, store);
+          }
+        } : {
+          label: 'Copy area as image…',
+          hint: 'S',
+          run: () => this.setTool('snapshot')
+        },
+        {
+          label: 'Copy this page as image',
+          run: () => RP.snapshot.copyPage(record.index, store)
+        },
         { separator: true },
         {
           label: 'Add note here',
@@ -1818,7 +1899,14 @@
       if (opts.message) {
         body.appendChild(RP.el('p', {
           text: opts.message,
-          style: { margin: '10px 0 14px', color: 'var(--txt-2)', fontSize: '12.5px', lineHeight: '1.6' }
+          // `pre-line` so a message can use a blank line to separate the ask
+          // from the caveat under it. Set as text rather than as markup on
+          // purpose: a document name goes in some of these, and a filename is
+          // not something to be interpolating into HTML.
+          style: {
+            margin: '10px 0 14px', color: 'var(--txt-2)', fontSize: '12.5px',
+            lineHeight: '1.6', whiteSpace: 'pre-line'
+          }
         }));
       }
       for (const field of opts.fields || []) {
@@ -1827,7 +1915,14 @@
           input = RP.el('select', {}, (field.options || []).map((o) => RP.el('option', { value: o, text: o })));
           input.value = field.value || (field.options || [])[0] || '';
         } else {
-          input = RP.el('input', { type: 'text', value: field.value || '', placeholder: field.placeholder || '' });
+          // `password` masks the box and, more to the point, keeps the value
+          // out of anything that walks the DOM — the diagnostics snapshot in
+          // `diag.js` among them.
+          input = RP.el('input', {
+            type: field.type === 'password' ? 'password' : 'text',
+            value: field.value || '',
+            placeholder: field.placeholder || ''
+          });
         }
         inputs[field.name] = input;
         body.appendChild(RP.el('label', { class: 'opt field' }, [
