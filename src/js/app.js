@@ -1124,7 +1124,12 @@
       const toolKeys = {
         v: 'select', h: 'highlight', x: 'textselect', n: 'note', p: 'pen',
         l: 'line', a: 'arrow', r: 'rect', e: 'ellipse', c: 'cloud', t: 'text',
-        o: 'callout', m: 'measure', g: 'pan', z: 'zoomrect', s: 'snapshot'
+        o: 'callout', m: 'measure', g: 'pan', z: 'zoomrect', s: 'snapshot',
+        // The three multi-click shapes. No mnemonic survived: every letter
+        // this family wanted was already spoken for (`a` is Arrow, `p` is
+        // Pen, `l` is Line, `m` is Measure), so these are the free keys
+        // nearest the ones they belong with, and the cheat sheet says so.
+        y: 'polyline', d: 'polylength', q: 'area'
       };
 
       document.addEventListener('keydown', (event) => {
@@ -1178,6 +1183,11 @@
           if (this.presenting) { this.endPresent(); return; }
           if (RP.print.open) { RP.print.hide(); return; }
           if (RP.compare.active) { RP.compare.close(); return; }
+          // Abandoning a half-drawn poly is the whole gesture, and the tool
+          // stays armed: Escape out of a shape you misjudged, start the next
+          // one. Resetting to Select here would make every correction cost a
+          // trip back to the toolbar.
+          if (RP.tools.cancelPending()) return;
           // Dropping a standing text selection is the whole gesture — it must
           // not also throw away the markup selection and reset the tool, which
           // is what the rest of this branch does.
@@ -1187,8 +1197,18 @@
           RP.tools.setTool('select');
           return;
         }
+        // Enter finishes the shape being clicked out, the way it finishes a
+        // callout — one key means "done with this markup" throughout.
+        if (event.key === 'Enter' && RP.tools.commitPending()) {
+          event.preventDefault();
+          return;
+        }
         if (event.key === 'Delete' || event.key === 'Backspace') {
           event.preventDefault();
+          // Mid-draw, Backspace takes the last vertex back rather than
+          // deleting the selection — which, with a tool armed, is empty
+          // anyway, so the alternative is a key that does nothing.
+          if (RP.tools.dropLastVertex()) return;
           this.deleteSelection();
           return;
         }

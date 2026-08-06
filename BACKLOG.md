@@ -5,11 +5,12 @@ one item you want to work on, and it should have enough context to start without
 re-reading the whole codebase. `CLAUDE.md` covers the architecture and the
 landmines; every item assumes it has been read.
 
-Suggested order: **7** is the one architectural item left. 1–6, **15** and
-**22–24** have shipped; 17 and 19–21 are settled or superseded. What remains is
-**7** (view modes), **18** (large-file guard rails, mostly overtaken by the
-canvas budget and the render queue), **21**'s headless smoke test, and **25**
-(polyline / area / perimeter), which is the biggest and most valuable of them.
+**Everything in this file has shipped or been settled.** 1–16 and 22–25 are
+done; 17 and 19–20 were superseded or decided against. What is left is not
+user-visible: **18** (large-file guard rails, mostly overtaken by the canvas
+budget and the render queue) and **21**'s headless smoke test — CI itself
+landed, the boot test did not. New work is picked from `PLAN.md` now, not from
+here.
 
 ---
 
@@ -254,43 +255,73 @@ Still open, and worth doing next:
 
 ## Tier 2 — everyday polish (independent, any order)
 
-### 7. View modes
-Continuous scroll is the only option. Add single-page, facing/spread,
-fit-visible, and a fullscreen presentation mode (F11). Lives in
-`src/js/viewer.js`; `layout()` and the `IntersectionObserver` setup are the
-places that assume a vertical stack.
+### 7. View modes — **done** (0.9.0)
 
-### 8. Right-click context menu
-There is no context menu on the viewer at all (only `src/js/pages.js` has one,
-~line 265 — follow that pattern). Wanted: copy text, copy area as image, markup
-properties, delete markup, "add note here", print.
+Shipped as `src/js/views.js` (`RP.views`) plus the rows in `viewer.js`:
+continuous, single page, facing spreads with the cover sheet on its own, facing
+continuous, Fit visible on `Ctrl+3`, and presentation mode on `F11`.
 
-### 9. Copy selected text
-The text layer works and is selectable, but `Ctrl+C` is not wired and there is no
-clipboard path for it. Small job, high daily value.
+The spec above put this in `viewer.js` alone and that was half right. The
+grouping, the paged/spread predicates and the fit maths came *out* into
+`RP.views` as pure functions so `test/verify.js` could walk every page index in
+every mode without a browser — which is what caught the off-by-one that a cover
+sheet puts in `index >> 1`. Three things worth knowing before touching it:
 
-### 10. Invert / night mode
-A CSS filter on `.pdf-canvas` (`invert(1) hue-rotate(180deg)`), toggled from the
-toolbar and persisted in settings. Must **not** apply to `.annot-canvas` or
-markup colours will invert too. Roughly ten lines.
+- **The page column holds rows, not pages**, and nothing outside `RP.views` may
+  divide by the spread. `rowsFor` builds the grouping, `rowOfPage` answers it
+  without building; the two disagreeing is how a thumbnail click opens the
+  spread next door.
+- **In a paged mode only the current row is in the column**, which is what lets
+  the existing IntersectionObserver release the rest with no special case — the
+  observer still observes pages. But the hidden rows are `display: none`, so
+  `pageTops` stops being sorted and both `pageIndexAt` and `pageAt` need their
+  guards.
+- **Presentation mode is one class on `<body>`**, not each panel hiding itself,
+  and `leave-full-screen` comes back over `window:state` so the OS cannot
+  strand the app fullscreen with no toolbars.
 
-### 11. Missing muscle-memory shortcuts
-`Ctrl+P`, `Ctrl+W`, `Ctrl+T`, `Ctrl+Shift+T`, `Ctrl+G` (go to page), `Home`/`End`
-(first/last page) are all unbound. See `App.wireShortcuts()`, `src/js/app.js`
-~line 477. Also worth adding: a shortcuts cheat-sheet overlay on `?`.
+Nice-to-haves left: a horizontal/book scroll direction, and remembering the
+layout per document rather than only per tab.
 
-### 12. Zoom UI
-`#zoomInput` accepts a typed value but there is no preset dropdown (25/50/75/100/
-125/150/200/400, Fit Width, Fit Page, Actual Size). Also no pinch-zoom / trackpad
-gesture handling — only `Ctrl+wheel` (`src/js/viewer.js` ~line 47).
+### 8. Right-click context menu — **done** (0.4.0)
 
-### 13. Go-to-page box
-No direct page entry anywhere. Add "Page ▢ of N" to the toolbar or a status bar,
-wired to `RP.viewer.goToPage()`.
+Shipped through the one shared popup, `RP.menu`, which now serves the viewer,
+the Pages panel and the toolbar dropdowns. Two implementations would have meant
+two sets of outside-click listeners fighting over one press.
 
-### 14. Better recents surface
-Recents only appear in the empty state (`#recentList`). Add an Open Recent menu,
-a tray submenu, and pin/remove per entry.
+### 9. Copy selected text — **done** (0.4.0)
+
+Shipped as `src/js/clip.js` and, later, `src/js/textsel.js`. Not the small job
+the spec expected: the browser selects in *DOM order* and pdf.js emits one span
+per run in content-stream order, so a copy off a drawing had to be rebuilt in
+reading order rather than read off `selection.toString()`. See the sweep and
+`textOf` notes in `CLAUDE.md`.
+
+### 10. Invert / night mode — **done** (0.4.0)
+
+Ten lines, as predicted, and `test/verify.js` asserts the rule does not name
+`.annot-canvas`.
+
+### 11. Missing muscle-memory shortcuts — **done** (0.4.0)
+All bound in `App.wireShortcuts()`, and the `?` cheat sheet is `src/js/keys.js`
+— documentation, not wiring, so a new shortcut has to be added in both places.
+
+### 12. Zoom UI — **done** (0.4.0)
+
+Preset dropdown, and trackpad pinch scaled by delta rather than in fixed
+notches. Fit visible joined the tick list in 0.9.0.
+
+### 13. Go-to-page box — **done** (0.4.0)
+
+In the status bar, on `Ctrl+G`, with `Home`/`End`. `goToPage` clamps to
+`maxScrollTop()` and schedules `confirmLanding` — see `CLAUDE.md`; a landing
+that is a whole page out is a real bug this app had.
+
+### 14. Better recents surface — **done** (0.4.0)
+
+Toolbar dropdown and tray submenu, with pin (exempt from the ageing cap) and
+remove per entry. Anything persisting a view goes through
+`recents:remember-view`, never `recents:add`.
 
 ### 15. Copy area as image — **done** (0.8.0)
 
@@ -324,9 +355,11 @@ sheet at 4x. Three things fell out of that and all three are load-bearing:
 Nice-to-haves left: "save area as PNG…" beside the copy, and a copy at a chosen
 scale for people pasting into a fixed-width template.
 
-### 16. Status bar
-There is no persistent status bar — page number, zoom, measurement scale,
-selected-markup info, and document dimensions all currently have nowhere to live.
+### 16. Status bar — **done** (0.4.0)
+
+Page number, zoom, measurement scale, sheet size and a description of the
+selection. It has since become where the save-mode chip lives, and where the
+layout is named when it is not the default.
 
 ---
 
@@ -342,22 +375,37 @@ No limits anywhere. A 500MB scanned set will thrash. Needed: a size warning
 before open, lazier text-layer building, and a cap on concurrent render tasks.
 Related debt already in `PLAN.md`: virtualise the page list for 200+ pages.
 
-### 19. Code signing
-An unsigned NSIS installer gets SmartScreen-blocked. Even an inexpensive cert
-materially changes the install experience. Decide before first release.
+### 19. Code signing — **decided: no**, deliberately
 
-### 20. Auto-update
-No `publish` config in `package.json`. electron-builder supports NSIS
-differential updates. Retrofitting this alongside signing later is worse than
-doing it now — decide whether you want it at all (the app is deliberately
-offline; auto-update is the one exception you'd be making, so it is a real
-choice, not a default).
+Builds are unsigned. This is a personal tool and a certificate is not worth
+buying for it. Two consequences kept in mind: SmartScreen warns on the first
+manually downloaded installer (updates fetched by electron-updater carry no
+Mark-of-the-Web and install quietly), and electron-updater has no publisher
+signature to check, so the trust boundary is HTTPS to github.com. Azure Trusted
+Signing at ~$10/month is the upgrade path if this ever goes to anyone else's
+machine.
 
-### 21. CI and a smoke test
-`test/verify.js` is good but only covers export, re-save idempotency and page
-maths. Wanted: a headless Electron boot test that opens a sample drawing
-(already tracked in `PLAN.md` engineering debt), plus GitHub Actions running
-`node test/verify.js` on push.
+### 20. Auto-update — **done** (0.7.x)
+
+`updater.js` in the main process, deliberately kept in one file with the
+reasoning at the top: one `GET` of the release feed a few seconds after launch,
+only when `settings.autoUpdate` is on, nothing downloaded without a prompt,
+nothing sent outward. Install is queued rather than forced, because
+`quitAndInstall` drives straight through the renderer's unsaved-tab guard.
+
+It took three releases to actually work and none of the failures were loud —
+draft releases, a racing publisher, and a space in the artifact name. All three
+are written up under **Releasing** in `CLAUDE.md`, along with the tripwires in
+`release.yml` that now make each of them a red run.
+
+### 21. CI and a smoke test — **half done**
+
+`verify.yml` runs `node test/verify.js` on every push and `release.yml` re-runs
+it before building, so the CI half landed. **The headless Electron boot test did
+not** — still tracked in `PLAN.md` engineering debt. `test/verify.js` has grown
+well past export and page maths (rotation, canvas budget, encryption fixtures,
+text sweeps, layer transforms) but everything in it runs the renderer sources
+in-process against stubs; nothing yet proves the app *boots*.
 
 ---
 
@@ -365,7 +413,8 @@ maths. Wanted: a headless Electron boot test that opens a sample drawing
 
 Chosen after the first real day of use. **22** is a papercut found in anger and
 should go first; it is the smallest of the four. The rest are independent.
-**22 shipped in 0.5.1** and **23 in 0.6.0**; 24 and 25 are still open.
+**22 shipped in 0.5.1**, **23 in 0.6.0** and **24 in 0.8.0**; 25 is the one
+still open.
 
 ---
 
@@ -661,7 +710,35 @@ whatever behaviour you chose, clearly announced. `node test/verify.js` passes.
 
 ---
 
-### 25. Polyline, area and perimeter measurement
+### 25. Polyline, area and perimeter measurement — **done** (0.10.0)
+
+Shipped as all three: `polyline` (`Y`), `polylength` (`D`) and `area` (`Q`),
+sharing one vertex list and one geometry core in `RP.geom`. The spec below was
+accurate about where the work landed; four things it did not anticipate are
+worth knowing, and all four are written up under **Things that will bite you**
+in `CLAUDE.md`:
+
+- **The in-progress state was the whole job.** `RP.tools.pending` is the only
+  gesture in this app that outlives a pointer-up, so what matters is not
+  building it but *clearing* it — tool change, `doc:reset`, `tab:changed`,
+  `pages:rebuilt`, Escape, and a refusal to extend onto another sheet. A shape
+  that survived a tab switch would be committed onto the drawing you moved to,
+  at coordinates measured on the one you left.
+- **The bow-tie question had a real answer.** The spec said decide and
+  document; the decision is that a self-intersecting outline reports *no area*
+  and shows its perimeter, everywhere it reports anything. The shoelace sum on
+  one returns the difference of the two lobes, which looks like an answer.
+- **An area applies the calibration squared** — the ratio twice and a `²` on
+  the unit. Applying it once is the natural mistake, since it is the same
+  field `formatLength` reads, and it under-reports by the scale factor itself.
+- **One reading, quoted five ways.** `RP.render.readingLines` is the single
+  builder behind the plates on the sheet, the markup list, the properties
+  dialog, the CSV and the PDF report. The canvas/exporter pair drifting is the
+  recurring bug here, and a takeoff is exactly the feature that cannot afford
+  it.
+
+Snapping and orthogonal constraint stayed out of scope, as written below.
+Continuous chained dimensions remain open in `PLAN.md`.
 
 **Why.** `measure` is a single two-point segment. Real takeoff is a conduit run
 with bends and a room whose area you need — neither is expressible today.

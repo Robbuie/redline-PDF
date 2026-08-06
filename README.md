@@ -1,8 +1,8 @@
 # Redline PDF
 
 A fast, keyboard-driven PDF markup tool built for electrical drawings — highlight,
-sticky notes, redlines, typewriter text, measurements, and a revision compare that
-shows only the differences that are actually real.
+sticky notes, redlines, typewriter text, measurements and takeoff, and a revision
+compare that shows only the differences that are actually real.
 
 Electron + PDF.js (rendering) + pdf-lib (writing markups back into the PDF).
 
@@ -61,6 +61,28 @@ builds and publishes the installer, the portable exe and the update feed to a
 GitHub release. Every push runs the headless checks on their own.
 
 ---
+
+## What's new in 0.10
+
+**Three shapes you click out a point at a time.** Click each point;
+double-click, `Enter` or right-click finishes. `Backspace` takes the last point
+back and `Esc` abandons the shape without disarming the tool.
+
+- **Polyline** (`Y`) — a redline with straight segments and bends.
+- **Run length** (`D`) — the same shape, measured: every segment carries its
+  own length and the run carries its total, so a conduit run with three bends
+  can be checked against its parts.
+- **Area** (`Q`) — a closed shape labelled with its area and its perimeter.
+
+All three use the calibration the Measure tool sets, and an area applies it
+squared — a 1:100 drawing reports m², not m. Each corner gets its own handle
+afterwards, so a wall clicked in the wrong place is fixed by moving that
+corner.
+
+**An area whose outline crosses itself says so** rather than reporting a
+number: a bow-tie has no area anybody would agree on, so the label reads
+*outline crosses itself — no area* and shows the perimeter, which is still well
+defined. It says the same in the markup list, the CSV, the report and on paper.
 
 ## What's new in 0.9
 
@@ -383,8 +405,11 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 | `T` | Typewriter text | | `Ctrl` + wheel | Zoom at cursor |
 | `O` | Callout | | `Ctrl+A` | Select all on page |
 | `M` | Measure | | `Del` | Delete selection |
-| `G` | Pan (hand) | | `Esc` | Deselect / back to Select |
-| `Z` | Marquee zoom | | `Space` + drag | Pan, from any tool |
+| `Y` | Polyline | | `Esc` | Abandon the shape, or deselect |
+| `D` | Run length (measured, with bends) | | `Space` + drag | Pan, from any tool |
+| `Q` | Area and perimeter | | `Enter` | Finish the shape being drawn |
+| `G` | Pan (hand) | | `Backspace` | Undo the last point of a shape |
+| `Z` | Marquee zoom | | | |
 | `S` | Copy an area as a picture | | | |
 
 | Tabs | | | Getting around | |
@@ -486,7 +511,15 @@ separately. A typewriter note has no box, so its colour *is* its text.
 
 **Measuring:** draw a measurement over a known distance and enter its real length
 once — every measurement on that drawing then reads in real units. The status bar
-shows the calibration; click it to reset.
+shows the calibration; click it to reset. Run lengths and areas use the same
+calibration, and an area squares it, so it reports square units.
+
+**Takeoff:** the run length tool measures a path with bends and labels each
+segment as well as the total; the area tool closes the shape and reports its
+area and perimeter. Both are clicked out a point at a time — double-click,
+`Enter` or right-click to finish, `Backspace` to take a point back, `Esc` to
+abandon it. An outline that crosses itself reports *no area* rather than a
+number, since a bow-tie has none; its perimeter is still shown.
 
 ---
 

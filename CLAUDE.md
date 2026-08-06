@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.9.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.10.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -552,6 +552,67 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   sibling, so markups keep their real colours — invert them and every redline
   comes back cyan. `test/verify.js` asserts the rule does not name
   `.annot-canvas`.
+- **`RP.tools.pending` is the only gesture in this app that outlives a pointer
+  up, and clearing it is the whole problem.** Every other tool is
+  press-drag-release, so the drag state cannot leak: the pointer coming up ends
+  it. The three multi-click shapes (`polyline`, `polylength`, `area`) hold a
+  vertex list across clicks instead, and that list is a *page index and a set
+  of user-space points* — both of which mean something different on another
+  drawing. So it is cancelled by the tool changing (`setTool`), by `doc:reset`,
+  by `tab:changed`, by `pages:rebuilt` and by Escape, and `addPendingVertex`
+  refuses a press that lands on a different sheet. Miss the tab one and a
+  half-drawn polygon is committed onto the drawing you switched *to*, at
+  coordinates measured on the one you left. Escape must also *not* reset the
+  tool — abandoning a shape you misjudged is a correction, not a change of
+  mind, and disarming there costs a trip back to the toolbar every time.
+  `test/verify.js` covers all of it.
+- **Checkpoint a poly once, at commit — never per vertex.** `commitPending`
+  calls `store.add`, which takes the one checkpoint. A checkpoint per click
+  would make `Ctrl+Z` after a thirty-vertex polygon walk back up it a corner at
+  a time. Backspace mid-draw is `dropLastVertex`, which is not undo and does
+  not touch the history.
+- **A self-intersecting outline has no area, and saying so is the feature.**
+  The shoelace sum on a bow-tie returns the *difference* of the two lobes,
+  which is the dangerous kind of wrong: it looks like an answer, and a figure
+  on a drawing gets believed and ordered against. `RP.render.polyArea` returns
+  `null` for one and `readingLines` says *outline crosses itself — no area*,
+  with the perimeter still shown because that much is well defined.
+  `RP.geom.selfIntersects` is what decides, and its `segmentsCross` counts only
+  a proper crossing — two edges of any polygon meet at their shared vertex, and
+  treating a shared endpoint or a T as a crossing would report every shape ever
+  drawn as a bow-tie.
+- **An area applies the calibration *twice*.** `store.scale` is a linear ratio
+  carrying a linear unit, and `formatArea` squares both — the factor and the
+  `²` on the unit. Applying it once is the obvious mistake, because it is the
+  same field `formatLength` reads, and on a 1:100 drawing it under-reports a
+  room a hundredfold. `test/verify.js` checks the two formatters against each
+  other.
+- **What a measured markup *says* is built once, in `RP.render.readingLines`.**
+  The plates on the sheet, the markup list, the properties dialog, the CSV and
+  the PDF report all quote it, and `measureLabels` builds the on-sheet plates
+  from the same strings. A punch list that disagrees with the drawing it was
+  taken off is worse than no punch list, and canvas/exporter drift is the
+  recurring bug in this codebase. The segment-label threshold
+  (`SEGMENT_LABEL_MIN`) is in *points* for the same reason: in screen pixels it
+  would label a run differently at every zoom and differently again on paper.
+- **A label's `dy` is an offset down the *screen*, and the plate is a fixed
+  size in each medium.** `measureLabels` returns anchors in PDF space; the
+  canvas offsets in CSS pixels and `exporter.drawLabelPlate` offsets in points
+  through `pageFrame`, because a plate that scaled with the zoom would be
+  unreadable at fit-width and a plate laid along +x reads sideways on a
+  landscape sheet. `test/verify.js` reads a stamped area plate back through
+  pdf.js at all four `/Rotate` angles and checks it is upright and still
+  centred on the centroid.
+- **A poly's handles are its vertices, and it has no box handles.** `fitToBox`
+  still has a case for the points, but nothing reaches it: "move this one
+  corner of the room" is the edit anybody actually makes to a takeoff, and a
+  bounding box cannot express it. `updateResize` matches the handle id against
+  `/^v\d+$/` before anything else.
+- **A closed poly is stored without a repeated last vertex.** The closing leg
+  is implied by the type, and `polygonPerimeter`, the fill and the hit test all
+  add it back themselves — `distToPolyline` knows nothing about the shape
+  closing, so `hitTest` appends the first point before calling it. Storing the
+  repeat instead would grow a zero-length edge on every save-and-reopen.
 - **A markup tool is a one-shot, and only a *finished* markup hands it back.**
   `RP.tools.afterCreate()` returns to Select unless `tools.sticky` is set;
   arming the already-armed tool toggles that lock. It is called from the

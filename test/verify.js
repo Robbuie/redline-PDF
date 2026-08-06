@@ -118,7 +118,17 @@ function sampleAnnotations() {
     // case for them, which is exactly the failure this list exists to catch.
     { page: 0, type: 'strikeout', color: '#ff2f2f', opacity: 1, rects: [{ x: 60, y: 660, w: 180, h: 12 }], text: 'SUPERSEDED' },
     { page: 0, type: 'underline', color: '#2f8fff', opacity: 1, rects: [{ x: 60, y: 630, w: 140, h: 12 }, { x: 60, y: 612, w: 90, h: 12 }], text: 'see note 4' },
-    { page: 1, type: 'cover', color: '#ffffff', opacity: 1, x: 420, y: 640, w: 120, h: 30 }
+    { page: 1, type: 'cover', color: '#ffffff', opacity: 1, x: 420, y: 640, w: 120, h: 30 },
+    // The vertex-list markups. Like the text three above, these are silently
+    // dropped on save if the exporter has no case for them — and the area
+    // additionally exercises `drawSvgPath`, which is the only pdf-lib call
+    // that fills an arbitrary polygon.
+    { page: 0, type: 'polyline', color: '#ff9500', width: 2, opacity: 1, points: [[60, 120], [140, 180], [220, 130], [300, 190]] },
+    { page: 1, type: 'polylength', color: '#38d16a', width: 1.5, opacity: 1, points: [[80, 560], [200, 560], [200, 640], [320, 640]] },
+    { page: 1, type: 'area', color: '#2f8fff', width: 1.5, opacity: 1, fill: true, points: [[380, 120], [520, 120], [520, 230], [430, 260], [380, 200]] },
+    // A bow-tie, so the export path actually takes the refusal branch rather
+    // than only the happy one.
+    { page: 0, type: 'area', color: '#c04aff', width: 1.5, opacity: 1, points: [[420, 380], [540, 380], [420, 450], [540, 450]] }
   ].map((a, i) => Object.assign({
     id: 'mk' + i, created: Date.now(), modified: Date.now(), author: 'Tester', note: a.note || '',
     // A resolved and a rejected item in the sample set, so the export path
@@ -153,6 +163,27 @@ async function testExport() {
   check('a serif bold callout stamps a serif bold font', /Times[-# ]?Bold/.test(named));
   check('a mono typewriter note stamps a mono font', /\/Courier/.test(named));
   check('unused faces are not embedded', !/Times-Italic|Helvetica-Oblique/.test(named));
+
+  /* A takeoff is only worth anything if the paper says what the screen said.
+     The reading is built by `RP.render.readingOf`, which the canvas, the markup
+     list and the CSV also quote — so reading it back off the stamped page is
+     what proves the exporter is quoting it too and has not grown its own
+     arithmetic. The bow-tie is in the sample set for the same reason: its
+     refusal has to survive the trip onto paper rather than being filled in
+     with a shoelace difference nobody can check. */
+  const stampedText = await pageLabel(saved, 1);
+  if (stampedText !== null) {
+    const areaMarkup = RP.store.annotations.find((a) => a.type === 'area' && a.page === 1);
+    const runMarkup = RP.store.annotations.find((a) => a.type === 'polylength');
+    check('an area is stamped with the reading the screen shows',
+      RP.render.readingLines(areaMarkup, RP.store).every((line) => stampedText.includes(line)),
+      stampedText);
+    check('and a run with its total',
+      stampedText.includes(RP.render.readingOf(runMarkup, RP.store)));
+    const crossedText = await pageLabel(saved, 0);
+    check('a bow-tie is stamped as having no area, not as a plausible number',
+      /crosses itself/.test(crossedText || ''));
+  }
 
   const embedded = await RP.exporter.readEmbeddedMarkup(saved);
   check('markup model round-trips for re-editing',
@@ -643,6 +674,222 @@ function testGeometry() {
   check('calibrated measurement formatting', RP.store.formatLength(144) === '6.00 m', RP.store.formatLength(144));
   RP.store.scale = null;
   check('uncalibrated falls back to paper inches', RP.store.formatLength(72).startsWith('1.00 in'));
+}
+
+/* ---------------------------------------------------------------------------
+   Polyline, run length and area
+
+   All of it is pure maths with no DOM, which is what this harness is for. Two
+   classes of failure are covered:
+
+   - the arithmetic. A calibration is a *linear* ratio, so an area has to apply
+     it twice and square the unit; applying it once is the obvious mistake and
+     under-reports a room by the scale factor itself.
+   - the refusal. A self-intersecting outline has no area anybody would agree
+     on, and the shoelace sum returns the difference of the two lobes — a
+     plausible-looking number, which is the dangerous kind on a drawing. It has
+     to report that it cannot say, everywhere it reports anything.
+   --------------------------------------------------------------------------- */
+function testTakeoff() {
+  console.log('\nPolyline, run length and area');
+
+  const rect = [[0, 0], [100, 0], [100, 50], [0, 50]];
+  check('shoelace area of a known rectangle', RP.geom.polygonArea(rect) === 5000);
+  check('and of a known triangle',
+    RP.geom.polygonArea([[0, 0], [60, 0], [0, 40]]) === 1200);
+  // Winding must not change the answer; only `polygonCentroid` cares about it.
+  check('winding the other way reports the same area',
+    RP.geom.polygonArea(rect.slice().reverse()) === 5000);
+
+  check('perimeter closes the shape', RP.geom.polygonPerimeter(rect) === 300);
+  check('an open run does not', RP.geom.polylineLength(rect) === 250);
+  check('a two-point run is just its segment',
+    RP.geom.polylineLength([[0, 0], [30, 40]]) === 50);
+
+  check('the centroid is area-weighted, not the mean of the clicks',
+    Math.abs(RP.geom.polygonCentroid(rect)[0] - 50) < 1e-9 &&
+    Math.abs(RP.geom.polygonCentroid(rect)[1] - 25) < 1e-9);
+
+  // --- self-intersection ----------------------------------------------------
+  const bowTie = [[0, 0], [100, 0], [0, 50], [100, 50]];
+  check('a bow-tie is detected as self-intersecting', RP.geom.selfIntersects(bowTie, true));
+  check('a plain rectangle is not', !RP.geom.selfIntersects(rect, true));
+  // Every polygon's edges meet at their shared vertices. Counting a shared
+  // endpoint as a crossing would report every shape ever drawn as a bow-tie.
+  check('edges meeting at a shared vertex are not a crossing',
+    !RP.geom.segmentsCross([0, 0], [10, 0], [10, 0], [10, 10]));
+  check('nor is a T where an endpoint lands on a segment',
+    !RP.geom.segmentsCross([0, 0], [10, 0], [5, 0], [5, 10]));
+  check('a genuine X is', RP.geom.segmentsCross([0, 0], [10, 10], [0, 10], [10, 0]));
+  check('and so is a collinear overlap of real length',
+    RP.geom.segmentsCross([0, 0], [10, 0], [4, 0], [14, 0]));
+  // An L is two edges of an open run, not a closed shape: without the `closed`
+  // flag the wrap-around edge does not exist and must not be tested.
+  check('an open run is not closed behind your back',
+    !RP.geom.selfIntersects([[0, 0], [50, 0], [50, 50], [0, 50]], false));
+
+  check('point-in-polygon admits the interior and rejects the outside',
+    RP.geom.pointInPolygon(50, 25, rect) && !RP.geom.pointInPolygon(150, 25, rect));
+
+  // --- what the markups report ---------------------------------------------
+  const store = RP.createStore();
+  const area = { type: 'area', points: rect, width: 2 };
+  const run = { type: 'polylength', points: [[0, 0], [100, 0], [100, 50]], width: 2 };
+
+  store.scale = null;
+  // 5000pt² over 72² — a hair under one square inch of paper.
+  check('an uncalibrated area reads in paper square inches',
+    RP.render.readingOf(area, store).startsWith('0.96 in²'),
+    RP.render.readingOf(area, store));
+
+  // 72pt = 3m, so 1pt = 1/24 m and the rectangle is 100/24 x 50/24 m.
+  store.scale = { pdfLength: 72, realLength: 3, unit: 'm' };
+  check('a calibrated area applies the ratio twice and squares the unit',
+    store.formatArea(5000) === '8.68 m²', store.formatArea(5000));
+  check('and the length ratio only once, unchanged',
+    store.formatLength(144) === '6.00 m');
+  check('an area markup reports its area and its perimeter',
+    RP.render.readingOf(area, store) === '8.68 m² · Perimeter 12.50 m',
+    RP.render.readingOf(area, store));
+  check('a run reports its total',
+    RP.render.readingOf(run, store) === 'Total 6.25 m', RP.render.readingOf(run, store));
+  check('a plain polyline reports nothing — it is a drawing tool, not a ruler',
+    RP.render.readingOf({ type: 'polyline', points: rect }, store) === '');
+
+  const crossed = { type: 'area', points: bowTie, width: 2 };
+  check('a bow-tie refuses to put a number on itself',
+    RP.render.polyArea(crossed) === null);
+  check('and says so where the reading goes, perimeter still shown',
+    /crosses itself/.test(RP.render.readingOf(crossed, store)) &&
+    /Perimeter/.test(RP.render.readingOf(crossed, store)),
+    RP.render.readingOf(crossed, store));
+
+  // --- labels on the sheet --------------------------------------------------
+  const labels = RP.render.measureLabels(run, store);
+  check('each segment of a run is labelled, and the total once',
+    labels.filter((l) => l.kind === 'segment').length === 2 &&
+    labels.filter((l) => l.kind === 'total').length === 1);
+  // A threshold in screen pixels would label a run differently at every zoom
+  // and differently again on paper, so it is in points and shared.
+  const stubby = { type: 'polylength', points: [[0, 0], [10, 0], [200, 0]], width: 2 };
+  check('a segment too short for a plate does not get one',
+    RP.render.measureLabels(stubby, store).filter((l) => l.kind === 'segment').length === 1);
+  check('a single-segment run is not labelled twice over',
+    RP.render.measureLabels({ type: 'polylength', points: [[0, 0], [200, 0]] }, store)
+      .filter((l) => l.kind === 'total').length === 0);
+  check('an area is labelled once, at its centroid',
+    RP.render.measureLabels(area, store).length === 1 &&
+    RP.render.measureLabels(area, store)[0].at[0] === 50);
+  check('the plates and the list quote the same builder',
+    RP.render.measureLabels(area, store)[0].lines.join(' · ') === RP.render.readingOf(area, store));
+
+  // --- geometry the select tool depends on ----------------------------------
+  check('the bounding box wraps the vertices',
+    JSON.stringify(RP.render.bbox(area)) === JSON.stringify({ x: 0, y: 0, w: 100, h: 50 }));
+  check('a washed area is grabbable anywhere inside it',
+    RP.render.hitTest(area, 50, 25, 4));
+  check('an outline-only one is grabbable on its edge, not in the middle',
+    RP.render.hitTest({ type: 'area', points: rect, fill: false }, 0, 25, 4) &&
+    !RP.render.hitTest({ type: 'area', points: rect, fill: false }, 50, 25, 4));
+  // The closing leg is drawn, so it has to be clickable. `distToPolyline`
+  // knows nothing about the shape closing, which is what this covers.
+  check('including on the closing leg',
+    RP.render.hitTest({ type: 'area', points: rect, fill: false }, 50, 50, 4));
+  check('a run is grabbable along its segments only',
+    RP.render.hitTest(run, 50, 0, 4) && !RP.render.hitTest(run, 50, 25, 4));
+
+  const moved = { type: 'area', points: JSON.parse(JSON.stringify(rect)) };
+  RP.render.translate(moved, 10, -5);
+  check('translate moves every vertex',
+    moved.points[2][0] === 110 && moved.points[2][1] === 45);
+
+  // Handles are the vertices, not a bounding box: "move this one corner of the
+  // room" is the edit anybody actually makes to a takeoff, and a box cannot
+  // express it.
+  const viewport = {
+    scale: 1,
+    convertToViewportPoint: (x, y) => [x, 100 - y],
+    convertToPdfPoint: (x, y) => [x, 100 - y]
+  };
+  const handles = RP.render.handlesFor(area, viewport);
+  check('every vertex gets a handle and nothing else does',
+    handles.length === 4 && handles.map((h) => h.id).join(',') === 'v0,v1,v2,v3');
+
+  // --- the in-progress shape ------------------------------------------------
+  // The one gesture in this app that survives a pointer-up, so the whole risk
+  // is in what clears it.
+  const T = RP.tools;
+  const wasStore = RP.store;
+  const wasViewer = RP.viewer;
+  RP.store = RP.createStore();
+  RP.store.scale = { pdfLength: 72, realLength: 3, unit: 'm' };  // skips the calibration prompt
+  RP.viewer = { redrawPage() {}, pxToPdf: (px) => px };
+  const record = { index: 0 };
+
+  T.setTool('area');
+  T.beginPending(record, [0, 0]);
+  T.addPendingVertex(record, [100, 0]);
+  T.addPendingVertex(record, [100, 50]);
+  check('a click per vertex builds the shape', T.pending.points.length === 3);
+
+  T.addPendingVertex(record, [100.5, 50]);
+  check('a vertex on top of the last one is absorbed, so a double-click ends where it looked like it did',
+    T.pending.points.length === 3);
+
+  T.addPendingVertex({ index: 1 }, [10, 10]);
+  check('a press on another sheet cannot extend the shape', T.pending.points.length === 3);
+
+  T.dropLastVertex();
+  check('Backspace takes a vertex back', T.pending.points.length === 2);
+  T.addPendingVertex(record, [0, 50]);
+
+  check('committing adds exactly one markup', T.commitPending() && RP.store.annotations.length === 1);
+  check('and one undo step, not one per vertex', RP.store.history.length === 1);
+  check('the committed shape keeps its vertices in PDF space',
+    RP.store.annotations[0].points.length === 3 &&
+    RP.store.annotations[0].type === 'area');
+  check('and the tool hands back to Select like every other one-shot', T.tool === 'select');
+
+  T.setTool('area');
+  T.beginPending(record, [0, 0]);
+  T.addPendingVertex(record, [50, 0]);
+  check('a shape with too few corners is refused rather than half-drawn',
+    T.commitPending() && RP.store.annotations.length === 1);
+
+  T.setTool('polylength');
+  T.beginPending(record, [0, 0]);
+  T.setTool('area');
+  check('changing tool abandons the shape the old tool was drawing', T.pending === null);
+
+  T.setTool('area');
+  T.beginPending(record, [0, 0]);
+  check('Escape abandons it and reports that it did', T.cancelPending() === true);
+  check('and Escape with nothing pending says so, so it can fall through',
+    T.cancelPending() === false);
+
+  T.setTool('select');
+  RP.store = wasStore;
+  RP.viewer = wasViewer;
+
+  /* The three bus subscriptions are wired in `Tools.init()`, which needs a real
+     DOM, so they are checked at the source rather than by emitting. Switching
+     tabs is the dangerous one of the three: a shape that survived it would be
+     committed onto the drawing you moved *to*, at coordinates measured on the
+     one you left, under a page index that means something else there. */
+  const tools = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  for (const event of ['doc:reset', 'tab:changed', 'pages:rebuilt']) {
+    check(`${event} abandons a half-drawn shape`,
+      new RegExp("RP\\.bus\\.on\\('" + event + "', \\(\\) => this\\.cancelPending\\(\\)\\)").test(tools));
+  }
+  check('the rubber band goes through the same draw path as the committed shape',
+    /drawPreview\(ctx, record\)[\s\S]{0,900}?RP\.render\.drawAnnotation\(ctx, this\.pendingDraft\(true\)/.test(tools));
+  // Escape must not also reset the tool: correcting a shape you misjudged
+  // would then cost a trip back to the toolbar every time.
+  const appSrc = fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8');
+  check('Escape cancels the shape and stops, ahead of clearing the selection',
+    /if \(RP\.tools\.cancelPending\(\)\) return;[\s\S]{0,400}?RP\.tools\.setTool\('select'\)/.test(appSrc));
+  check('Backspace takes a vertex back before it deletes anything',
+    /if \(RP\.tools\.dropLastVertex\(\)\) return;\s*\n\s*this\.deleteSelection\(\)/.test(appSrc));
 }
 
 /* ---------------------------------------------------------------------------
@@ -3131,6 +3378,13 @@ async function testRotatedStamp() {
   const upright = [];
   const placed = [];
   const turnedInUserSpace = [];
+  // A measured area rides along: its plate is placed through the same page
+  // frame as the text above, and a plate stamped without `rotate` reads
+  // sideways on exactly the landscape sheets drawings are plotted as.
+  const AREA_PTS = [[200, 200], [400, 200], [400, 320], [200, 320]];
+  const AREA_CENTRE = RP.geom.polygonCentroid(AREA_PTS);
+  const plateUpright = [];
+  const plateCentred = [];
 
   for (const angle of [0, 90, 180, 270]) {
     const doc = await PDFLib.PDFDocument.create();
@@ -3144,6 +3398,9 @@ async function testRotatedStamp() {
       id: 'rot', created: Date.now(), modified: Date.now(), author: 'Tester', note: '', status: 'open',
       page: 0, type: 'text', color: '#ff2f2f', fontSize: SIZE, opacity: 1,
       x: ORIGIN.x, y: ORIGIN.y, text: 'SIDEWAYS'
+    }, {
+      id: 'rotarea', created: Date.now(), modified: Date.now(), author: 'Tester', note: '', status: 'open',
+      page: 0, type: 'area', color: '#2f8fff', width: 1.5, opacity: 1, points: AREA_PTS
     }];
 
     const saved = await RP.exporter.buildPdf({});
@@ -3172,6 +3429,18 @@ async function testRotatedStamp() {
     // at an angle in user space. Drawn upright there — which is what pdf-lib
     // does if nobody passes `rotate` — it would read sideways on screen.
     if (Math.abs(item.transform[0]) < 0.01) turnedInUserSpace.push(angle);
+
+    // The area's plate. `in²` only appears in the uncalibrated reading, which
+    // is what this store is set to, so it identifies the line unambiguously.
+    const plate = content.items.find((it) => (it.str || '').includes('in²'));
+    if (plate) {
+      const plateDevice = pdfjs.Util.transform(viewport.transform, plate.transform);
+      if (Math.abs(plateDevice[1]) < 0.01 && plateDevice[0] > 0) plateUpright.push(angle);
+      const centre = viewport.convertToViewportPoint(AREA_CENTRE[0], AREA_CENTRE[1]);
+      // The reading is centred on the centroid: the glyph run starts half its
+      // own width to the left of it, and its baseline sits just above.
+      if (Math.abs(plateDevice[4] + plate.width / 2 - centre[0]) < 1.5) plateCentred.push(angle);
+    }
   }
 
   check('stamped text reads horizontally at every /Rotate',
@@ -3180,6 +3449,10 @@ async function testRotatedStamp() {
     placed.join(',') === '0,90,180,270', 'placed at ' + placed.join(', ') + '°');
   check('a quarter-turned sheet really is stamped turned, not upright',
     turnedInUserSpace.join(',') === '90,270', 'turned at ' + turnedInUserSpace.join(', ') + '°');
+  check('a measurement plate reads horizontally at every /Rotate',
+    plateUpright.join(',') === '0,90,180,270', 'upright at ' + plateUpright.join(', ') + '°');
+  check('and stays centred on what it is measuring',
+    plateCentred.join(',') === '0,90,180,270', 'centred at ' + plateCentred.join(', ') + '°');
 }
 
 /** Read the sheet label back out of a page, to prove content moved with it. */
@@ -3198,6 +3471,7 @@ async function pageLabel(bytes, index) {
     testChrome();
     testNativeAnnotations();
     testGeometry();
+    testTakeoff();
     testMarkupStatus();
     testHighlightGeometry();
     testTextSelection();

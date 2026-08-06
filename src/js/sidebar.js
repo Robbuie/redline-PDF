@@ -67,9 +67,12 @@
       if (annot.type === 'highlight' || annot.type === 'strikeout' || annot.type === 'underline') {
         return annot.text || annot.note || '';
       }
-      if (annot.type === 'measure') {
-        const len = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
-        return (annot.label || RP.store.formatLength(len)) + (annot.note ? ' — ' + annot.note : '');
+      // Every measured markup reads through the one builder in `render.js`, so
+      // the row, the plate on the sheet and the exported line all say the same
+      // thing. A `polyline` is not one of them and falls through to its note.
+      if (annot.type === 'measure' || RP.render.isMeasuredPoly(annot.type)) {
+        const reading = RP.render.readingOf(annot, RP.store);
+        return reading + (annot.note ? (reading ? ' — ' : '') + annot.note : '');
       }
       return annot.note || '';
     },

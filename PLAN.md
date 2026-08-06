@@ -1,5 +1,22 @@
 # Roadmap
 
+## Done — v0.10
+
+- **Polyline, run length and area** — three markups on one vertex list,
+  clicked out a point at a time. A run labels every segment and its total; an
+  area labels its area and perimeter, applying the calibration *squared*. The
+  geometry core (`RP.geom.polygonArea`, `polygonPerimeter`, `polygonCentroid`,
+  `pointInPolygon`, `selfIntersects`) is pure and tested without a browser
+- **A self-intersecting outline reports that it has no area**, on the sheet, in
+  the list, in the CSV and on paper. The shoelace sum on a bow-tie is the
+  difference of its two lobes — a plausible number, which is the dangerous kind
+- `RP.tools.pending` is the app's first gesture that outlives a pointer-up.
+  What it needed was not the building but the clearing: tool change,
+  `doc:reset`, `tab:changed`, `pages:rebuilt`, Escape, and a refusal to extend
+  onto another sheet
+- `RP.render.readingLines` is the one builder behind every place a measurement
+  is quoted, and `measureLabels` places the plates from it
+
 ## Done — v0.9
 
 - **Page layouts.** Continuous, single page, facing spreads with the cover
@@ -31,6 +48,23 @@
 - Fixed: an owner-password drawing used to open silently and save to a file
   nothing could read
 
+## Done — v0.7
+
+- **Auto-update** (`updater.js`) — the app's only network call, and the one
+  exception to "nothing leaves the machine": one `GET` of the release feed a
+  few seconds after launch, prompt before download, install queued rather than
+  forced so it cannot drive through the unsaved-tab guard
+- **The release pipeline itself.** electron-builder builds, `gh` publishes,
+  releases go out published rather than as drafts, and no artifact name carries
+  a space. Each of those was a silent failure that left the shipped updater
+  reporting it could not check for updates; `release.yml` now has a tripwire for
+  each. See **Releasing** in `CLAUDE.md`
+- **A markup tool draws one markup and hands back to Select**, with
+  double-click (or the shortcut twice) to lock it on for a run. `Enter`
+  finishes a text or callout; `Shift+Enter` is the line break
+- The typography controls act on the markup under an open inline editor, so
+  reaching for them mid-callout restyles it instead of committing it
+
 ## Done — v0.6
 
 - **Markup status** — open / closed / rejected on every markup, set from the
@@ -43,6 +77,24 @@
   `render.js` that `exporter.js` also calls
 - The markup list's filter, sort and status are per document now, stashed on
   the tab like search and compare
+
+## Done — v0.5
+
+- **An action menu on a text selection** — highlight, strike out, underline,
+  cloud, box, cover, copy, copy with a page reference, turn into a callout or a
+  note, or search for it. The selection is snapshotted at release, because
+  opening the menu destroys the browser's own
+- **A text-select tool (`X`)** — drag a box and take every word whose *centre*
+  falls in it, so a schedule column you deliberately stopped short of is not
+  dragged in. The selection survives the release
+- **Strikeout, underline and cover** markups. The first two size their rule
+  from the text rather than from `annot.width`. Cover is an opaque box and is
+  not redaction
+- **Typography for text markups** — typeface, size, bold and text colour, off a
+  fixed list that maps onto the standard 14 fonts so nothing needs embedding
+- **`Ctrl+S` no longer invents a filename.** The first copy-mode save asks where
+  it goes; `savedTo` is what stops it asking twice, and a cancelled dialog
+  resolves to `null` so the close guards still see an unsaved drawing
 
 ## Done — v0.4
 
@@ -111,6 +163,10 @@
 
 ## Next
 
+`BACKLOG.md` is now empty of user-visible work, so this is where the next
+thing gets picked from. It is a menu, not a queue — nothing below is chosen
+yet.
+
 **Finishing the page manager**
 - Merge: pull pages in from another PDF. `store.sources` and the descriptor's
   `src` field already carry a key per source document, so this is an import
@@ -138,9 +194,8 @@ stored as embedded images so they export cleanly.
 - Export the comparison itself as a PDF with the change list appended
 
 **Markup depth**
-- Polyline and polygon tools; area and perimeter measurement with the same
-  calibration
-- Continuous/chained dimensions
+- Continuous/chained dimensions (deliberately out of scope for 25 — ship the
+  shapes first)
 - Group and align markups; copy/paste, including across pages and documents
 - Markup layers with show/hide, so trade markups can be toggled independently
 

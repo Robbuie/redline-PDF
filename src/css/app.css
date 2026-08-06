@@ -1002,6 +1002,9 @@ body[data-tool="rect"] .page .ink-layer,
 body[data-tool="ellipse"] .page .ink-layer,
 body[data-tool="cloud"] .page .ink-layer,
 body[data-tool="callout"] .page .ink-layer,
+body[data-tool="polyline"] .page .ink-layer,
+body[data-tool="polylength"] .page .ink-layer,
+body[data-tool="area"] .page .ink-layer,
 body[data-tool="measure"] .page .ink-layer { cursor: crosshair; }
 body[data-tool="zoomrect"] .page .ink-layer { cursor: zoom-in; }
 /* Snapshot has to take the pointer the way the area tools do, or the press

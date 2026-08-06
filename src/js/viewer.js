@@ -902,7 +902,11 @@
       const store = this.store;
       for (const annot of store.forPage(index)) {
         RP.render.drawAnnotation(ctx, annot, record.viewport, {
-          selected: store.selection.has(annot.id)
+          selected: store.selection.has(annot.id),
+          // This pane's store, not `RP.store`: a measurement is labelled
+          // through its own document's calibration, and in a split the two
+          // drawings do not share one.
+          store
         });
       }
       if (this.isActive()) {

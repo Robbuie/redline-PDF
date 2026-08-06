@@ -217,6 +217,45 @@
     return frame.turned ? { w: rect.h, h: rect.w } : { w: rect.w, h: rect.h };
   }
 
+  /* A reading on its own plate, stamped to read horizontally however the sheet
+     is turned. The canvas draws the same plate in `RP.render.drawLabel`; what
+     is shared between them is `RP.render.measureLabels`, which decides the
+     anchors, the text and which segments get one at all. Only the plate metrics
+     differ, and they have to: the screen's is a fixed size in CSS pixels and
+     this one is a fixed size in points. */
+  const PLATE_SIZE = 9;
+  const PLATE_LINE = 12;
+
+  function drawLabelPlate(page, label, frame, style) {
+    const { font, color, fade, rgb, degrees } = style;
+    const lines = [].concat(label.lines);
+    const widths = lines.map((line) => font.widthOfTextAtSize(line, PLATE_SIZE));
+    const w = Math.max.apply(null, widths) + 6;
+    const h = lines.length * PLATE_LINE + 4;
+    // Where the plate is centred: `dy` is an offset down the screen, which is
+    // `frame.d` in user space.
+    const centre = at(label.at, 0, label.dy || 0, frame);
+    // `drawRectangle`'s width runs along the rotated x axis and its height
+    // along the rotated y — screen-right and screen-*up* — so the anchor it
+    // wants is the plate's bottom-left as displayed.
+    const corner = at(centre, -w / 2, h / 2, frame);
+    page.drawRectangle({
+      x: corner[0], y: corner[1], width: w, height: h,
+      color: rgb(1, 1, 1), opacity: 0.88 * fade,
+      borderColor: color, borderWidth: 0.5, borderOpacity: fade,
+      rotate: degrees(frame.angle)
+    });
+    lines.forEach((line, i) => {
+      const down = -h / 2 + 2 + i * PLATE_LINE + PLATE_SIZE * 0.85;
+      const p = at(centre, -widths[i] / 2, down, frame);
+      page.drawText(line, {
+        x: p[0], y: p[1], size: PLATE_SIZE, font,
+        color: rgb(0.08, 0.09, 0.11), opacity: fade,
+        rotate: degrees(frame.angle)
+      });
+    });
+  }
+
   /** Revision-cloud outline as an SVG path in a y-down local space. */
   function cloudPath(w, h, radius) {
     const r = Math.max(5, radius);
@@ -507,27 +546,62 @@
             });
           }
           /* The label reads horizontally on screen like every other piece of
-             text, so its plate and its glyphs are both placed in the frame.
-             `drawRectangle`'s width runs along the rotated x axis and its
-             height along the rotated y, which are screen-right and screen-up —
-             so the anchor is the plate's bottom-left *as displayed*. */
+             text, so its plate and its glyphs are both placed in the frame. */
           const label = annot.label || store.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2));
-          const size = 9;
-          const textWidth = font.widthOfTextAtSize(label, size);
           const mid = [(annot.x1 + annot.x2) / 2, (annot.y1 + annot.y2) / 2];
-          const plate = at(mid, -(textWidth / 2 + 3), -4, frame);
-          const baseline = at(mid, -textWidth / 2, -7, frame);
-          page.drawRectangle({
-            x: plate[0], y: plate[1], width: textWidth + 6, height: size + 4,
-            color: lib().rgb(1, 1, 1), opacity: 0.88 * fade,
-            borderColor: color, borderWidth: 0.5, borderOpacity: fade,
-            rotate: degrees(frame.angle)
-          });
-          page.drawText(label, {
-            x: baseline[0], y: baseline[1], size, font,
-            color: lib().rgb(0.08, 0.09, 0.11), opacity: fade,
-            rotate: degrees(frame.angle)
-          });
+          drawLabelPlate(page, { at: mid, lines: [label], dy: -11 }, frame,
+            { font, color, fade, rgb: lib().rgb, degrees });
+          break;
+        }
+
+        /* The three vertex-list markups. Geometry is plain user space and turns
+           with the sheet; only the plates go through the frame, because only
+           they carry text. Everything that decides *what* they say —
+           `measureLabels`, and the self-intersection refusal behind it — is in
+           `render.js` and shared with the canvas, so a takeoff cannot read one
+           number on screen and another on the printout. */
+        case 'polyline':
+        case 'polylength':
+        case 'area': {
+          const pts = annot.points || [];
+          if (pts.length < 2) break;
+          const closed = RP.render.isClosedPoly(annot.type) && pts.length > 2;
+
+          // The wash under an area. An SVG path is the only pdf-lib primitive
+          // that fills an arbitrary polygon; its local space is y-down from
+          // the anchor, so at the origin a user-space point is (x, -y).
+          if (closed && annot.fill !== false) {
+            const path = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(2) + ' ' + (-p[1]).toFixed(2)).join(' ') + ' Z';
+            page.drawSvgPath(path, {
+              x: 0, y: 0, scale: 1,
+              color, opacity: opacity * 0.15, borderWidth: 0
+            });
+          }
+
+          const ring = closed ? pts.concat([pts[0]]) : pts;
+          for (let i = 1; i < ring.length; i += 1) {
+            page.drawLine({
+              start: { x: ring[i - 1][0], y: ring[i - 1][1] },
+              end: { x: ring[i][0], y: ring[i][1] },
+              thickness: width, color, opacity, lineCap: 1
+            });
+          }
+
+          if (annot.type === 'polylength') {
+            const ticks = [[pts[1], pts[0]], [pts[pts.length - 2], pts[pts.length - 1]]];
+            for (const [from, to] of ticks) {
+              const angle = Math.atan2(to[1] - from[1], to[0] - from[0]) + Math.PI / 2;
+              page.drawLine({
+                start: { x: to[0] - Math.cos(angle) * 5, y: to[1] - Math.sin(angle) * 5 },
+                end: { x: to[0] + Math.cos(angle) * 5, y: to[1] + Math.sin(angle) * 5 },
+                thickness: width, color, opacity
+              });
+            }
+          }
+
+          for (const label of RP.render.measureLabels(annot, store)) {
+            drawLabelPlate(page, label, frame, { font, color, fade, rgb: lib().rgb, degrees });
+          }
           break;
         }
 
@@ -636,9 +710,15 @@
         else if (annot.type === 'highlight' || annot.type === 'strikeout' || annot.type === 'underline') {
           detail = annot.text || annot.note || '';
         }
-        else if (annot.type === 'measure') {
-          detail = annot.label || store.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2));
-          if (annot.note) detail += ' — ' + annot.note;
+        /* A takeoff is half the reason this export exists, so every measured
+           markup puts its reading in the Comment column rather than leaving
+           only its location. The string comes from the same builder the sheet
+           is labelled from, so a row and the markup it names cannot disagree —
+           including about a bow-tie, which reports that it has no area here
+           too rather than quietly filling in the shoelace difference. */
+        else if (annot.type === 'measure' || RP.render.isMeasuredPoly(annot.type)) {
+          detail = RP.render.readingOf(annot, store);
+          if (annot.note) detail += (detail ? ' — ' : '') + annot.note;
         } else detail = annot.note || '';
         return {
           index: i + 1,

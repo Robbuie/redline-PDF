@@ -25,6 +25,9 @@
       fill: false
     },
     drag: null,
+    /* The vertex list of a poly being built, and the *only* piece of tool
+       state in this file that outlives a pointer-up. See `beginPending`. */
+    pending: null,
     pan: null,
     calibrating: false,
     highlightMode: 'text',   // 'text' selects words, 'area' drags a box
@@ -97,6 +100,14 @@
       RP.bus.on('doc:reset', () => { RP.textsel.current = null; });
       RP.bus.on('pages:rebuilt', () => RP.textsel.clear());
 
+      /* A half-drawn poly is a page index and a set of user-space points, and
+         all three of these events invalidate one or both. Switching tabs is
+         the dangerous one: the shape would otherwise be committed onto the
+         drawing you moved to, at coordinates measured on the one you left. */
+      RP.bus.on('doc:reset', () => this.cancelPending());
+      RP.bus.on('tab:changed', () => this.cancelPending());
+      RP.bus.on('pages:rebuilt', () => this.cancelPending());
+
       // Panning is wired per pane by `bindPane`, not here.
       this.initNotePopup();
       this.initInlineText();
@@ -121,6 +132,10 @@
       const lock = opts && 'sticky' in opts
         ? !!opts.sticky
         : (tool !== 'select' && this.tool === tool && !this.sticky);
+      /* A half-drawn poly belongs to the tool that was drawing it. Carrying it
+         across to another one would commit it under the new tool's type at the
+         next click — an area finished as a polyline, with no area on it. */
+      if (this.pending && this.pending.type !== tool) this.cancelPending();
       this.sticky = lock;
       this.tool = tool;
       document.body.dataset.tool = tool;
@@ -478,6 +493,13 @@
         this.createNote(record, pdf);
       } else if (this.tool === 'text') {
         this.openInlineText(record, pdf, null);
+      } else if (RP.render.isPoly(this.tool)) {
+        // No drag is started: these are click-per-vertex, and the gesture
+        // lives in `this.pending` until it is finished or cancelled.
+        if (this.pending) this.addPendingVertex(record, pdf);
+        else this.beginPending(record, pdf);
+        RP.viewer.redrawPage(record.index);
+        return;
       } else {
         this.beginCreate(record, event, pdf, local);
       }
@@ -490,6 +512,18 @@
     },
 
     onPointerMove(event) {
+      // The rubber band is the only thing in this app that tracks the pointer
+      // with no button down, so it is handled before the drag guard below.
+      const pending = this.pending;
+      if (pending && !this.drag) {
+        const record = this.recordFromEvent(event);
+        if (record && record.index === pending.page) {
+          pending.cursor = RP.viewer.clientToPdf(record, event.clientX, event.clientY);
+          RP.viewer.redrawPage(pending.page);
+        }
+        return;
+      }
+
       const drag = this.drag;
       if (!drag) return;
       const record = drag.record;
@@ -651,6 +685,15 @@
     updateResize(drag, local, pdf) {
       const annot = drag.annot;
       const viewport = drag.record.viewport;
+
+      // A poly is edited vertex by vertex, so its handles are its points and
+      // there is no box to fit anything to.
+      if (/^v\d+$/.test(drag.handle)) {
+        const index = Number(drag.handle.slice(1));
+        const point = (annot.points || [])[index];
+        if (point) { point[0] = pdf[0]; point[1] = pdf[1]; }
+        return;
+      }
 
       if (drag.handle === 'p1') { annot.x1 = pdf[0]; annot.y1 = pdf[1]; return; }
       if (drag.handle === 'p2') { annot.x2 = pdf[0]; annot.y2 = pdf[1]; return; }
@@ -893,8 +936,151 @@
       this.afterCreate();
     },
 
+    // ---------------------------------------------------------------------
+    // Multi-click shapes: polyline, run length, area
+    //
+    // Every other tool in this app is press-drag-release, so nothing here had
+    // any notion of a gesture that survives a pointer-up. These three do: one
+    // click per vertex, double-click or Enter to finish. That in-progress state
+    // is `this.pending`, and it is the one thing in this file that can outlive
+    // the pointer — which makes *clearing* it the whole problem. A half-drawn
+    // polygon that survived a tab switch would be committed onto the next
+    // drawing at the next click, on a page index that means something else
+    // there. So it is cancelled by the tool changing, by the document
+    // changing, by the page order being rebuilt, and by Escape, and it is
+    // stored with the record it was started on so a press on another sheet
+    // cannot extend it.
+    // ---------------------------------------------------------------------
+
+    /** First click of a poly: open the vertex list. */
+    beginPending(record, pdf) {
+      this.pending = {
+        record,
+        page: record.index,
+        type: this.tool,
+        points: [[pdf[0], pdf[1]]],
+        cursor: [pdf[0], pdf[1]],
+        base: {
+          color: this.activeColor(),
+          width: this.style.width,
+          opacity: this.style.opacity,
+          fill: this.tool === 'area' ? true : undefined
+        }
+      };
+      RP.status(this.tool === 'area'
+        ? 'Click each corner — double-click or Enter to close the shape, Backspace undoes a corner, Esc cancels'
+        : 'Click each bend — double-click or Enter to finish, Backspace undoes a point, Esc cancels');
+    },
+
+    /** A later click: add a vertex, unless it lands on the previous one. */
+    addPendingVertex(record, pdf) {
+      const pending = this.pending;
+      // A poly belongs to one sheet. Extending it onto another would store
+      // vertices under one page index that were placed on a different page's
+      // coordinate system.
+      if (record.index !== pending.page) {
+        RP.status('Finish this shape before marking up another sheet', 'warn');
+        return;
+      }
+      const last = pending.points[pending.points.length - 1];
+      // Also what absorbs the second click of the double-click that finishes
+      // the shape: it arrives here before `dblclick` does.
+      if (RP.geom.dist(last[0], last[1], pdf[0], pdf[1]) < RP.viewer.pxToPdf(4)) return;
+      pending.points.push([pdf[0], pdf[1]]);
+    },
+
+    /** The shape as it currently stands, ready for `drawAnnotation`. */
+    pendingDraft(withCursor) {
+      const pending = this.pending;
+      if (!pending) return null;
+      const points = pending.points.slice();
+      if (withCursor && pending.cursor) points.push(pending.cursor.slice());
+      return Object.assign({
+        page: pending.page,
+        type: pending.type,
+        points
+      }, pending.base);
+    },
+
+    /**
+     * How many vertices this shape cannot be committed without.
+     *
+     * Takes the type rather than reading `this.pending`, because `commitPending`
+     * clears the pending state before it validates — and reading it back
+     * through a stale `this.pending` there let an area commit as a two-corner
+     * shape, which is a line with an area label on it.
+     */
+    pendingMinimum(type) {
+      return type === 'area' ? 3 : 2;
+    },
+
+    /**
+     * Commit the shape. One checkpoint, here — `store.add` takes it — and not
+     * one per vertex: undo after a thirty-click polygon has to remove the
+     * polygon, not walk back up it a corner at a time.
+     */
+    commitPending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      const draft = this.pendingDraft(false);
+      const record = pending.record;
+      this.pending = null;
+
+      if (draft.points.length < this.pendingMinimum(draft.type)) {
+        RP.status(pending.type === 'area'
+          ? 'An area needs at least three corners'
+          : 'A run needs at least two points', 'warn');
+        RP.viewer.redrawPage(record.index);
+        return true;
+      }
+
+      const annot = RP.store.add(draft);
+      RP.viewer.redrawPage(record.index);
+      // Same one-shot rule as every other markup tool, and for the same
+      // reason: the click meant to select what you just drew must not start
+      // the next shape on top of it.
+      this.afterCreate();
+      if (RP.render.isMeasuredPoly(annot.type)) this.afterMeasure(annot);
+      return true;
+    },
+
+    /**
+     * Backspace mid-draw: take the last vertex back. Dropping the first one
+     * ends the shape rather than leaving an empty pending state that looks
+     * like the tool is armed but is holding a click nobody can see.
+     */
+    dropLastVertex() {
+      const pending = this.pending;
+      if (!pending) return false;
+      pending.points.pop();
+      if (!pending.points.length) return this.cancelPending();
+      RP.viewer.redrawPage(pending.page);
+      return true;
+    },
+
+    /** Abandon the shape. Returns whether there was one, so Escape can stop. */
+    cancelPending() {
+      const pending = this.pending;
+      if (!pending) return false;
+      this.pending = null;
+      RP.viewer.redrawPage(pending.page);
+      return true;
+    },
+
     /** Preview of the in-progress markup + the marquee rectangle. */
     drawPreview(ctx, record) {
+      /* The pending poly goes through the same `drawAnnotation` case the
+         committed one will, with the cursor pushed on as a rubber-banded last
+         vertex. A second renderer for the in-progress shape is how the preview
+         and the result end up disagreeing about what you are drawing. */
+      const pending = this.pending;
+      if (pending && pending.page === record.index) {
+        RP.render.drawAnnotation(ctx, this.pendingDraft(true), record.viewport, {
+          pending: true,
+          store: RP.store
+        });
+      }
+
       const drag = this.drag;
       if (!drag || drag.record.index !== record.index) return;
 
@@ -1298,6 +1484,12 @@
     },
 
     onDoubleClick(event) {
+      // Finishing the shape you are drawing outranks re-editing whatever the
+      // last click happened to land on. The vertex the second press added is
+      // absorbed by the proximity guard in `addPendingVertex`, so the shape
+      // ends where it looked like it ended.
+      if (this.pending) { event.preventDefault(); this.commitPending(); return; }
+
       const record = this.recordFromEvent(event);
       if (!record) return;
       const pdf = RP.viewer.clientToPdf(record, event.clientX, event.clientY);
@@ -1345,6 +1537,11 @@
       const record = this.recordFromEvent(event);
       if (!record) return;
       event.preventDefault();
+
+      // Right-click ends a run rather than opening a menu — the CAD
+      // convention, and the one gesture that is already in the hand that is
+      // clicking out the vertices.
+      if (this.pending) { this.commitPending(); return; }
 
       // A drag in progress means the press that started it is still live; a
       // menu on top of that would leave the drag orphaned.

@@ -68,6 +68,9 @@
         ['T', 'Typewriter text'],
         ['O', 'Callout'],
         ['M', 'Measure'],
+        ['Y', 'Polyline'],
+        ['D', 'Run length — a measurement with bends'],
+        ['Q', 'Area and perimeter'],
         ['G', 'Pan'],
         ['Z', 'Zoom to a box'],
         ['S', 'Copy an area as a picture']
@@ -84,11 +87,12 @@
         ['Delete', 'Delete the selection'],
         ['Shift+drag', 'Constrain, or add to the selection'],
         ['Double-click', 'Edit a markup’s text or comment'],
-        ['Enter', 'Finish the text or callout being typed'],
+        ['Enter', 'Finish the text, callout or shape being drawn'],
         ['Shift+Enter', 'New line inside a text or callout'],
+        ['Backspace', 'Undo the last point of a shape being drawn'],
         ['Double-click a tool', 'Lock it on — it draws one markup otherwise'],
-        ['Right-click', 'Context menu'],
-        ['Esc', 'Clear the selection and return to Select']
+        ['Right-click', 'Context menu — or finish the shape being drawn'],
+        ['Esc', 'Abandon the shape being drawn, or clear the selection']
       ]
     },
     {

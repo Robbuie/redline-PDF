@@ -31,7 +31,10 @@
     cloud: 'Revision cloud',
     text: 'Text',
     callout: 'Callout',
-    measure: 'Measurement'
+    measure: 'Measurement',
+    polyline: 'Polyline',
+    polylength: 'Run length',
+    area: 'Area'
   };
 
   /* Review state. A markup is 'open' until somebody says otherwise, and the
@@ -369,6 +372,30 @@
       const value = points * (this.scale.realLength / this.scale.pdfLength);
       const decimals = value >= 100 ? 1 : 2;
       return value.toFixed(decimals) + ' ' + (this.scale.unit || '');
+    },
+
+    /**
+     * The same for an area, given square PDF points.
+     *
+     * The calibration is a *linear* ratio and the unit it carries is a linear
+     * unit, so both are squared here: the factor twice over, and a `²` onto
+     * the unit. Applying the ratio once — which is the obvious mistake, since
+     * it is the same field `formatLength` uses — under-reports a room by the
+     * scale factor itself, and on a 1:100 drawing that is a hundredfold error
+     * in a number somebody is going to order material against.
+     *
+     * `²` is U+00B2, which is inside WinAnsi, so the standard 14 fonts can
+     * stamp this string into a PDF as it stands. Anything outside that
+     * encoding throws in pdf-lib rather than substituting.
+     */
+    formatArea(pointsSq) {
+      if (!this.scale || !this.scale.pdfLength) {
+        return (pointsSq / 5184).toFixed(2) + ' in² (paper)';
+      }
+      const ratio = this.scale.realLength / this.scale.pdfLength;
+      const value = pointsSq * ratio * ratio;
+      const decimals = value >= 100 ? 1 : 2;
+      return value.toFixed(decimals) + ' ' + (this.scale.unit || '') + '²';
     },
 
     /**

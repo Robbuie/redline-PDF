@@ -40,7 +40,15 @@
       case 'strikeout':
       case 'underline':
         return RP.geom.unionRect(annot.rects || []) || { x: 0, y: 0, w: 0, h: 0 };
-      case 'pen': {
+      // Everything built from a vertex list shares a bounding box. The label a
+      // measured one carries is deliberately *not* in it: the box is what the
+      // marquee, the selection chrome and the rejected rule use, and growing
+      // it to cover a plate that is a fixed size on screen would make all
+      // three change shape with the zoom.
+      case 'pen':
+      case 'polyline':
+      case 'polylength':
+      case 'area': {
         const pts = annot.points || [];
         if (!pts.length) return { x: 0, y: 0, w: 0, h: 0 };
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -84,6 +92,129 @@
    */
   function ruleWeight(rect) {
     return Math.max(0.5, (rect && rect.h ? rect.h : 8) * 0.09);
+  }
+
+  // -------------------------------------------------------------------------
+  // Polyline, run length and area
+  //
+  // Three markups, one vertex list. `polyline` is the plain shape, `polylength`
+  // labels the run, `area` closes it and labels the enclosure. Everything below
+  // works in PDF user space and is shared with `exporter.js`, because a takeoff
+  // that reads one number on screen and another on the printout is worse than
+  // one that reads nothing at all.
+  // -------------------------------------------------------------------------
+
+  const POLY_TYPES = ['polyline', 'polylength', 'area'];
+
+  /** Is this markup built from `annot.points`, with straight segments? */
+  function isPoly(type) { return POLY_TYPES.indexOf(type) >= 0; }
+
+  /** Only `area` closes its outline back to the first vertex. */
+  function isClosedPoly(type) { return type === 'area'; }
+
+  /** The two that carry a reading. `polyline` is a drawing tool, not a ruler. */
+  function isMeasuredPoly(type) { return type === 'polylength' || type === 'area'; }
+
+  /* A segment shorter than this gets no label of its own. Two plates on top of
+     each other are less readable than one, and the total still accounts for the
+     length. In *points*, not pixels, so the canvas and the stamp drop the same
+     segments — a threshold in screen pixels would label a run differently at
+     every zoom and differently again on paper. */
+  const SEGMENT_LABEL_MIN = 26;
+
+  /**
+   * The area a closed markup encloses, in square points, or `null` when the
+   * outline crosses itself.
+   *
+   * A bow-tie has no area anybody would agree on: the shoelace sum returns the
+   * *difference* of the two lobes, which is a plausible-looking number and
+   * therefore the dangerous answer — a figure on a drawing gets believed and
+   * ordered against. So this reports that it cannot say, and the label says so
+   * too. The perimeter is still well defined and is still shown.
+   */
+  function polyArea(annot) {
+    const pts = annot.points || [];
+    if (pts.length < 3) return null;
+    if (RP.geom.selfIntersects(pts, true)) return null;
+    return RP.geom.polygonArea(pts);
+  }
+
+  /**
+   * What a measured markup *reports*, as one or more lines — the total for a
+   * run, the area and perimeter for an enclosure.
+   *
+   * One builder, because the sheet, the markup list, the properties dialog,
+   * the CSV and the PDF report all quote this and a punch list that disagrees
+   * with the drawing it was taken off is worse than no punch list. Returns an
+   * empty list for anything that is not a measurement, `polyline` included —
+   * it is a drawing tool, not a ruler.
+   */
+  function readingLines(annot, store) {
+    const target = store || RP.store;
+    if (annot.type === 'measure') {
+      return [annot.label ||
+        target.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2))];
+    }
+    const pts = annot.points || [];
+    if (annot.type === 'polylength') {
+      if (pts.length < 2) return [];
+      return ['Total ' + target.formatLength(RP.geom.polylineLength(pts))];
+    }
+    if (annot.type === 'area') {
+      if (pts.length < 3) return [];
+      const area = polyArea(annot);
+      const perimeter = 'Perimeter ' + target.formatLength(RP.geom.polygonPerimeter(pts));
+      return area === null
+        ? ['Outline crosses itself — no area', perimeter]
+        : [target.formatArea(area), perimeter];
+    }
+    return [];
+  }
+
+  /** The same reading on one line, for a list row or a spreadsheet cell. */
+  function readingOf(annot, store) {
+    return readingLines(annot, store).join(' · ');
+  }
+
+  /**
+   * Every label a measured poly carries, anchored in PDF space.
+   *
+   * `dy` is an offset *down the screen* from the anchor, applied by each
+   * renderer in its own units — CSS pixels on the canvas, points in the stamp —
+   * because the plate is a fixed size in each medium and cannot be the same
+   * size in both. Anchors, text and which segments get a plate at all are
+   * decided here once, so the canvas and `exporter.js` cannot drift.
+   */
+  function measureLabels(annot, store) {
+    const target = store || RP.store;
+    const pts = annot.points || [];
+    const out = [];
+    if (!isMeasuredPoly(annot.type) || pts.length < 2) return out;
+
+    if (annot.type === 'polylength') {
+      for (let i = 1; i < pts.length; i += 1) {
+        const len = RP.geom.dist(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+        if (len < SEGMENT_LABEL_MIN) continue;
+        out.push({
+          kind: 'segment',
+          at: [(pts[i - 1][0] + pts[i][0]) / 2, (pts[i - 1][1] + pts[i][1]) / 2],
+          lines: [target.formatLength(len)],
+          dy: -13
+        });
+      }
+      // On a single-segment run the total *is* the segment, and two plates
+      // saying the same thing on top of each other is noise.
+      if (pts.length > 2) {
+        out.push({ kind: 'total', at: pts[pts.length - 1], lines: readingLines(annot, target), dy: 15 });
+      }
+      return out;
+    }
+
+    const lines = readingLines(annot, target);
+    if (lines.length) {
+      out.push({ kind: 'total', at: RP.geom.polygonCentroid(pts), lines, dy: 0 });
+    }
+    return out;
   }
 
   /** The callout box on its own — the tip is anchored separately. */
@@ -348,14 +479,18 @@
     ctx.restore();
   }
 
+  /* A reading on its own plate, centred on (x, y). `text` may be one string or
+     several lines — an area carries its area and its perimeter, and stacking
+     them keeps one plate rather than putting two on the same spot. */
+  const LABEL_LINE = 13;
+
   function drawLabel(ctx, text, x, y, color, fade) {
+    const lines = [].concat(text);
     ctx.save();
     ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
     const padX = 5;
-    const padY = 3;
-    const metrics = ctx.measureText(text);
-    const w = metrics.width + padX * 2;
-    const h = 16;
+    const w = Math.max.apply(null, lines.map((line) => ctx.measureText(line).width)) + padX * 2;
+    const h = 3 + lines.length * LABEL_LINE;
     // Normally opaque so the reading stays legible over whatever it crosses;
     // a resolved measurement recedes with the rest of its markup.
     ctx.globalAlpha = fade === undefined ? 1 : fade;
@@ -369,9 +504,19 @@
     ctx.fillStyle = '#16181d';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x, y + 0.5);
+    lines.forEach((line, i) => {
+      ctx.fillText(line, x, y - h / 2 + 1.5 + LABEL_LINE * (i + 0.5) + 0.5);
+    });
     ctx.restore();
-    void padY;
+  }
+
+  /** The perpendicular end ticks a measured run is bracketed by. */
+  function drawEndTick(ctx, from, to, size) {
+    const angle = Math.atan2(to[1] - from[1], to[0] - from[0]) + Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(to[0] - Math.cos(angle) * size, to[1] - Math.sin(angle) * size);
+    ctx.lineTo(to[0] + Math.cos(angle) * size, to[1] + Math.sin(angle) * size);
+    ctx.stroke();
   }
 
   function drawAnnotation(ctx, annot, viewport, opts) {
@@ -550,18 +695,57 @@
         ctx.moveTo(a[0], a[1]);
         ctx.lineTo(b[0], b[1]);
         ctx.stroke();
-        // end ticks
-        const angle = Math.atan2(b[1] - a[1], b[0] - a[0]) + Math.PI / 2;
-        const tick = 6;
-        for (const p of [a, b]) {
-          ctx.beginPath();
-          ctx.moveTo(p[0] - Math.cos(angle) * tick, p[1] - Math.sin(angle) * tick);
-          ctx.lineTo(p[0] + Math.cos(angle) * tick, p[1] + Math.sin(angle) * tick);
-          ctx.stroke();
-        }
+        drawEndTick(ctx, b, a, 6);
+        drawEndTick(ctx, a, b, 6);
         const pdfLen = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
-        const label = annot.label || RP.store.formatLength(pdfLen);
+        const label = annot.label || (options.store || RP.store).formatLength(pdfLen);
         drawLabel(ctx, label, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 14, annot.color, fade);
+        break;
+      }
+
+      /* One vertex list, three readings of it. The shape is drawn the same way
+         in all three cases; what differs is whether the outline closes, whether
+         the interior is washed, and what the plates say. `options.pending` is
+         the in-progress shape from `tools.js` — the same draw path with a
+         rubber-banded last vertex, rather than a second preview renderer that
+         could disagree with this one about what is being drawn. */
+      case 'polyline':
+      case 'polylength':
+      case 'area': {
+        const pts = annot.points || [];
+        if (pts.length < 2) {
+          if (options.pending && pts.length === 1) {
+            const only = vp(viewport, pts[0][0], pts[0][1]);
+            drawVertexDots(ctx, [only], annot.color);
+          }
+          break;
+        }
+        const view = pts.map((p) => vp(viewport, p[0], p[1]));
+        const closed = isClosedPoly(annot.type);
+        ctx.beginPath();
+        ctx.moveTo(view[0][0], view[0][1]);
+        for (let i = 1; i < view.length; i += 1) ctx.lineTo(view[i][0], view[i][1]);
+        if (closed) ctx.closePath();
+        // A wash rather than a fill: the point of an area markup is the room
+        // under it, which a solid would hide. `fill: false` turns it off for
+        // anyone who wants the outline alone.
+        if (closed && annot.fill !== false && view.length > 2) {
+          ctx.save();
+          ctx.globalAlpha = alpha(1) * 0.15;
+          ctx.fillStyle = annot.color || '#ff2f2f';
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.stroke();
+        if (annot.type === 'polylength') {
+          drawEndTick(ctx, view[1], view[0], 6);
+          drawEndTick(ctx, view[view.length - 2], view[view.length - 1], 6);
+        }
+        if (options.pending) drawVertexDots(ctx, view, annot.color);
+        for (const label of measureLabels(annot, options.store)) {
+          const at = vp(viewport, label.at[0], label.at[1]);
+          drawLabel(ctx, label.lines, at[0], at[1] + label.dy, annot.color, fade);
+        }
         break;
       }
 
@@ -604,6 +788,26 @@
       if (y + fontSize > box.y + box.h) break;
       if (line) ctx.fillText(line, box.x + pad, y);
       y += fontSize * CALLOUT_LINE;
+    }
+    ctx.restore();
+  }
+
+  /* Where the clicks landed, while the shape is still being built. Only ever
+     drawn for a pending markup: a committed one shows its vertices through the
+     selection handles instead, and dotting every vertex of every polygon on a
+     sheet would read as ink that is not there. */
+  function drawVertexDots(ctx, viewPoints, color) {
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = color || '#ff2f2f';
+    ctx.lineWidth = 1.4;
+    for (const p of viewPoints) {
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -659,6 +863,18 @@
       list.push({ id: 'p2', x: b[0], y: b[1] });
       return list;
     }
+    /* One handle per vertex, and no box handles: a poly is edited by moving
+       the points that define it, the way the line family is. Offering the
+       eight-handle bounding box as well would mean two ways to change the same
+       shape, and the box version cannot express "move this one corner of the
+       room" — which is the edit anybody actually makes to a takeoff. */
+    if (isPoly(annot.type)) {
+      (annot.points || []).forEach((p, i) => {
+        const at = vp(viewport, p[0], p[1]);
+        list.push({ id: 'v' + i, x: at[0], y: at[1] });
+      });
+      return list;
+    }
     if (annot.type === 'note') return list;
     const r = vpRect(viewport, selectionRect(annot));
     const mids = [
@@ -705,7 +921,19 @@
       case 'underline':
         return (annot.rects || []).some((r) => RP.geom.rectContains(r, x, y, 1));
       case 'pen':
+      case 'polyline':
+      case 'polylength':
         return RP.geom.distToPolyline(x, y, annot.points || []) <= t + (annot.width || 2) / 2;
+      /* A washed area is grabbable anywhere inside it, the way a filled rect
+         is; an outline-only one is grabbable on its edge. The closing leg has
+         to be tested too — it is drawn, so it has to be clickable, and
+         `distToPolyline` does not know the shape closes. */
+      case 'area': {
+        const pts = annot.points || [];
+        if (annot.fill !== false && RP.geom.pointInPolygon(x, y, pts)) return true;
+        const ring = pts.length > 2 ? pts.concat([pts[0]]) : pts;
+        return RP.geom.distToPolyline(x, y, ring) <= t + (annot.width || 2) / 2;
+      }
       case 'line':
       case 'arrow':
       case 'measure':
@@ -762,6 +990,9 @@
         for (const r of annot.rects || []) { r.x += dx; r.y += dy; }
         break;
       case 'pen':
+      case 'polyline':
+      case 'polylength':
+      case 'area':
         for (const p of annot.points || []) { p[0] += dx; p[1] += dy; }
         break;
       case 'line':
@@ -792,6 +1023,9 @@
         }));
         break;
       case 'pen':
+      case 'polyline':
+      case 'polylength':
+      case 'area':
         annot.points = (orig.points || []).map((p) => [mapX(p[0]), mapY(p[1])]);
         break;
       case 'line':
@@ -826,6 +1060,15 @@
     selectionRect,
     calloutBox,
     ruleWeight,
+    POLY_TYPES,
+    isPoly,
+    isClosedPoly,
+    isMeasuredPoly,
+    SEGMENT_LABEL_MIN,
+    polyArea,
+    readingLines,
+    readingOf,
+    measureLabels,
     calloutAnchor,
     calloutPart,
     STATUS_FADE,

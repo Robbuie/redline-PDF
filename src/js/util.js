@@ -216,6 +216,158 @@ window.RP = window.RP || {};
       return best;
     },
 
+    /* ---------------------------------------------------------------------
+       Polylines and polygons
+
+       The takeoff maths, and deliberately pure: `test/verify.js` checks all of
+       it without a browser. Points are `[[x, y], ...]` in PDF user space, and
+       a closed shape is *not* given a repeated last vertex — the closing leg
+       is implied, which is what stops a saved-and-reopened polygon growing a
+       zero-length edge on every round trip.
+       --------------------------------------------------------------------- */
+
+    /** Total length of the open run through `points`. */
+    polylineLength(points) {
+      const pts = points || [];
+      let total = 0;
+      for (let i = 1; i < pts.length; i += 1) {
+        total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      }
+      return total;
+    },
+
+    /** Perimeter of the closed shape through `points`, closing leg included. */
+    polygonPerimeter(points) {
+      const pts = points || [];
+      if (pts.length < 3) return RP.geom.polylineLength(pts);
+      const last = pts[pts.length - 1];
+      return RP.geom.polylineLength(pts) + Math.hypot(pts[0][0] - last[0], pts[0][1] - last[1]);
+    },
+
+    /**
+     * Twice-the-shoelace, halved — the *signed* area of the closed shape.
+     * Negative means the vertices wind clockwise, which nothing here cares
+     * about except `polygonCentroid`, so callers take the magnitude.
+     */
+    signedArea(points) {
+      const pts = points || [];
+      if (pts.length < 3) return 0;
+      let sum = 0;
+      for (let i = 0; i < pts.length; i += 1) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        sum += a[0] * b[1] - b[0] * a[1];
+      }
+      return sum / 2;
+    },
+
+    /** Area of the closed shape, in square PDF points. */
+    polygonArea(points) {
+      return Math.abs(RP.geom.signedArea(points));
+    },
+
+    /**
+     * The area-weighted centroid — where a label belongs, and not the same
+     * point as the average of the vertices on anything but a regular shape:
+     * three clicks bunched in one corner would drag a vertex mean off the
+     * middle of the room being measured. Falls back to the vertex mean for a
+     * degenerate (zero-area) shape, where the weighted form divides by zero.
+     */
+    polygonCentroid(points) {
+      const pts = points || [];
+      if (!pts.length) return [0, 0];
+      const area = RP.geom.signedArea(pts);
+      if (pts.length < 3 || Math.abs(area) < 1e-9) {
+        let sx = 0, sy = 0;
+        for (const p of pts) { sx += p[0]; sy += p[1]; }
+        return [sx / pts.length, sy / pts.length];
+      }
+      let cx = 0, cy = 0;
+      for (let i = 0; i < pts.length; i += 1) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        const cross = a[0] * b[1] - b[0] * a[1];
+        cx += (a[0] + b[0]) * cross;
+        cy += (a[1] + b[1]) * cross;
+      }
+      return [cx / (6 * area), cy / (6 * area)];
+    },
+
+    /** Ray casting. Used for the interior hit of a closed area markup. */
+    pointInPolygon(px, py, points) {
+      const pts = points || [];
+      if (pts.length < 3) return false;
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i, i += 1) {
+        const [xi, yi] = pts[i];
+        const [xj, yj] = pts[j];
+        const straddles = (yi > py) !== (yj > py);
+        if (straddles && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    },
+
+    /**
+     * Do segments ab and cd *properly* cross?
+     *
+     * Proper is the operative word: two edges of a polygon that share a vertex
+     * touch at a point, and counting that as a crossing would report every
+     * shape ever drawn as self-intersecting. So a shared endpoint is not a
+     * crossing, and neither is a T where one endpoint lands on the other
+     * segment — only a genuine X, or a pair of collinear edges that overlap
+     * along a length rather than at a point.
+     */
+    segmentsCross(a, b, c, d) {
+      const EPS = 1e-9;
+      const side = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+      const d1 = side(a, b, c);
+      const d2 = side(a, b, d);
+      const d3 = side(c, d, a);
+      const d4 = side(c, d, b);
+
+      if (Math.abs(d1) > EPS && Math.abs(d2) > EPS && Math.abs(d3) > EPS && Math.abs(d4) > EPS) {
+        return (d1 > 0) !== (d2 > 0) && (d3 > 0) !== (d4 > 0);
+      }
+      // Collinear: an overlap of non-zero length is a crossing, a touch is not.
+      if (Math.abs(d1) <= EPS && Math.abs(d2) <= EPS) {
+        const along = (p) => (p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1]);
+        const len = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2;
+        if (len <= EPS) return false;
+        const t0 = along(c) / len;
+        const t1 = along(d) / len;
+        const lo = Math.max(0, Math.min(t0, t1));
+        const hi = Math.min(1, Math.max(t0, t1));
+        return hi - lo > 1e-6;
+      }
+      return false;
+    },
+
+    /**
+     * Does the shape cross itself? A bow-tie has no single area anybody would
+     * agree on, so `RP.render` refuses to put a number on one rather than
+     * reporting the shoelace value, which is a plausible-looking difference of
+     * two lobes. Vertex counts here are what a person clicked, so the O(n²)
+     * pair sweep is not worth indexing.
+     */
+    selfIntersects(points, closed) {
+      const pts = points || [];
+      const n = pts.length;
+      if (n < 4) return false;
+      const edges = closed ? n : n - 1;
+      const at = (i) => [pts[i], pts[(i + 1) % n]];
+      for (let i = 0; i < edges; i += 1) {
+        for (let j = i + 2; j < edges; j += 1) {
+          // Adjacent edges share a vertex, and on a closed shape the first and
+          // last are adjacent through the wrap.
+          if (closed && i === 0 && j === edges - 1) continue;
+          const [a, b] = at(i);
+          const [c, d] = at(j);
+          if (RP.geom.segmentsCross(a, b, c, d)) return true;
+        }
+      }
+      return false;
+    },
+
     /** Ramer–Douglas–Peucker; keeps freehand strokes small enough to embed. */
     simplify(points, tolerance) {
       if (points.length < 3) return points.slice();

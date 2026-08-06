@@ -268,10 +268,13 @@
 
   /** Size in whatever unit the markup is actually about. */
   function describeSize(annot, box) {
-    if (annot.type === 'measure') {
-      const length = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
-      return RP.store.formatLength(length) +
+    if (annot.type === 'measure' || RP.render.isMeasuredPoly(annot.type)) {
+      return RP.render.readingOf(annot, RP.store) +
         (RP.store.scale ? '' : ' — scale not calibrated');
+    }
+    if (annot.type === 'polyline') {
+      const pts = annot.points || [];
+      return pts.length + ' points, ' + RP.geom.polylineLength(pts).toFixed(1) + ' pt long';
     }
     if (annot.type === 'note') return '—';
     return box.w.toFixed(1) + ' × ' + box.h.toFixed(1) + ' pt';

@@ -12,6 +12,44 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.10.0] — 2026-08-05
+
+### Added
+
+- **Three shapes you click out a point at a time**, rather than dragging in one
+  go. Click each point, and double-click, press `Enter` or right-click to
+  finish. `Backspace` takes the last point back, `Esc` abandons the shape and
+  leaves the tool armed for the next one.
+
+  - **Polyline** (`Y`) — a redline with straight segments and bends, the
+    drawing cousin of the pen.
+  - **Run length** (`D`) — the same shape, measured. Every segment carries its
+    own length and the run carries its total, so a conduit run with three bends
+    can be checked against its parts without measuring them again. A segment
+    too short to hold a plate is left unlabelled rather than stacked on top of
+    its neighbour; the total still accounts for it.
+  - **Area** (`Q`) — a closed shape labelled with its area *and* its perimeter,
+    washed lightly so the drawing underneath still reads.
+
+  All three use the calibration the Measure tool already sets, and the area
+  applies it squared — a 1:100 drawing reports m², not m. Uncalibrated, they
+  read in paper inches like every other measurement.
+
+- Markups drawn this way are **selected and edited by their points**: each
+  corner gets its own handle, so a room whose wall you clicked in the wrong
+  place is fixed by moving that corner, not by re-drawing the shape. They
+  save, reopen and re-edit like every other markup, and their readings appear
+  in the markup list, the CSV and the PDF report.
+
+### Changed
+
+- A measured area whose outline **crosses itself** says so instead of
+  reporting a number. A bow-tie has no area anybody would agree on — the
+  arithmetic returns the difference of the two lobes, which looks like an
+  answer — so the label reads *outline crosses itself — no area* and shows the
+  perimeter, which is still well defined. It says the same thing in the markup
+  list, the CSV, the report and on a printed sheet.
+
 ## [0.9.0] — 2026-08-05
 
 ### Added
