@@ -1058,6 +1058,34 @@
     },
 
     /**
+     * Scroll the pane by a step, in CSS pixels. Returns false when it could not
+     * move that way.
+     *
+     * That return value is the whole point: it is what lets the arrow keys
+     * scroll a sheet that is bigger than the pane and *turn* to the next one
+     * once the bottom of the paper is reached, rather than being a dead key in
+     * single-page mode. Nothing here focuses the scroller, because nothing in
+     * this app puts focus inside it — `.viewer` has no `tabindex`, so the
+     * browser's own arrow-key scrolling never fires and the step has to be
+     * issued by hand.
+     */
+    nudgeScroll(dx, dy) {
+      const scroller = this.els.viewer;
+      if (!scroller) return false;
+      const maxTop = Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
+      const maxLeft = Math.max(0, (scroller.scrollWidth || 0) - (scroller.clientWidth || 0));
+      const top = RP.clamp(scroller.scrollTop + (dy || 0), 0, maxTop);
+      const left = RP.clamp(scroller.scrollLeft + (dx || 0), 0, maxLeft);
+      // A sub-pixel move is not a move: `scrollTop` is fractional at fractional
+      // zooms, and treating a rounding difference as movement would make the
+      // key stop turning the sheet at the very bottom of the column.
+      const moved = Math.abs(top - scroller.scrollTop) > 0.5 || Math.abs(left - scroller.scrollLeft) > 0.5;
+      if (!moved) return false;
+      scroller.scrollTo({ top, left, behavior: 'auto' });
+      return true;
+    },
+
+    /**
      * Verify that the scroll actually arrived, and say so in the diagnostics
      * log when it did not.
      *

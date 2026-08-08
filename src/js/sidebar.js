@@ -161,7 +161,21 @@
         row.addEventListener('contextmenu', (event) => {
           event.preventDefault();
           if (!RP.store.selection.has(annot.id)) RP.store.select(annot.id);
-          RP.menu.open(event.clientX, event.clientY, RP.app.statusMenuItems());
+          /* The same arrange rows as the right-click on the drawing, and the
+             row that was clicked is the style source — a list selection has no
+             other unambiguous "this one". `menuItems` returns nothing when the
+             selection spans sheets, which the list can select across and the
+             drawing cannot. */
+          RP.menu.open(event.clientX, event.clientY, [
+            ...RP.app.statusMenuItems(),
+            { separator: true },
+            {
+              label: RP.store.selection.size > 1 ? 'Copy markups' : 'Copy markup',
+              hint: 'Ctrl+C',
+              run: () => RP.edit.copy()
+            },
+            ...RP.edit.menuItems(annot.id)
+          ]);
         });
         list.appendChild(row);
       }

@@ -1,5 +1,30 @@
 # Roadmap
 
+## Done — v0.11
+
+- **A markup clipboard.** Copy, cut and paste markups across sheets and across
+  open drawings, pasting **under the pointer** so stamping the same markup in
+  several places needs no drag after each one. Deliberately an in-app buffer:
+  copying markups already wrote their readings to the Windows clipboard for an
+  email or an RFI, and `RP.edit.copy` now fills both so neither use loses
+- **Arrange a selection** — align six ways, distribute on either axis, match
+  size, match style. The geometry is pure (`alignOffsets`, `distributeOffsets`,
+  `sizeTargets`: boxes in, offsets out) because PDF space has y pointing *up*,
+  which makes "align top" a maximum and is not a thing a screenshot settles
+- Every command in `edit.js` is one undo step and one repaint, and one that
+  changed nothing pops its own checkpoint back off. `store.addMany` is the same
+  contract on the insert side
+- **The arrow keys move around the drawing** — `←`/`→` turn the sheet, `↑`/`↓`
+  read down it and turn over at the edge of the paper. Nothing focuses
+  `.viewer`, so the browser's own arrow scrolling never fired and the step is
+  issued by hand through `RP.viewer.nudgeScroll`
+- Navigation keys no longer reach the drawing through an open dialog
+- **Typewriter text starts where the I-beam said it would.** The click was being
+  read as the top of the first line rather than its middle, and the inline
+  editor added its own border, padding and half-leading on top — it now
+  measures those back off instead of assuming them, and a callout wraps in the
+  editor where it wraps on the sheet at every zoom
+
 ## Done — v0.10
 
 - **Polyline, run length and area** — three markups on one vertex list,
@@ -196,7 +221,9 @@ stored as embedded images so they export cleanly.
 **Markup depth**
 - Continuous/chained dimensions (deliberately out of scope for 25 — ship the
   shapes first)
-- Group and align markups; copy/paste, including across pages and documents
+- **Group** markups, so a set moves and styles as one thing rather than as a
+  selection that has to be re-made (align, distribute and copy/paste landed in
+  0.11; grouping is the part that needs a model change)
 - Markup layers with show/hide, so trade markups can be toggled independently
 
 **Review workflow**

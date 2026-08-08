@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.10.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.11.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -63,6 +63,7 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `props.js` | the markup properties dialog |
 | `keys.js` | the `?` shortcut cheat sheet (documentation, not wiring) |
 | `tools.js` | pointer interaction — creating markups and the select/edit tool |
+| `edit.js` | commands over a *set* of markups: the markup clipboard, align, distribute, match size and style |
 | `search.js` | per-document text index and find |
 | `sidebar.js` | panel switching, markup list, recents |
 | `outline.js` | the file's *own* bookmarks — outline tree, dest jumps |
@@ -314,6 +315,25 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   raster meant clearing 77 canvases per click. Off-screen pages get
   `annotDirty` and are repainted by the page observer when they come back, so a
   new code path that paints into `annotCanvas` has to respect that flag.
+- **Nothing in this app ever holds focus inside `.viewer`, so the browser's own
+  arrow-key scrolling never fires.** There is no `tabindex` on the scroller and
+  no reason to add one — the page DOM is rebuilt on every tab switch — so `↑`
+  and `↓` have to issue the step by hand through `RP.viewer.nudgeScroll`, which
+  returns false when the scroller could not move. That return value is the whole
+  point: it is what lets the key scroll down a sheet and *turn over* at the
+  bottom of the paper rather than being a dead key in single-page mode, where
+  the column holds one row and the scroll runs out. Sub-pixel movement is not
+  movement — `scrollTop` is fractional at fractional zooms, and reading a
+  rounding difference as a move stops the key ever turning the sheet.
+- **The navigation keys are refused while anything is over the drawing.**
+  `App.navigationBlocked()` queries `.modal-backdrop:not([hidden])` rather than
+  asking each module, because half the dialogs are standing elements toggled
+  with `hidden` (Settings, Print, diagnostics) and half are built and removed
+  (properties, the cheat sheet, the prompts) — and because a dialog added later
+  is then covered without anyone remembering to add it. `PageUp`/`PageDown`,
+  `Home`/`End` and the arrows all sit behind it: a dialog is modal to the user
+  whether or not it is modal to the document, and paging a sheet set behind one
+  is movement they cannot see.
 - **`onScroll` must not measure the DOM.** Page tops are cached in
   `viewer.pageTops` by `measurePages()` and invalidated by `layout()`; the
   handler binary-searches them. Reading `getBoundingClientRect()` per page there
@@ -566,6 +586,67 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   tool — abandoning a shape you misjudged is a correction, not a change of
   mind, and disarming there costs a trip back to the toolbar every time.
   `test/verify.js` covers all of it.
+- **Every command in `edit.js` is one undo step and one repaint, and a command
+  that changed nothing must leave no step at all.** These are bulk mutations —
+  align twelve callouts, paste six markups — and `store.update` or `store.add`
+  in a loop checkpoints per item, so `Ctrl+Z` would walk back through the
+  selection one markup at a time and `redrawAll` plus the markup list would run
+  once per markup. So each command takes `store.checkpoint()` itself, mutates in
+  place, and ends at `RP.edit.finish`, which emits `annots:changed` once — and
+  **pops the checkpoint back off** when nothing moved, or aligning an
+  already-aligned selection leaves a dead history entry that makes the next
+  `Ctrl+Z` appear to do nothing. `store.addMany` exists for the same reason on
+  the insert side. Same reasoning as `store.setStatus`; `test/verify.js` covers
+  it.
+- **PDF space has y pointing up, so "align top" is a *maximum*.** `top` is the
+  largest `y + h` in the selection and `bottom` the smallest `y`. Getting it
+  backwards swaps the two commands, which reads as a wiring mistake rather than
+  a sign error, and no screenshot settles it — so `RP.edit.alignOffsets` is pure
+  (boxes in, offsets out) and `test/verify.js` asserts the two are not the same
+  answer. `RP.edit.boxOf` aligns a callout by its **box**, not its `bbox`: the
+  bbox includes the arrow tip, and lining up six tips is not a command anybody
+  wants. The whole markup still moves, leader included.
+- **Arranging refuses a selection that spans sheets rather than attempting it.**
+  Coordinates are per page, so it would "work" — and silently move markups on a
+  drawing the user cannot see, which is the worst outcome available. The markup
+  list can select across pages, so this is reachable; `RP.edit.menuItems`
+  returns nothing at all there rather than offering rows that fail.
+- **The markup clipboard is internal *because* `Ctrl+C` already meant something
+  else.** Copying markups has written their readings to the Windows clipboard,
+  one per line, since 0.4 — that is the paste into an email or an RFI. Pasting
+  back onto a drawing wants the markups themselves. They are two different
+  clipboards, so `RP.edit.copy` fills both and nothing has to lose; put the
+  markups on the OS clipboard instead and one of the two uses dies. Identity is
+  stripped on the way *into* the buffer, not on the way out — a buffer holding
+  live ids pasted back into its own drawing would produce two markups claiming
+  one id.
+- **A paste aims at the pointer, and the pointer is resolved late.**
+  `RP.tools.hoverClient` holds client coordinates only; the page under a point
+  is a function of the current scroll and zoom, so a cached page index would be
+  stale the moment the column moved. `RP.tools.pasteTarget` resolves it through
+  `RP.viewer.pageAt`, which returns null for a point over the *other* pane of a
+  split — that null is load-bearing, because that pane belongs to a different
+  document and pasting into it would put markups on a drawing the user was not
+  looking at. A null falls back to nudging on the current page.
+- **`annot.y` on a `text` markup is the top of the first line, but the click
+  that creates one is its middle.** `render.js` draws down from `annot.y` with
+  `textBaseline: 'top'` and `bbox` measures back up, so passing the click point
+  straight through hangs the run below the pointer — and the I-beam is exactly
+  the cursor that makes that read as a bug, because its hotspot is the middle of
+  the bar. `RP.tools.textAnchorFor` lifts it half an em box, and the correction
+  is *upward* (`+y`) because y is up; the sign error doubles the complaint
+  instead of fixing it.
+- **The inline text editor has to subtract its own chrome, and it measures it
+  rather than assuming it.** Three things sit between the editor's border box
+  and its first glyph — the dashed border, the padding, and the half-leading
+  `line-height` puts above every line — and none of them exists on the canvas,
+  which draws at the anchor itself. Uncompensated, the editor shows text a few
+  pixels down and right of where it commits and snaps on Enter. It reads the
+  numbers back with `getComputedStyle` because they live in `app.css`, and a copy
+  of them in JS is one more pair to keep in step by hand. A callout is worse: its
+  text wraps to `CALLOUT_PAD` **scaled by the zoom**, so an editor sized to the
+  box less its own fixed 10px of chrome agrees at 100% and nowhere else — at 300%
+  the last word of every line escapes below the box while you type.
 - **Checkpoint a poly once, at commit — never per vertex.** `commitPending`
   calls `store.add`, which takes the one checkpoint. A checkpoint per click
   would make `Ctrl+Z` after a thirty-vertex polygon walk back up it a corner at

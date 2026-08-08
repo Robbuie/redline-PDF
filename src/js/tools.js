@@ -63,6 +63,7 @@
       pagesEl.addEventListener('pointermove', (e) => this.onPointerMove(e));
       pagesEl.addEventListener('pointerup', (e) => this.onPointerUp(e));
       pagesEl.addEventListener('pointercancel', () => this.cancelDrag());
+      pagesEl.addEventListener('pointerleave', () => { this.hoverClient = null; });
       pagesEl.addEventListener('dblclick', (e) => this.onDoubleClick(e));
       pagesEl.addEventListener('contextmenu', (e) => this.onContextMenu(e));
       this.initPan(pane.el.querySelector('.viewer'));
@@ -422,6 +423,23 @@
       return { x: event.clientX - rect.left, y: event.clientY - rect.top };
     },
 
+    /**
+     * Where a paste should land: `{page, pdf}` under the pointer, or null.
+     *
+     * `RP.viewer.pageAt` is what resolves the point, because in a split the
+     * pointer may be over the *other* pane's page and that page belongs to a
+     * different document — it returns null there, and a null sends `RP.edit`
+     * down its nudge-on-the-current-page path rather than pasting onto a
+     * drawing the user was not looking at.
+     */
+    pasteTarget() {
+      const at = this.hoverClient;
+      if (!at) return null;
+      const record = RP.viewer.pageAt(at.x, at.y);
+      if (!record) return null;
+      return { page: record.index, pdf: RP.viewer.clientToPdf(record, at.x, at.y) };
+    },
+
     onPointerDown(event) {
       if (event.button !== 0) return;
       const record = this.recordFromEvent(event);
@@ -492,7 +510,7 @@
       } else if (this.tool === 'note') {
         this.createNote(record, pdf);
       } else if (this.tool === 'text') {
-        this.openInlineText(record, pdf, null);
+        this.openInlineText(record, this.textAnchorFor(pdf), null);
       } else if (RP.render.isPoly(this.tool)) {
         // No drag is started: these are click-per-vertex, and the gesture
         // lives in `this.pending` until it is finished or cancelled.
@@ -512,6 +530,15 @@
     },
 
     onPointerMove(event) {
+      /* Where the pointer is over the drawing, kept for `pasteTarget`. Stored
+         as client coordinates and resolved to a page only when a paste asks
+         for it: the page under a point is a function of the current scroll and
+         zoom, and a page index cached here would be stale the moment the
+         column moved. Cleared on `pointerleave` in `bindPane`, so a paste with
+         the pointer off the sheet nudges rather than landing at wherever the
+         pointer happened to leave. */
+      this.hoverClient = { x: event.clientX, y: event.clientY };
+
       // The rubber band is the only thing in this app that tracks the pointer
       // with no button down, so it is handled before the drag guard below.
       const pending = this.pending;
@@ -1342,6 +1369,26 @@
     // Typewriter text / callout text
     // ---------------------------------------------------------------------
 
+    /**
+     * Turn the text tool's click point into the markup's anchor.
+     *
+     * `annot.y` on a `text` markup is the **top** of the first line: that is
+     * what `render.js` draws down from and what `bbox` measures back up. Using
+     * the click point as-is therefore hangs the whole run below the pointer,
+     * and the I-beam is exactly the cursor that makes that read as a bug — its
+     * hotspot is its centre, so you aim the middle of the bar at the line you
+     * are annotating and the text lands half a bar low. Half a line up puts the
+     * first line *across* the point clicked, which is what the cursor promised.
+     *
+     * Half the em box rather than half the line box: the leading is space above
+     * and below the glyphs, and centring on it would leave the same complaint a
+     * smaller amount of the time.
+     */
+    textAnchorFor(pdf) {
+      const size = this.style.fontSize || 12;
+      return [pdf[0], pdf[1] + size / 2];
+    },
+
     initInlineText() {
       this.inlineText = RP.$('#inlineText');
       this.inlineText.addEventListener('keydown', (e) => {
@@ -1418,15 +1465,48 @@
       // is not the wrap you get. Set piecemeal rather than through the `font`
       // shorthand, which would reset the line-height the stylesheet sets.
       const face = annot || this.style;
-      editor.style.left = (box.left + view[0]) + 'px';
-      editor.style.top = (box.top + view[1]) + 'px';
-      editor.style.fontSize = ((face.fontSize || this.style.fontSize) * RP.viewer.zoom) + 'px';
+      const fontPx = (face.fontSize || this.style.fontSize) * RP.viewer.zoom;
+      editor.style.fontSize = fontPx + 'px';
       editor.style.fontFamily = RP.render.FONT_STACKS[face.fontFamily || 'sans'] || RP.render.FONT_STACKS.sans;
       editor.style.fontWeight = face.bold ? '700' : '400';
       editor.style.color = annot
         ? (annot.type === 'callout' ? (annot.textColor || RP.render.DEFAULT_TEXT_COLOR) : (annot.color || '#16181d'))
         : this.style.color;
-      editor.style.width = (rect ? rect.w : 220) + 'px';
+
+      /* The editor is positioned by its *border box*, but what has to line up
+         with the committed render is the first glyph. Three things sit between
+         the two — the dashed border, the editor's padding, and the half-leading
+         that `line-height` puts above every line — and none of them exists on
+         the canvas, which draws with `textBaseline: 'top'` at the anchor
+         itself. Left uncompensated the editor shows the text a few pixels down
+         and right of where it commits, and it snaps on Enter.
+
+         Measured rather than hard-coded: the numbers live in `app.css`, and a
+         copy of them here would be one more pair that has to be kept in step
+         by hand. `hidden` is already false by the time this runs, so the
+         computed style is real. */
+      const cs = window.getComputedStyle(editor);
+      const insetX = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.paddingLeft) || 0);
+      const insetY = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.paddingTop) || 0);
+      const gutterX = insetX + (parseFloat(cs.borderRightWidth) || 0) + (parseFloat(cs.paddingRight) || 0);
+      // `line-height` is a ratio in the stylesheet, so `lineHeight` computes to
+      // px; half the leading sits above the glyphs of every line.
+      const halfLeading = Math.max(0, ((parseFloat(cs.lineHeight) || fontPx) - fontPx) / 2);
+
+      /* A callout's text is drawn inside its box with `CALLOUT_PAD` scaled by
+         the zoom, and wrapped to what is left. Setting the editor to the box
+         width instead — which is what this used to do — wraps it at the box
+         less the editor's own 10px of chrome, so the two agree at zoom 1 and
+         diverge from there: at 300% the canvas wraps 24px in and the editor
+         still wraps 10px in, and the last word of every line escapes below the
+         box. Same class of bug as a fixed pixel inset, same fix. */
+      const pad = rect ? RP.render.CALLOUT_PAD * (record.viewport.scale || 1) : 0;
+      const textLeft = view[0] + pad;
+      const textTop = view[1] + pad;
+
+      editor.style.left = (box.left + textLeft - insetX) + 'px';
+      editor.style.top = (box.top + textTop - insetY - halfLeading) + 'px';
+      editor.style.width = ((rect ? rect.w - pad * 2 : 220) + gutterX) + 'px';
       editor.style.height = 'auto';
       editor.style.height = editor.scrollHeight + 'px';
     },
@@ -1587,11 +1667,35 @@
           run: () => RP.props.open(hit)
         } : null,
         hit ? {
+          label: many ? 'Copy markups' : 'Copy markup',
+          hint: 'Ctrl+C',
+          run: () => RP.edit.copy()
+        } : null,
+        hit ? {
+          label: many ? 'Cut markups' : 'Cut markup',
+          hint: 'Ctrl+X',
+          run: () => RP.edit.cut()
+        } : null,
+        /* Offered whether or not the press landed on a markup: pasting is
+           about the empty space you are pointing at, not about what is
+           already there. The point is captured now rather than read at run
+           time — the menu is dismissed before the handler fires, and the
+           pointer has moved to the row that was clicked. */
+        RP.edit.hasBuffer() ? {
+          label: 'Paste here',
+          hint: 'Ctrl+V',
+          run: () => RP.edit.paste(record.index, pdf)
+        } : null,
+        hit ? {
           label: many ? 'Delete markups' : 'Delete markup',
           hint: 'Del',
           danger: true,
           run: () => RP.app.deleteSelection()
         } : null,
+        /* Arranging needs at least two markups on one sheet, so `menuItems`
+           returns nothing at all below that rather than a section of dead
+           rows. It carries its own leading separator for the same reason. */
+        ...RP.edit.menuItems(hit ? hit.id : null),
         { separator: true },
         /* Copying a picture of an area is offered two ways round, because the
            two are different gestures. Inside a standing selection the box is

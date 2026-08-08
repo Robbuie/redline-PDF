@@ -77,8 +77,8 @@ global.document = {
 
 const globalEval = eval; // indirect eval => runs in global scope
 for (const file of ['util.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
-  'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'tools.js',
-  'sidebar.js', 'pdfjs-loader.js', 'app.js']) {
+  'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'clip.js',
+  'tools.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -904,6 +904,250 @@ function testTakeoff() {
    The other half is the pair that always drifts in this codebase: the canvas
    and the exporter agreeing on what a resolved markup looks like.
    --------------------------------------------------------------------------- */
+/**
+ * Arranging a selection, and the markup clipboard.
+ *
+ * The align maths is the part worth pinning down: PDF space has y pointing
+ * *up*, so "align top" is a maximum and "align bottom" is a minimum. Getting
+ * that backwards swaps the two commands, which reads as a wiring mistake
+ * rather than a sign error and is exactly the kind of bug a screenshot does
+ * not settle. The rest is the one-undo-step contract that every bulk command
+ * in this app has to keep.
+ */
+function testArrange() {
+  console.log('\nArrange and clipboard');
+
+  const boxes = [
+    { x: 10, y: 100, w: 40, h: 20 },   // 10..50   100..120
+    { x: 30, y: 200, w: 100, h: 60 },  // 30..130  200..260
+    { x: 70, y: 300, w: 20, h: 10 }    // 70..90   300..310
+  ];
+  const dx = (edge) => RP.edit.alignOffsets(boxes, edge).map((o) => o.dx);
+  const dy = (edge) => RP.edit.alignOffsets(boxes, edge).map((o) => o.dy);
+
+  check('align left goes to the leftmost edge', dx('left').join(',') === '0,-20,-60', dx('left').join(','));
+  check('align right goes to the rightmost edge', dx('right').join(',') === '80,0,40', dx('right').join(','));
+  check('align left moves nothing vertically', dy('left').every((v) => v === 0));
+  // y is up: the top of the set is the largest y+h, the bottom the smallest y.
+  check('align top is a maximum in PDF space', dy('top').join(',') === '190,50,0', dy('top').join(','));
+  check('align bottom is a minimum in PDF space', dy('bottom').join(',') === '0,-100,-200', dy('bottom').join(','));
+  check('top and bottom are not the same command',
+    dy('top').join(',') !== dy('bottom').join(','));
+  // Centres: x spans 10..130 -> 70; y spans 100..310 -> 205.
+  check('centre horizontally uses the whole extent',
+    dx('hcentre').join(',') === '40,-10,-10', dx('hcentre').join(','));
+  check('centre vertically uses the whole extent',
+    dy('vcentre').join(',') === '95,-25,-100', dy('vcentre').join(','));
+  check('aligning one markup is a no-op',
+    RP.edit.alignOffsets([boxes[0]], 'left')[0].dx === 0);
+  check('an unrecognised edge moves nothing',
+    RP.edit.alignOffsets(boxes, 'sideways').every((o) => !o.dx && !o.dy));
+
+  /* Distribute equalises the *gaps*, not the centres — even centres beside a
+     box of a different size leaves visibly uneven space. The two outermost
+     stay put, or the command would drift the whole group each time. */
+  const spread = [
+    { x: 0, y: 0, w: 10, h: 10 },
+    { x: 20, y: 0, w: 30, h: 10 },
+    { x: 100, y: 0, w: 10, h: 10 }
+  ];
+  const dist = RP.edit.distributeOffsets(spread, 'x');
+  check('distribute leaves the outermost two alone',
+    dist[0].dx === 0 && dist[2].dx === 0, JSON.stringify(dist.map((o) => o.dx)));
+  const placed = spread.map((b, i) => ({ lo: b.x + dist[i].dx, hi: b.x + dist[i].dx + b.w }));
+  const gaps = [placed[1].lo - placed[0].hi, placed[2].lo - placed[1].hi];
+  check('distribute equalises the gaps', Math.abs(gaps[0] - gaps[1]) < 1e-9,
+    gaps.map((g) => g.toFixed(2)).join(' vs '));
+  check('distribute needs three markups',
+    RP.edit.distributeOffsets(spread.slice(0, 2), 'x').every((o) => !o.dx && !o.dy));
+  // Offsets come back in the caller's order, not sorted, so they zip straight
+  // onto the selection they were measured from.
+  const scrambled = [spread[2], spread[0], spread[1]];
+  const scrambledOut = RP.edit.distributeOffsets(scrambled, 'x');
+  check('distribute answers in the order it was asked',
+    scrambledOut[0].dx === 0 && scrambledOut[1].dx === 0,
+    JSON.stringify(scrambledOut.map((o) => o.dx)));
+
+  /* Match size keeps the *screen* top-left — x and y+h — so a column of boxes
+     grows down and right from where each already sits rather than jumping. */
+  const sized = RP.edit.sizeTargets(boxes);
+  check('match size takes the largest of each dimension',
+    sized.every((b) => b.w === 100 && b.h === 60), JSON.stringify(sized[0]));
+  check('match size keeps the top edge put',
+    sized.every((b, i) => Math.abs((b.y + b.h) - (boxes[i].y + boxes[i].h)) < 1e-9),
+    sized.map((b) => (b.y + b.h).toFixed(0)).join(','));
+  const widthOnly = RP.edit.sizeTargets(boxes, { height: false });
+  check('match width alone leaves the heights alone',
+    widthOnly.every((b, i) => b.w === 100 && b.h === boxes[i].h));
+
+  // --- the commands, against a real store -----------------------------------
+  const store = RP.createStore();
+  const saved = RP.store;
+  RP.store = store;
+
+  store.load([
+    { page: 0, type: 'rect', x: 10, y: 100, w: 40, h: 20, color: '#ff0000', width: 2 },
+    { page: 0, type: 'rect', x: 30, y: 200, w: 100, h: 60, color: '#00ff00', width: 5 },
+    { page: 1, type: 'rect', x: 0, y: 0, w: 10, h: 10, color: '#0000ff', width: 1 }
+  ]);
+  const [a, b, other] = store.annotations;
+
+  for (const id of [a.id, b.id]) store.selection.add(id);
+  let depth = store.history.length;
+  const moved = RP.edit.align('left');
+  check('align reports what it moved', moved === 1, moved + ' markup(s)');
+  check('align lines the selection up', a.x === 10 && b.x === 10, a.x + ',' + b.x);
+  check('aligning a selection is one undo step',
+    store.history.length === depth + 1, store.history.length - depth + ' checkpoints');
+  store.undo();
+  check('undo puts the whole selection back', b.x === 30 || store.annotations[1].x === 30,
+    String(store.annotations[1].x));
+
+  /* A run that changes nothing must not leave a dead step in the history —
+     Ctrl+Z after aligning an already-aligned selection would otherwise appear
+     to do nothing at all. */
+  store.selection.clear();
+  for (const id of store.annotations.map((x) => x.id).slice(0, 2)) store.selection.add(id);
+  RP.edit.align('left');
+  depth = store.history.length;
+  RP.edit.align('left');
+  check('an align that changes nothing leaves no history step',
+    store.history.length === depth, store.history.length - depth + ' checkpoints');
+
+  /* Arranging across sheets is refused rather than attempted: the coordinates
+     are per page, so it would "work" and silently move a markup on a sheet the
+     user cannot see. The markup list can select across pages. */
+  store.selection.clear();
+  store.selection.add(store.annotations[0].id);
+  store.selection.add(store.annotations[2].id);
+  const crossPage = store.annotations[2].x;
+  check('arranging across sheets is refused',
+    RP.edit.align('left') === 0 && store.annotations[2].x === crossPage);
+  check('the arrange menu is not offered across sheets',
+    RP.edit.menuItems(null).length === 0);
+
+  // Match style pushes appearance, never geometry or text.
+  store.selection.clear();
+  const src = store.annotations[0];
+  const dst = store.annotations[1];
+  const dstBefore = { x: dst.x, y: dst.y, w: dst.w, h: dst.h };
+  store.selection.add(src.id);
+  store.selection.add(dst.id);
+  RP.edit.matchStyle(src.id);
+  check('match style copies the source appearance',
+    dst.color === src.color && dst.width === src.width, dst.color + ' / ' + dst.width);
+  check('match style leaves geometry alone',
+    dst.x === dstBefore.x && dst.w === dstBefore.w && dst.h === dstBefore.h);
+  check('match style copies appearance only, never text or status',
+    RP.edit.STYLE_FIELDS.indexOf('color') !== -1 &&
+    RP.edit.STYLE_FIELDS.indexOf('text') === -1 &&
+    RP.edit.STYLE_FIELDS.indexOf('status') === -1);
+  /* Applicability is decided per type, not by asking whether the target already
+     carries the key. The shortcut fails in both directions: a `fontSize` handed
+     to a pen stroke is a field nothing reads that the exporter then writes into
+     the file for ever, and a callout that has never been given an explicit text
+     colour has no `textColor` at all — and is exactly the callout being
+     restyled. */
+  check('a typography field is refused on a type that cannot show it',
+    RP.edit.styleApplies('fontSize', 'callout') && !RP.edit.styleApplies('fontSize', 'pen') &&
+    RP.edit.styleApplies('textColor', 'callout') && !RP.edit.styleApplies('textColor', 'rect') &&
+    RP.edit.styleApplies('fill', 'rect') && !RP.edit.styleApplies('fill', 'line') &&
+    RP.edit.styleApplies('color', 'note'));
+  {
+    const bare = store.add({ page: 0, type: 'callout', x: 0, y: 0, w: 100, h: 40, tipX: 0, tipY: 0, text: 'x' });
+    const styled = store.add({
+      page: 0, type: 'callout', x: 200, y: 0, w: 100, h: 40, tipX: 200, tipY: 0,
+      text: 'y', textColor: '#0044cc', fontSize: 9
+    });
+    const pen = store.add({ page: 0, type: 'pen', points: [[0, 0], [1, 1]], color: '#000000' });
+    store.selection.clear();
+    for (const x of [styled, bare, pen]) store.selection.add(x.id);
+    RP.edit.matchStyle(styled.id);
+    check('match style reaches a field the target did not have',
+      bare.textColor === '#0044cc' && bare.fontSize === 9,
+      bare.textColor + ' / ' + bare.fontSize);
+    check('match style puts no dead field on a type that cannot use it',
+      pen.fontSize === undefined && pen.textColor === undefined,
+      JSON.stringify({ fontSize: pen.fontSize, textColor: pen.textColor }));
+    // A callout's box is sized from its text in its own face, so a new size has
+    // to re-fit it or the box stops matching what is drawn in it.
+    check('a restyled callout is re-fitted to its new face',
+      Math.abs(bare.h - RP.render.fitCallout(bare).h) < 1e-6,
+      bare.h + ' vs ' + RP.render.fitCallout(bare).h);
+    store.remove([bare.id, styled.id, pen.id]);
+  }
+  check('match size only offers types with a box the user drew',
+    RP.edit.SIZEABLE.indexOf('rect') !== -1 && RP.edit.SIZEABLE.indexOf('line') === -1 &&
+    RP.edit.SIZEABLE.indexOf('highlight') === -1);
+
+  // --- clipboard ------------------------------------------------------------
+  store.load([
+    { page: 0, type: 'text', x: 100, y: 200, text: 'RJ', fontSize: 12, status: 'closed' },
+    { page: 0, type: 'rect', x: 100, y: 150, w: 30, h: 10 }
+  ]);
+  store.selection.clear();
+  for (const annot of store.annotations) store.selection.add(annot.id);
+  /* Copying markups also writes their readings to the OS clipboard, which goes
+     through the preload bridge — stub it, and record what it was handed, so
+     both halves of the copy are actually checked rather than one of them
+     throwing into a `catch` and being reported as a success. */
+  const keptRp = global.window.rp;
+  const written = [];
+  global.window.rp = { clipboard: { writeText: async (text) => { written.push(text); } } };
+  RP.edit.copy();
+  global.window.rp = keptRp;
+  check('the buffer holds the selection', RP.edit.buffer.annots.length === 2);
+  /* Identity is stripped on the way *in*. A buffer holding live ids could be
+     pasted back into the drawing it came from and produce two markups claiming
+     one id, which the selection set and every `store.get` would disagree about. */
+  /* Copying markups fills the markup buffer *and* writes their readings to the
+     OS clipboard, because those are two different clipboards serving two
+     different pastes — back onto a drawing, and into an email or an RFI. It is
+     the reason the markup buffer is internal: share one clipboard and one of
+     the two uses has to lose. */
+  check('copying markups also writes their readings out as text',
+    written.length === 1 && /RJ/.test(written[0]),
+    JSON.stringify(written[0] || null));
+  check('the buffer carries no identity',
+    RP.edit.buffer.annots.every((x) => !x.id && !x.created && !x.modified),
+    JSON.stringify(Object.keys(RP.edit.buffer.annots[0])));
+
+  const countBefore = store.annotations.length;
+  depth = store.history.length;
+  const pasted = RP.edit.paste(1, [400, 500]);
+  check('paste lands the whole buffer', pasted === 2 && store.annotations.length === countBefore + 2);
+  check('pasting is one undo step',
+    store.history.length === depth + 1, store.history.length - depth + ' checkpoints');
+  const fresh = store.forPage(1);
+  check('paste goes onto the page it was given', fresh.length === 2);
+  /* Centred on the point, and the relative layout of the set is preserved —
+     that is what makes a copied group of markups a stamp rather than a pile. */
+  const union = RP.geom.unionRect(fresh.map((x) => RP.edit.boxOf(x)));
+  check('paste centres the group on the point',
+    Math.abs((union.x + union.w / 2) - 400) < 1e-6 &&
+    Math.abs((union.y + union.h / 2) - 500) < 1e-6,
+    (union.x + union.w / 2).toFixed(2) + ',' + (union.y + union.h / 2).toFixed(2));
+  const srcUnion = RP.geom.unionRect(store.forPage(0).map((x) => RP.edit.boxOf(x)));
+  check('paste keeps the group its original size',
+    Math.abs(union.w - srcUnion.w) < 1e-6 && Math.abs(union.h - srcUnion.h) < 1e-6);
+  check('a pasted markup is a new item on the punch list',
+    fresh.every((x) => x.status === 'open'), fresh.map((x) => x.status).join(','));
+  check('the paste becomes the selection',
+    store.selection.size === 2 && fresh.every((x) => store.selection.has(x.id)));
+  // The same buffer pastes again, which is the whole point of stamping.
+  check('the buffer survives a paste', RP.edit.hasBuffer() && RP.edit.paste(1, [50, 60]) === 2);
+
+  /* With nowhere to point at — the pointer off the sheet, or a paste from the
+     keyboard with the mouse in the sidebar — the copy is nudged off the
+     original rather than landing exactly on top of it, where it would be
+     invisible and impossible to pick up. */
+  const nudged = RP.edit.pasteOffset([{ x: 10, y: 10, w: 5, h: 5 }], null);
+  check('a paste with no target is nudged, not stacked',
+    nudged.dx === RP.edit.PASTE_NUDGE && nudged.dy === -RP.edit.PASTE_NUDGE);
+
+  RP.store = saved;
+}
+
 function testMarkupStatus() {
   console.log('\nMarkup status');
 
@@ -1255,6 +1499,45 @@ function testCalloutText() {
   check('callout text takes its own colour, not the box colour',
     drawn.some((d) => d.kind === 'text' && d.fill === '#0044cc'),
     JSON.stringify(drawn.filter((d) => d.kind === 'text').map((d) => d.fill)));
+
+  /* Where the text tool's click point ends up.
+     `annot.y` is the *top* of the first line — that is what `drawAnnotation`
+     draws down from and what `bbox` measures back up — so using the click point
+     as-is hangs the whole run below the pointer. The I-beam is the cursor that
+     makes that read as a bug: its hotspot is the middle of the bar, so you aim
+     the middle at the line you are annotating and the text lands half a bar
+     low. y is up in PDF space, so the correction is *upward* — a sign error
+     here doubles the original complaint instead of fixing it. */
+  const savedStyle = RP.tools.style.fontSize;
+  RP.tools.style.fontSize = 14;
+  const anchor = RP.tools.textAnchorFor([120, 600]);
+  check('the text anchor is lifted half a line above the click',
+    anchor[1] === 607, 'clicked 600 -> anchored ' + anchor[1]);
+  check('the text anchor does not move sideways', anchor[0] === 120);
+  const centred = { type: 'text', x: anchor[0], y: anchor[1], fontSize: 14, text: 'RJ' };
+  const runBox = RP.render.bbox(centred);
+  check('the first line straddles the point that was clicked',
+    runBox.y < 600 && runBox.y + runBox.h > 600,
+    'run spans ' + runBox.y.toFixed(1) + '..' + (runBox.y + runBox.h).toFixed(1) + ' around 600');
+  RP.tools.style.fontSize = savedStyle;
+
+  /* The inline editor has to compensate for its own chrome, measured rather
+     than hard-coded: the border, the padding and the half-leading that
+     `line-height` puts above every line all sit between the editor's border box
+     and its first glyph, and none of them exists on the canvas. A copy of those
+     numbers in JS would be one more pair to keep in step with app.css by hand. */
+  const toolsSrc = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  const place = toolsSrc.slice(toolsSrc.indexOf('placeInlineText()'), toolsSrc.indexOf('closeInlineText(discard)'));
+  check('the inline editor measures its own inset instead of assuming one',
+    /getComputedStyle\(editor\)/.test(place) && /borderTopWidth/.test(place) &&
+    /paddingTop/.test(place) && /lineHeight/.test(place));
+  check('the inline editor subtracts the half-leading above the first line',
+    /halfLeading/.test(place) && /top\s*=\s*\(box\.top \+ textTop - insetY - halfLeading\)/.test(place));
+  // The callout editor must wrap where the canvas wraps, and CALLOUT_PAD scales
+  // with the zoom — a fixed inset agrees at 100% and nowhere else.
+  check('the callout editor wraps to the scaled pad, not the raw box',
+    /RP\.render\.CALLOUT_PAD \* \(record\.viewport\.scale/.test(place) &&
+    /rect\.w - pad \* 2/.test(place));
 }
 
 /**
@@ -1686,6 +1969,30 @@ function testViewModes() {
     viewer.goToPage(4);
     check('a jump to the right-hand sheet reports the spread it is in',
       viewer.currentPage === 3, 'page ' + (viewer.currentPage + 1));
+
+    /* The arrow keys read down a sheet and turn over at the edge of the paper.
+       `nudgeScroll` returning false is what makes the second half of that work,
+       so Down is not a dead key in single-page mode once the scroll runs out.
+       The column here is 900 tall in an 800 pane, so there are 100px to give. */
+    scroller.scrollLeft = 0;
+    scroller.scrollWidth = 1000;   // fits the pane: nothing to scroll sideways
+    scroller.scrollTop = 0;
+    check('a nudge with room to move reports that it moved',
+      viewer.nudgeScroll(0, 80) === true && scroller.scrollTop === 80,
+      'scrollTop ' + scroller.scrollTop);
+    check('a nudge clamps at the bottom rather than overshooting',
+      viewer.nudgeScroll(0, 80) === true && scroller.scrollTop === 100,
+      'scrollTop ' + scroller.scrollTop);
+    check('a nudge at the bottom reports that it could not move',
+      viewer.nudgeScroll(0, 80) === false);
+    check('a nudge sideways on a sheet that fits cannot move',
+      viewer.nudgeScroll(80, 0) === false);
+    /* Sub-pixel movement is not movement: `scrollTop` is fractional at
+       fractional zooms, and reading a rounding difference as a move would stop
+       the key turning the sheet at the very bottom of the column. */
+    scroller.scrollTop = 99.7;
+    check('a sub-pixel remainder does not count as movement',
+      viewer.nudgeScroll(0, 80) === false, 'scrollTop ' + scroller.scrollTop);
   }
 
   /* Continuous facing: the pages of a spread share a top, and the scroll
@@ -2238,7 +2545,8 @@ function testChrome() {
   check('every script tag points at a file that exists', missing.length === 0,
     missing.length ? missing.join(', ') : scripts.length + ' modules');
   for (const [module, before] of [['js/clip.js', 'js/tools.js'], ['js/menu.js', 'js/pages.js'],
-    ['js/props.js', 'js/tools.js'], ['js/keys.js', 'js/app.js']]) {
+    ['js/props.js', 'js/tools.js'], ['js/keys.js', 'js/app.js'],
+    ['js/render.js', 'js/edit.js'], ['js/edit.js', 'js/app.js']]) {
     check(module + ' is loaded before ' + before,
       html.indexOf(module) > 0 && html.indexOf(module) < html.indexOf(before));
   }
@@ -2260,7 +2568,40 @@ function testChrome() {
     /ipcMain\.handle\(\s*'clipboard:write-text'/.test(main) &&
     /call\(\s*'clipboard:write-text'/.test(preload) &&
     /window\.rp\.clipboard\.writeText/.test(clip));
-  check('Ctrl+C is bound', /key === 'c'[\s\S]{0,120}RP\.clip\.copySelection\(\)/.test(app));
+  // Ctrl+C serves two clipboards. Markups have to be tried first: a marquee
+  // drag under the select tool can leave a stray text selection behind it, and
+  // copying that instead of the markups the user is holding is the wrong guess.
+  check('Ctrl+C is bound', /key === 'c'[\s\S]{0,320}RP\.clip\.copySelection\(\)/.test(app));
+  check('Ctrl+C prefers markups over text',
+    /key === 'c'[\s\S]{0,200}RP\.edit\.copy\(\)/.test(app) &&
+    app.indexOf('RP.edit.copy()') < app.indexOf('RP.clip.copySelection()'));
+  check('Ctrl+X and Ctrl+V are bound',
+    /key === 'x'[\s\S]{0,160}RP\.edit\.cut\(\)/.test(app) &&
+    /key === 'v'[\s\S]{0,600}RP\.edit\.paste\(/.test(app));
+  // A paste aims at the pointer, which is the whole reason the case exists —
+  // stamping the same markup in several places without a drag after each one.
+  check('Ctrl+V pastes at the pointer', /RP\.tools\.pasteTarget\(\)/.test(app));
+
+  // --- arrow keys -----------------------------------------------------------
+  // Left and Right turn the sheet; Up and Down read down it and turn over only
+  // at the edge of the paper, or a Down on an E-size sheet would skip most of
+  // what is on it.
+  check('the arrow keys are bound',
+    /'ArrowRight'[\s\S]{0,120}stepRow\(1/.test(app) &&
+    /'ArrowLeft'[\s\S]{0,120}stepRow\(-1/.test(app) &&
+    /'ArrowDown'[\s\S]{0,400}nudgeScroll/.test(app));
+  check('Up and Down turn the sheet only when the scroll runs out',
+    /if \(!RP\.viewer\.nudgeScroll\(0, dir \* ARROW_SCROLL_PX\)\) RP\.viewer\.stepRow\(dir/.test(app));
+  /* Navigation is refused while anything is over the drawing. A dialog is modal
+     to the user whether or not it is modal to the document, and paging the
+     sheet set behind an open panel is movement they cannot see. Queried by
+     class rather than by module so a new dialog is covered automatically. */
+  check('navigation keys are blocked behind a dialog',
+    /navigationBlocked\(\)/.test(app) &&
+    /modal-backdrop:not\(\[hidden\]\)/.test(app) &&
+    /RP\.menu\.isOpen\(\)/.test(app));
+  check('the navigation guard wraps the page keys too',
+    app.indexOf('if (!this.navigationBlocked())') < app.indexOf("event.key === 'PageDown'"));
   check('the text layer is reachable under the select tool',
     /body\[data-tool="select"\]\s+\.page\s+\.ink-layer\s*\{[^}]*pointer-events:\s*none/.test(css));
   // Without this the browser paints a text selection behind every marquee.
@@ -3473,6 +3814,7 @@ async function pageLabel(bytes, index) {
     testGeometry();
     testTakeoff();
     testMarkupStatus();
+    testArrange();
     testHighlightGeometry();
     testTextSelection();
     testToolArming();

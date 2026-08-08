@@ -417,8 +417,10 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 | `Ctrl+T` | Open another drawing | | `Ctrl+G` | Go to page |
 | `Ctrl+W` | Close this drawing | | `Home` / `End` | First / last page |
 | `Ctrl+Shift+T` | Reopen the tab you closed | | `Page Up` / `Page Down` | Previous / next sheet or spread |
-| `Ctrl+\\` | Split / rejoin the view | | `F11` | Presentation mode |
-| | | | `Ctrl+C` | Copy selected text |
+| `Ctrl+\\` | Split / rejoin the view | | `←` / `→` | Previous / next sheet |
+| | | | `↑` / `↓` | Up / down the sheet, turning over at the edge |
+| | | | `F11` | Presentation mode |
+| | | | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste markups |
 | | | | `Ctrl+Shift+N` | Night mode |
 | `Ctrl+Tab` | Next tab | | `?` | Show every shortcut |
 | `Alt+1`…`Alt+9` | Jump to a tab | | `Ctrl+Shift+D` | Diagnostics |
@@ -426,14 +428,38 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 Press **`?`** at any time for the full list, grouped by what you are trying to do.
 
 **Right-click anywhere on a drawing** for copy text, copy an area or the page as
-an image, markup properties, delete, "add note here" and print. Right-click a
-page thumbnail for the page operations.
+an image, markup properties, copy/cut/paste markups, delete, "add note here" and
+print. Right-click a page thumbnail for the page operations.
+
+**Copy and paste markups.** `Ctrl+C` copies whatever markups are selected,
+`Ctrl+X` cuts them, and `Ctrl+V` drops them **under the pointer** — so stamping
+your initials, a *verify on site* or the same revision cloud in six places is
+copy once, then point and paste. It works across sheets and across open
+drawings; the pasted markups arrive selected, so nudging them into place is one
+drag; and the copy stays on the clipboard, so the next stamp needs no re-copy.
+Pasting into anything outside Redline PDF still gives you the markups' readings
+as text, one per line, for an email or an RFI.
+
+**Arrange several markups.** Select two or more on a sheet and right-click:
+
+| | |
+|---|---|
+| Align left / right / top / bottom | to the outer edge of what you selected |
+| Centre horizontally / vertically | on the middle of what you selected |
+| Distribute horizontally / vertically | three or more, with the gaps equalised and the outer two left alone |
+| Match size | boxes, ovals, clouds, covers and callouts take the largest one's dimensions |
+| Match style | colour, line weight, opacity and typography from the markup you right-clicked |
+
+A callout lines up and resizes by its box; its arrow stays pinned to what it
+points at. Each command is a single `Ctrl+Z`. The same rows are on the
+right-click menu of the markup list, and they only appear when the selection is
+on one sheet — arranging across sheets would move markups you cannot see.
 
 **Selecting and copying text.** The Select tool now yields to the drawing's own
 text: press on actual words and you get a normal text selection, press anywhere
-else and you get the usual marquee. `Ctrl+C` copies the selection — or, if
-nothing is selected but markups are, copies those as text, one per line, ready
-to paste into an email or an RFI.
+else and you get the usual marquee. `Ctrl+C` copies the text selection when no
+markup is selected; with markups selected it copies those instead — into the
+drawing, and as text for everywhere else.
 
 **Night mode** (`Ctrl+Shift+N`, or the half-moon button) inverts the drawing so a
 white E-size sheet is not a floodlight at 11pm. Your markups are drawn on a
@@ -452,7 +478,9 @@ its own, so sheet 2 backs sheet 1), or spreads in a scrolling column. In the
 one-at-a-time layouts the wheel turns the sheet once there is nothing left to
 scroll, and `Page Up` / `Page Down` move by a spread rather than by a sheet when
 two are facing. Each tab keeps its own layout, so a split view can show one
-drawing continuously and the other a spread at a time.
+drawing continuously and the other a spread at a time. The arrow keys work in
+every layout: `←` and `→` turn the sheet, `↑` and `↓` read up and down it and
+turn over once they reach the edge of the paper.
 
 **Presentation mode** (`F11`, or the last row of the layout menu) goes
 fullscreen with one sheet fitted to the screen and every toolbar, panel and the

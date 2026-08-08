@@ -12,6 +12,63 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.11.0] — 2026-08-07
+
+### Added
+
+- **Copy and paste markups.** `Ctrl+C` copies the selection, `Ctrl+X` cuts it,
+  and `Ctrl+V` drops it **under the pointer** — so stamping your initials, a
+  *verify on site*, or the same revision cloud in six places is copy once, then
+  point and paste. It works across sheets and across open drawings, the pasted
+  markups arrive selected so a nudge is one drag, and the buffer survives a
+  paste so the next stamp needs no re-copy. `Copy`, `Cut` and `Paste here` are
+  also on the right-click menu, on the drawing and on a markup-list row.
+
+  `Ctrl+C` still copies selected *text* when no markup is selected, so the
+  existing habit is unchanged.
+
+- **Arrange a selection.** Right-click two or more markups on a sheet:
+
+  - **Align** left, right, top, bottom, or centred on either axis — to the
+    outer edge of the selection, so nothing depends on which markup you picked
+    first.
+  - **Distribute** three or more evenly, horizontally or vertically. The gaps
+    are equalised rather than the centres, which is what "evenly" looks like
+    when the markups are different sizes, and the outermost two stay put.
+  - **Match size** — every box, oval, cloud, cover or callout takes the largest
+    one's dimensions, growing from its own top-left rather than jumping.
+  - **Match style** — colour, line weight, opacity and typography from the
+    markup you right-clicked onto the rest of the selection. Geometry, text and
+    review status are left alone.
+
+  A callout is aligned and sized by its *box*; its arrow stays pinned to what
+  it points at. Each command is a single `Ctrl+Z`, and one that would change
+  nothing says so instead of leaving a dead undo step behind.
+
+- **The arrow keys move around the drawing.** `←` and `→` turn to the previous
+  and next sheet — or spread, when two are facing. `↑` and `↓` read up and down
+  the sheet and turn over when they reach the edge of the paper, so a sheet
+  taller than the window is not skipped past.
+
+### Fixed
+
+- **Typewriter text now starts where the cursor said it would.** The I-beam's
+  hotspot is the middle of the bar, but the click was being read as the *top* of
+  the first line, so text landed about half a character below where you aimed —
+  and the on-screen editor added a few more pixels of its own border and padding
+  on top, then snapped when you pressed `Enter`. The first line now straddles
+  the point you clicked, and what you type sits exactly where it commits.
+
+- **A callout wraps in the editor where it wraps on the sheet.** The inline
+  editor was wrapping to a fixed inset while the drawing used one that scales
+  with the zoom: the two agreed at 100% and diverged from there, so at high zoom
+  the last word of each line escaped below the box while you typed.
+
+- **Page and arrow keys no longer reach the drawing through an open dialog.**
+  Settings, Print, the diagnostics panel, the markup properties dialog and the
+  popup menu all now hold the navigation keys, instead of the sheet set moving
+  behind them.
+
 ## [0.10.0] — 2026-08-05
 
 ### Added

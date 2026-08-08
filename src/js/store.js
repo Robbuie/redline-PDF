@@ -225,9 +225,14 @@
 
     typeLabel(type) { return TYPE_LABELS[type] || type; },
 
-    add(annot, opts) {
-      if (!(opts && opts.noCheckpoint)) this.checkpoint();
-      const record = Object.assign({
+    /**
+     * The fields every markup gets whether or not the caller set them. Shared
+     * by `add` and `addMany` rather than written out twice: a default added to
+     * one and not the other is a field that exists on markups made by one route
+     * and not the other, which nothing downstream would think to check for.
+     */
+    newRecord(annot) {
+      return Object.assign({
         id: RP.uid('mk'),
         created: Date.now(),
         modified: Date.now(),
@@ -235,10 +240,37 @@
         note: '',
         status: 'open'
       }, annot);
+    },
+
+    add(annot, opts) {
+      if (!(opts && opts.noCheckpoint)) this.checkpoint();
+      const record = this.newRecord(annot);
       this.annotations.push(record);
       this.markDirty();
       this.emit('annots:changed', { reason: 'add', annot: record });
       return record;
+    },
+
+    /**
+     * Insert several markups as one undo step and one repaint.
+     *
+     * `add` in a loop would checkpoint per item and emit `annots:changed` per
+     * item — so `Ctrl+Z` after a paste would take the markups back one at a
+     * time, and `redrawAll` plus the markup list would run once per markup.
+     * Same reasoning as `setStatus`: the user made one gesture.
+     */
+    addMany(list) {
+      const items = (list || []).filter(Boolean);
+      if (!items.length) return [];
+      this.checkpoint();
+      const made = items.map((annot) => {
+        const record = this.newRecord(annot);
+        this.annotations.push(record);
+        return record;
+      });
+      this.markDirty();
+      this.emit('annots:changed', { reason: 'add-many', count: made.length });
+      return made;
     },
 
     /** Bulk insert without a checkpoint per item (used when loading a file). */

@@ -247,8 +247,9 @@ Still open, and worth doing next:
 
 - Compare a tab against **another open tab** instead of only against a file on
   disk. The engine already takes two `PDFDocumentProxy`s; this is a picker.
-- Copy/paste markups across tabs, and merging pages from an open tab, both of
-  which the shared heap now makes cheap.
+- ~~Copy/paste markups across tabs~~ — **done** (0.11.0), as `RP.edit` and an
+  in-app buffer; it works across tabs for exactly the shared-heap reason given
+  above. Merging pages from an open tab is still open and still cheap.
 - Reopen the tabs you had open on the last run.
 
 ---

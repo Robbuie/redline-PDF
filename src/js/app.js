@@ -3,6 +3,11 @@
 
 (function (RP) {
 
+  /* How far one press of Up or Down moves the pane, in CSS pixels. A wheel
+     notch rather than a screenful — PageUp/PageDown already own the screenful,
+     and on a drawing the arrows are for easing a title block into view. */
+  const ARROW_SCROLL_PX = 80;
+
   const App = {
     settings: null,
     autosaveTimer: null,
@@ -804,6 +809,24 @@
       RP.$('#stScale').addEventListener('click', () => RP.tools.recalibrate());
     },
 
+    /**
+     * Is something in front of the drawing that the navigation keys must not
+     * reach through?
+     *
+     * Every dialog in this app is a `.modal-backdrop` — the standing ones
+     * (Settings, Print, diagnostics) toggled with `hidden`, the built ones (the
+     * properties dialog, the cheat sheet, the prompts) added and removed — so
+     * one query covers all of them. The compare overlay and the popup menu are
+     * not modals but are over the drawing all the same. A new dialog is covered
+     * by this automatically, which is the reason for querying the class rather
+     * than listing the modules.
+     */
+    navigationBlocked() {
+      if (RP.menu.isOpen()) return true;
+      if (RP.compare.active) return true;
+      return !!document.querySelector('.modal-backdrop:not([hidden])');
+    },
+
     deleteSelection() {
       const ids = Array.from(RP.store.selection);
       if (!ids.length) { RP.status('Nothing selected', 'warn'); return; }
@@ -1146,10 +1169,33 @@
           if (key === 'z' && !event.shiftKey) { event.preventDefault(); RP.store.undo(); return; }
           if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); RP.store.redo(); return; }
           if (key === 'f') { event.preventDefault(); RP.sidebar.show('search'); return; }
-          // Copy is only ours when the press did not start in a field, where
-          // the browser's own copy is the right one.
+          /* Copy is only ours when the press did not start in a field, where
+             the browser's own copy is the right one.
+
+             Markups outrank text: if some are selected, that is what the user
+             is holding, and a text selection underneath them is usually left
+             over from a marquee drag that also swept a few glyphs. Nothing is
+             lost by going this way round — `RP.edit.copy` writes the markups'
+             readings to the OS clipboard as well as filling the markup buffer,
+             so a paste into an email still produces what it used to. */
           if (key === 'c' && !typing) {
+            if (RP.store.selection.size) { event.preventDefault(); RP.edit.copy(); return; }
             if (RP.clip.copySelection()) event.preventDefault();
+            return;
+          }
+          if (key === 'x' && !typing && RP.store.selection.size) {
+            event.preventDefault();
+            RP.edit.cut();
+            return;
+          }
+          if (key === 'v' && !typing && RP.edit.hasBuffer()) {
+            event.preventDefault();
+            // Under the pointer when it is over a sheet — the case this exists
+            // for is stamping the same markup in several places, and a paste
+            // that landed back at its original coordinates would need a drag
+            // after every one of them.
+            const at = RP.tools.pasteTarget();
+            RP.edit.paste(at ? at.page : null, at ? at.pdf : null);
             return;
           }
           if (key === 'g') { event.preventDefault(); this.focusPageInput(); return; }
@@ -1212,15 +1258,38 @@
           this.deleteSelection();
           return;
         }
-        // By row, not by page: in a facing spread the page next door is
-        // already in front of you, so stepping by index would not move.
-        if (event.key === 'PageDown') { event.preventDefault(); RP.viewer.stepRow(1, {}); return; }
-        if (event.key === 'PageUp') { event.preventDefault(); RP.viewer.stepRow(-1, {}); return; }
-        if (event.key === 'Home') { event.preventDefault(); RP.viewer.goToPage(0); return; }
-        if (event.key === 'End') {
-          event.preventDefault();
-          RP.viewer.goToPage(RP.viewer.pages.length - 1);
-          return;
+        /* Navigation keys are refused while anything is over the drawing. A
+           dialog is modal to the user whether or not it is modal to the
+           document, and paging the sheet set behind an open Settings panel or
+           an open popup menu is movement they did not ask for and cannot see. */
+        if (!this.navigationBlocked()) {
+          // By row, not by page: in a facing spread the page next door is
+          // already in front of you, so stepping by index would not move.
+          if (event.key === 'PageDown') { event.preventDefault(); RP.viewer.stepRow(1, {}); return; }
+          if (event.key === 'PageUp') { event.preventDefault(); RP.viewer.stepRow(-1, {}); return; }
+          if (event.key === 'Home') { event.preventDefault(); RP.viewer.goToPage(0); return; }
+          if (event.key === 'End') {
+            event.preventDefault();
+            RP.viewer.goToPage(RP.viewer.pages.length - 1);
+            return;
+          }
+          /* Left and Right turn the sheet; Up and Down read down it and turn
+             only at the edge of the paper.
+
+             The split is the reading convention every PDF viewer uses, and it
+             is the one that survives an E-size drawing: a sheet at anything
+             past fit-page is taller than the pane, so a Down that jumped to
+             the next sheet would skip most of what is on this one. Turning at
+             the edge is what stops Down being a dead key in single-page mode,
+             where the column holds one row and scrolling runs out. */
+          if (event.key === 'ArrowRight') { event.preventDefault(); RP.viewer.stepRow(1, {}); return; }
+          if (event.key === 'ArrowLeft') { event.preventDefault(); RP.viewer.stepRow(-1, {}); return; }
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            const dir = event.key === 'ArrowDown' ? 1 : -1;
+            if (!RP.viewer.nudgeScroll(0, dir * ARROW_SCROLL_PX)) RP.viewer.stepRow(dir, {});
+            return;
+          }
         }
         if (event.key === 'F3') { event.preventDefault(); event.shiftKey ? RP.search.prev() : RP.search.next(); return; }
         // `?` is Shift+/ on most layouts, so match the character, not the code.

@@ -30,6 +30,8 @@
         ['Ctrl+G', 'Go to page'],
         ['Home / End', 'First / last page'],
         ['Page Up / Down', 'Previous / next sheet — or spread, when two are facing'],
+        ['← / →', 'Previous / next sheet'],
+        ['↑ / ↓', 'Up / down the sheet — turns over at the edge of the paper'],
         ['Ctrl+Tab', 'Next tab'],
         ['Alt+1…9', 'Jump to a tab'],
         ['Ctrl+\\', 'Split the view in two'],
@@ -79,7 +81,10 @@
     {
       title: 'Markups',
       keys: [
-        ['Ctrl+C', 'Copy selected text, or the selected markups'],
+        ['Ctrl+C', 'Copy the selected markups — or the selected text'],
+        ['Ctrl+X', 'Cut the selected markups'],
+        ['Ctrl+V', 'Paste under the pointer — any sheet, any open drawing'],
+        ['Right-click 2+', 'Align, distribute, match size or style'],
         ['Right-click text', 'Highlight, strike out, underline, cloud, copy…'],
         ['Ctrl+A', 'Select every markup on this page'],
         ['Ctrl+Z', 'Undo'],
