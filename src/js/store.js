@@ -83,6 +83,7 @@
     savedTo: null,      // last path we wrote
     saveModeDecided: null, // 'copy' | 'overwrite' once the user answered "ask"
     scale: null,        // {pdfLength, realLength, unit} measure calibration
+    numbering: null,    // page-number / Bates spec, or null for none
     history: [],
     future: [],
     author: '',
@@ -121,6 +122,7 @@
       this.savedTo = null;
       this.saveModeDecided = null;
       this.scale = null;
+      this.numbering = null;
       this.history = [];
       this.future = [];
       this.emit('doc:reset');
@@ -149,6 +151,7 @@
       this.savedTo = null;
       this.saveModeDecided = null;
       this.scale = null;
+      this.numbering = null;
       this.emit('doc:loaded', this);
     },
 
@@ -160,7 +163,8 @@
       return JSON.stringify({
         annotations: this.annotations,
         scale: this.scale,
-        pageOrder: this.pageOrder
+        pageOrder: this.pageOrder,
+        numbering: this.numbering
       });
     },
 
@@ -176,6 +180,7 @@
       const orderBefore = JSON.stringify(this.pageOrder);
       this.annotations = parsed.annotations || [];
       this.scale = parsed.scale || null;
+      this.numbering = parsed.numbering || null;
       if (parsed.pageOrder !== undefined) this.pageOrder = parsed.pageOrder;
       const alive = new Set(this.annotations.map((a) => a.id));
       for (const id of Array.from(this.selection)) if (!alive.has(id)) this.selection.delete(id);
@@ -396,6 +401,27 @@
       this.emit('scale:changed', scale);
     },
 
+    // -- page numbering ----------------------------------------------------
+
+    /**
+     * Set or clear the page-number / Bates spec, as one undo step.
+     *
+     * `annots:changed` rather than an event of its own: the number is drawn on
+     * the markup canvas and stamped by the exporter, so the two things that
+     * have to hear about it are exactly the two things that listen to that
+     * already. A separate event would mean a second listener in the viewer for
+     * the same repaint.
+     */
+    setNumbering(spec) {
+      const next = spec || null;
+      if (JSON.stringify(this.numbering || null) === JSON.stringify(next)) return false;
+      this.checkpoint();
+      this.numbering = next;
+      this.markDirty();
+      this.emit('annots:changed', { reason: 'numbering' });
+      return true;
+    },
+
     /** Convert a length in PDF points to the calibrated real-world string. */
     formatLength(points) {
       if (!this.scale || !this.scale.pdfLength) {
@@ -433,19 +459,26 @@
     /**
      * Everything we persist inside the PDF so markups stay editable.
      *
-     * Version 3 added `status`. The bump is a marker rather than a gate:
-     * nothing reads it to decide how to parse, because `load` normalises a
-     * missing status anyway. An older build reading one of these files keeps
-     * the field — it copies whole annotation objects both in and out — so a
-     * 0.5 round-trip preserves the statuses it cannot show, and only walks the
-     * version number back to 2.
+     * Version 3 added `status`; version 4 added `numbering`. The bump is a
+     * marker rather than a gate: nothing reads it to decide how to parse,
+     * because `load` normalises a missing status anyway. An older build reading
+     * one of these files keeps the field — it copies whole annotation objects
+     * both in and out — so a 0.5 round-trip preserves the statuses it cannot
+     * show, and only walks the version number back to 2.
+     *
+     * `numbering` is a document-level field rather than a per-annotation one,
+     * so an older build round-trips it as *nothing*: it reads the model, never
+     * looks at the key, and writes its own model back without it. That is the
+     * honest outcome — the numbers stay stamped in the page content either way,
+     * and only the ability to re-edit them is lost.
      */
     serialize() {
       return {
-        version: 3,
+        version: 4,
         app: 'redline-pdf',
         savedAt: Date.now(),
         scale: this.scale,
+        numbering: this.numbering,
         annotations: this.annotations.map((a) => {
           const copy = Object.assign({}, a);
           delete copy.id;

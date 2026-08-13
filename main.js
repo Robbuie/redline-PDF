@@ -895,6 +895,19 @@ ipcMain.handle('dialog:save-as', async (event, opts) => {
   } catch (err) { return fail(err); }
 });
 
+/** A destination folder. Splitting a drawing writes several files into one. */
+ipcMain.handle('dialog:choose-folder', async (event, opts) => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: (opts && opts.title) || 'Choose a folder',
+      defaultPath: (opts && opts.defaultPath) || undefined,
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || !result.filePaths.length) return ok(null);
+    return ok(result.filePaths[0]);
+  } catch (err) { return fail(err); }
+});
+
 /**
  * Write bytes to disk. When `backup` is set and the target already exists, an
  * untouched copy is preserved once as <name>.bak.pdf before the first overwrite.
@@ -1020,10 +1033,18 @@ ipcMain.handle('dialog:message', async (event, opts) => {
 ipcMain.handle('recovery:write', async (event, payload) => {
   try {
     const file = path.join(recoveryDir(), recoveryKey(payload.docPath));
+    /* The page order rides along with the markups because a drawing whose only
+       unsaved change is a reordered or merged page set is still unsaved work.
+       It is written only when the renderer says it can be rebuilt from the file
+       alone — see `RP.pages.recoverableOrder`; the bytes of a merged-in source
+       are deliberately never persisted here. */
     await fsp.writeFile(file, JSON.stringify({
       docPath: payload.docPath,
       savedAt: Date.now(),
-      annotations: payload.annotations
+      annotations: payload.annotations || [],
+      pageOrder: payload.pageOrder || null,
+      scale: payload.scale || null,
+      numbering: payload.numbering || null
     }), 'utf8');
     return ok(true);
   } catch (err) { return fail(err); }

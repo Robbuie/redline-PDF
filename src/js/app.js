@@ -275,6 +275,10 @@
       if (embedded) {
         store.load(embedded.annotations);
         store.scale = embedded.scale || null;
+        // Absent in a file written before 0.12, and absent from one written by
+        // an older build that read this one — either way the numbers are still
+        // stamped into the pages, only no longer re-editable here.
+        store.numbering = embedded.numbering || null;
         store.markDirty(false);
         RP.toast(embedded.annotations.length + ' saved markups restored and editable', 'good');
       }
@@ -283,19 +287,47 @@
       if (file.path && this.settings.autosave) {
         try {
           const recovered = await window.rp.recovery.read(file.path);
-          if (recovered && recovered.annotations && recovered.annotations.length) {
+          const marks = (recovered && recovered.annotations) || [];
+          const order = (recovered && recovered.pageOrder) || null;
+          if (marks.length || order) {
+            // What was lost is described in the terms it was lost in: a session
+            // whose unsaved work was a reordered page set and no markups used
+            // to be offered as "0 markups", which reads as nothing to restore.
+            const lost = [
+              marks.length ? marks.length + (marks.length === 1 ? ' markup' : ' markups') : '',
+              order ? 'a ' + order.length + '-page arrangement' : ''
+            ].filter(Boolean).join(' and ');
             const answer = await window.rp.dialog.message({
               type: 'question',
-              message: 'Unsaved markups found',
-              detail: 'Redline PDF has ' + recovered.annotations.length + ' markups for this drawing from ' +
-                RP.fmtDate(recovered.savedAt) + ' that were never saved. Restore them?',
+              message: 'Unsaved work found',
+              detail: 'Redline PDF has ' + lost + ' for this drawing from ' +
+                RP.fmtDate(recovered.savedAt) + ' that was never saved. Restore it?',
               buttons: ['Restore', 'Discard'],
               defaultId: 0,
               cancelId: 1
             });
             if (answer.response === 0) {
-              store.load(recovered.annotations);
+              store.load(marks);
+              if (recovered.scale) store.scale = recovered.scale;
+              if (recovered.numbering) store.numbering = recovered.numbering;
               store.markDirty(true);
+              /* The pages are rebuilt last, because the rebuild reads the
+                 focused store and viewer through the globals. The dialog above
+                 is native and modal to the window, so a switch under it is not
+                 really reachable — but a rebuild that ran against another
+                 drawing would silently replace *its* pages, which is bad enough
+                 to be worth the one comparison. */
+              if (order && RP.store === store) {
+                try {
+                  store.pageOrder = order;
+                  await RP.pages.ensureBase();
+                  await RP.pages.rebuild();
+                } catch (err) {
+                  store.pageOrder = null;
+                  console.warn('The recovered page arrangement could not be rebuilt', err);
+                  RP.toast('The markups were restored, but the page arrangement could not be', 'warn');
+                }
+              }
             } else {
               await window.rp.recovery.clear(file.path);
             }
@@ -608,8 +640,19 @@
       this.autosaveTimer = setInterval(async () => {
         for (const tab of RP.tabs.all()) {
           const store = tab.store;
-          if (!store.dirty || !store.docPath || !store.annotations.length) continue;
-          try { await window.rp.recovery.write(store.docPath, store.annotations); } catch (err) { /* ignore */ }
+          if (!store.dirty || !store.docPath) continue;
+          /* Not `annotations.length` on its own any more: a drawing whose
+             unsaved work is a reordered, merged or renumbered page set had no
+             markups to trip that test, and lost the lot on a crash. */
+          const pageOrder = RP.pages.recoverableOrder(store);
+          if (!store.annotations.length && !pageOrder && !store.numbering) continue;
+          try {
+            await window.rp.recovery.write(store.docPath, store.annotations, {
+              pageOrder,
+              scale: store.scale,
+              numbering: store.numbering
+            });
+          } catch (err) { /* ignore */ }
         }
       }, Math.max(15000, this.settings.autosaveIntervalMs || 60000));
     },

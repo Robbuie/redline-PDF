@@ -1,4 +1,5 @@
-/* Page management: insert, delete, duplicate, reorder, rotate and extract.
+/* Page management: insert, merge, delete, duplicate, reorder, rotate, number,
+   split and extract.
 
    The open document is treated as a *derived* artifact. `store.baseBytes` holds
    the file with any previous Redline stamps taken back out, `store.pageOrder`
@@ -122,6 +123,74 @@
       return finish(next, order.length);
     }
   };
+
+  /**
+   * Split a comma-separated list of ranges into one index list *per group*.
+   *
+   * `RP.print.parseCustom` flattens "1-4, 5-9" into one list, which is what a
+   * print range means. A split means the opposite — each group is a file — so
+   * each part is parsed on its own and the groups are kept apart. The syntax is
+   * deliberately the same one the print dialog takes; two range grammars in one
+   * app is one too many.
+   */
+  function parseGroups(text, count) {
+    const parts = String(text || '').split(',').map((part) => part.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    const groups = [];
+    for (const part of parts) {
+      const indices = RP.print.parseCustom(part, count);
+      if (!indices) return null;
+      groups.push(indices);
+    }
+    return groups;
+  }
+
+  /** Fixed-size chunks of `count` pages, `size` at a time. */
+  function chunkGroups(count, size) {
+    const step = Math.max(1, Math.round(size) || 1);
+    const groups = [];
+    for (let i = 0; i < count; i += step) {
+      groups.push(Array.from({ length: Math.min(step, count - i) }, (unused, k) => i + k));
+    }
+    return groups;
+  }
+
+  /**
+   * Chunks that begin at each of `starts` — "start a new file at these pages".
+   * Page 0 always begins one whether or not it was selected, or the pages
+   * before the first break would belong to no file at all.
+   */
+  function breakGroups(count, starts) {
+    const breaks = Array.from(new Set([0].concat(starts || [])))
+      .filter((index) => index >= 0 && index < count)
+      .sort((a, b) => a - b);
+    return breaks.map((from, i) => {
+      const to = i + 1 < breaks.length ? breaks[i + 1] : count;
+      return Array.from({ length: to - from }, (unused, k) => from + k);
+    }).filter((group) => group.length);
+  }
+
+  /**
+   * The numbering a subset of `picked` pages should carry.
+   *
+   * The first numbered page keeps the number it had in the parent and the rest
+   * run on from it. For a contiguous run — which a split always is, and an
+   * extract usually is — that is exactly right. For a scattered extract it
+   * renumbers sequentially from that first number, which is what a fresh
+   * document wants anyway; the alternative is a per-page override table for a
+   * case nobody asked for.
+   */
+  function rebaseNumbering(spec, picked) {
+    if (!spec) return null;
+    const first = picked.findIndex((index) => RP.render.pageNumberText(spec, index) !== null);
+    if (first < 0) return null;
+    const full = RP.render.numberingSpec(spec);
+    return Object.assign({}, full, {
+      start: full.start + (picked[first] - Math.max(0, Math.round(full.from || 0))),
+      from: first,
+      to: picked.length - 1
+    });
+  }
 
   /**
    * Move annotations onto their pages' new indices, drop the ones whose page
@@ -260,6 +329,11 @@
         const button = RP.$('#' + id);
         if (button) button.addEventListener('click', () => this.run(actions[id]));
       }
+      /* The overflow button is not in that loop: it opens a menu rather than
+         running an operation, and `run` would hold the busy lock open for as
+         long as the menu is on screen. */
+      const more = RP.$('#pgMore');
+      if (more) more.addEventListener('click', () => this.openDocumentMenu(more));
 
       this.els.host.addEventListener('pointerdown', (event) => this.onPointerDown(event));
       this.els.host.addEventListener('contextmenu', (event) => this.onContextMenu(event));
@@ -351,10 +425,46 @@
       enable('pgRotateCcw', has && !this.busy);
       enable('pgRotateCw', has && !this.busy);
       enable('pgExtract', has && !this.busy);
+      enable('pgMore', has && !this.busy);
       enable('pgDelete', has && !this.busy && picked.length < total);
     },
 
+    /** The whole-document operations, which do not fit six icons in a column. */
+    openDocumentMenu(anchor) {
+      const many = this.selected().length > 1;
+      const numbered = !!RP.store.numbering;
+      RP.menu.openUnder(anchor, [
+        { label: 'Insert pages from another PDF…', run: () => this.run(() => this.mergeFrom()) },
+        { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.run(() => this.extractSelected()) },
+        { label: 'Split into separate PDFs…', run: () => this.run(() => this.splitDocument()) },
+        { separator: true },
+        {
+          label: numbered ? 'Page numbering…' : 'Add page numbers…',
+          run: () => this.run(() => this.numberPages())
+        },
+        numbered
+          ? { label: 'Remove page numbers', run: () => this.run(() => this.clearNumbering()) }
+          : null,
+        { separator: true },
+        { label: 'Select all pages', hint: 'Ctrl+A', run: () => this.selectAll() }
+      ].filter(Boolean));
+    },
+
     // -- applying a change -------------------------------------------------
+
+    /**
+     * Say no to something the user asked for, and stop.
+     *
+     * Distinct from throwing, which `run` catches and prefixes with "That page
+     * change could not be applied" — right for a rebuild that failed, wrong for
+     * a range that names no pages, where the app understood perfectly well and
+     * is declining. The return value is `false` so a caller can `return` it.
+     */
+    refuse(message) {
+      RP.toast(message, 'warn', 6000);
+      RP.status('');
+      return false;
+    },
 
     /** Serialise page work: two rebuilds at once would race on store.doc. */
     async run(fn) {
@@ -569,6 +679,155 @@
       );
     },
 
+    // -- pulling pages in from another PDF ---------------------------------
+
+    /**
+     * Insert pages from a second PDF.
+     *
+     * The pages are *copied*, not linked: the bytes are held in `store.sources`
+     * under a key the descriptors point at, and the file on disk is never read
+     * again. Moving or deleting it afterwards changes nothing here, which is
+     * the behaviour a sheet set assembled from half a dozen consultants' issues
+     * has to have.
+     *
+     * The source stays in `sources` even after an undo takes its pages back
+     * out, because redo has to be able to put them back. An entry nothing
+     * points at is inert — it costs the memory of one PDF for the session.
+     */
+    async mergeFrom(at) {
+      const store = RP.store;
+      if (!store.doc) return false;
+      await this.ensureBase();
+
+      const picked = await window.rp.files.openDialog({ title: 'Choose a PDF to insert pages from' });
+      if (!picked) return false;
+      const bytes = new Uint8Array(picked.bytes);
+
+      const { PDFDocument } = lib();
+      let src;
+      try {
+        src = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+      } catch (err) {
+        return this.refuse(picked.name + ' could not be read as a PDF: ' + err.message);
+      }
+      /* Same trap as saving. `ignoreEncryption` makes pdf-lib *parse* a
+         protected file rather than decrypt one, so its content streams would be
+         copied across still encrypted, under this document's (absent) /Encrypt
+         dictionary — pages that render as nothing, with no error anywhere. */
+      if (src.isEncrypted) {
+        return this.refuse(picked.name + ' is password-protected, so its pages cannot be copied out of it');
+      }
+      const available = src.getPageCount();
+      if (!available) return this.refuse(picked.name + ' has no pages');
+
+      const selected = this.target();
+      const after = selected.length ? selected[selected.length - 1] : store.numPages - 1;
+      const answer = await RP.promptDialog({
+        title: 'Insert pages from ' + picked.name,
+        message: picked.name + ' has ' + available +
+          (available === 1 ? ' page.' : ' pages.'),
+        fields: [
+          { name: 'range', label: 'Pages', value: '1-' + available, placeholder: 'e.g. 1-3, 7' },
+          {
+            name: 'where', label: 'Insert', type: 'select', value: 'after',
+            options: [
+              { value: 'after', label: 'After page ' + (after + 1) },
+              { value: 'before', label: 'Before page ' + (after + 1) },
+              { value: 'end', label: 'At the end' },
+              { value: 'start', label: 'At the start' }
+            ]
+          },
+          {
+            type: 'note',
+            label: 'The pages are copied in. This document does not keep a link to ' +
+              picked.name + ', so moving or deleting it later changes nothing here.'
+          }
+        ],
+        confirm: 'Insert',
+        cancel: 'Cancel'
+      });
+      if (!answer) return false;
+
+      // The dialog above is modal to the document but not to the tab strip, so
+      // the drawing this was asked for can have been switched out from under
+      // it. Same reasoning as `App.resolveTarget`.
+      if (RP.store !== store) return false;
+
+      const indices = RP.print.parseCustom(answer.range, available);
+      if (!indices || !indices.length) {
+        return this.refuse('"' + answer.range + '" does not name any pages in ' + picked.name);
+      }
+
+      const total = store.numPages;
+      const where = at !== undefined ? at
+        : answer.where === 'start' ? 0
+          : answer.where === 'end' ? total
+            : answer.where === 'before' ? after
+              : after + 1;
+
+      const key = RP.uid('src');
+      store.sources = Object.assign({}, store.sources || {}, { [key]: bytes });
+      const descriptors = indices.map((index) => ops.descriptor(key, index, 0));
+
+      return this.apply(
+        (order) => ops.insert(order, where, descriptors),
+        {
+          status: 'Inserting pages…',
+          select: () => descriptors.map((unused, i) => where + i),
+          focus: () => where,
+          toast: () => indices.length + (indices.length === 1 ? ' page' : ' pages') +
+            ' inserted from ' + picked.name
+        }
+      );
+    },
+
+    // -- writing pages back out --------------------------------------------
+
+    /**
+     * A subset of this document as its own finished PDF — stamped *and* still
+     * re-editable.
+     *
+     * The obvious implementation stamps the whole drawing and copies pages out
+     * of the result, which is what extract used to do. It cannot embed the
+     * markup model, because the model's page indices no longer line up with the
+     * smaller document; so the extract came out flattened, and a markup on it
+     * could never be moved or answered again.
+     *
+     * Building the subset from the *stripped* base bytes instead and running
+     * the exporter over it puts both halves back: the stamp for other viewers
+     * and the model for this one, with the `contentRefs` that keep the next save
+     * idempotent. Copying pages out of already-stamped bytes and embedding a
+     * model alongside would produce exactly the double-markup file that
+     * `splitSaved` exists to prevent.
+     */
+    async subsetPdf(picked, name) {
+      const store = RP.store;
+      await this.ensureBase();
+      const order = picked.map((index) => store.pageOrder[index]).filter(Boolean);
+      if (!order.length) throw new Error('No pages in that selection');
+
+      const drawing = await buildBytes(store.baseBytes, order, store.sources);
+
+      const map = new Array(store.pageOrder.length).fill(-1);
+      picked.forEach((from, to) => { map[from] = to; });
+
+      /* A real store rather than an object literal: `buildPdf` calls
+         `serialize()` on it, and a second implementation of what gets embedded
+         is a second thing to keep in step with the first. It is never the
+         focused one, so every `emit` from it is a no-op. */
+      const sub = RP.createStore();
+      sub.docBytes = drawing;
+      sub.docName = name || RP.store.docName;
+      sub.numPages = order.length;
+      sub.scale = store.scale;
+      sub.author = store.author;
+      sub.numbering = rebaseNumbering(store.numbering, picked);
+      sub.annotations = remapAnnotations(
+        store.annotations.map((annot) => Object.assign({}, annot)), map, []
+      );
+      return RP.exporter.buildPdf({ store: sub });
+    },
+
     /** Write the chosen pages out as their own PDF, markups included. */
     async extractSelected() {
       const picked = this.target();
@@ -584,19 +843,191 @@
       if (!path) return false;
 
       RP.status('Extracting…');
-      const { PDFDocument } = lib();
-      // Stamp markups first so the extract is a faithful copy of what is on
-      // screen; the model is not embedded because its page indices would no
-      // longer line up with the smaller document.
-      const marked = await RP.exporter.buildPdf({ embed: false });
-      const src = await PDFDocument.load(marked, { ignoreEncryption: true, updateMetadata: false });
-      const out = await PDFDocument.create();
-      const copied = await out.copyPages(src, picked);
-      for (const page of copied) out.addPage(page);
-      out.setProducer('Redline PDF');
-      await window.rp.files.write(path, await out.save({ useObjectStreams: false }), false);
+      const bytes = await this.subsetPdf(picked, RP.basename(path));
+      await window.rp.files.write(path, bytes, false);
       RP.status('');
-      RP.toast(picked.length + (picked.length === 1 ? ' page' : ' pages') + ' written to ' + RP.basename(path), 'good');
+      RP.toast(picked.length + (picked.length === 1 ? ' page' : ' pages') +
+        ' written to ' + RP.basename(path) + ', still editable', 'good');
+      return true;
+    },
+
+    /** Split this document into several PDFs in a folder of the user's choosing. */
+    async splitDocument() {
+      const store = RP.store;
+      if (!store.doc) return false;
+      await this.ensureBase();
+
+      const count = store.numPages;
+      if (count < 2) {
+        RP.toast('A one-page document has nothing to split', 'warn');
+        return false;
+      }
+      const selected = this.selected();
+      const answer = await RP.promptDialog({
+        title: 'Split into separate PDFs',
+        message: RP.stripExt(store.docName || 'drawing') + ' has ' + count + ' pages.',
+        fields: [
+          {
+            name: 'mode', label: 'Split', type: 'select', value: selected.length ? 'breaks' : 'every',
+            options: [
+              { value: 'every', label: 'Into fixed-size files' },
+              { value: 'breaks', label: 'Starting a new file at each selected page' },
+              { value: 'ranges', label: 'At the ranges below' }
+            ]
+          },
+          { name: 'size', label: 'Pages per file', value: 1 },
+          { name: 'ranges', label: 'Ranges', value: '', placeholder: 'e.g. 1-4, 5-9, 10-' },
+          {
+            type: 'note',
+            label: 'Each file is a finished drawing: the markups on its pages are stamped ' +
+              'into it and stay editable here. This document is not changed.'
+          }
+        ],
+        confirm: 'Choose folder…',
+        cancel: 'Cancel'
+      });
+      if (!answer) return false;
+      if (RP.store !== store) return false;
+
+      let groups;
+      if (answer.mode === 'ranges') {
+        groups = parseGroups(answer.ranges, count);
+        if (!groups) return this.refuse('"' + answer.ranges + '" is not a list of page ranges');
+      } else if (answer.mode === 'breaks') {
+        if (!selected.length) return this.refuse('Select the pages each new file should start at first');
+        groups = breakGroups(count, selected);
+      } else {
+        const size = parseInt(answer.size, 10);
+        if (!isFinite(size) || size < 1) return this.refuse('"' + answer.size + '" is not a number of pages');
+        groups = chunkGroups(count, size);
+      }
+      if (groups.length < 2) {
+        RP.toast('That would produce a single file — nothing to split', 'warn');
+        return false;
+      }
+
+      const folder = await window.rp.files.chooseFolder({
+        title: 'Where should the split files go?',
+        defaultPath: RP.dirname(store.docPath || '')
+      });
+      if (!folder) return false;
+
+      const base = RP.stripExt(store.docName || 'drawing');
+      const paths = groups.map((group) => {
+        const first = group[0] + 1;
+        const last = group[group.length - 1] + 1;
+        return RP.joinPath(folder, base + '-' + first + (last > first ? '-' + last : '') + '.pdf');
+      });
+
+      // Asked once for the whole set rather than once per file: a 40-part split
+      // that stopped to ask forty times is a split nobody finishes.
+      const clashes = [];
+      for (const path of paths) {
+        if (await window.rp.files.exists(path)) clashes.push(RP.basename(path));
+      }
+      if (clashes.length) {
+        const confirmed = await window.rp.dialog.message({
+          type: 'warning',
+          message: 'Overwrite ' + clashes.length + (clashes.length === 1 ? ' file?' : ' files?'),
+          detail: clashes.slice(0, 8).join('\n') +
+            (clashes.length > 8 ? '\n…and ' + (clashes.length - 8) + ' more' : '') +
+            '\n\nThese already exist in that folder and would be replaced.',
+          buttons: ['Overwrite', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1
+        });
+        if (confirmed.response !== 0) return false;
+      }
+
+      for (let i = 0; i < groups.length; i += 1) {
+        RP.status('Writing part ' + (i + 1) + ' of ' + groups.length + '…');
+        const bytes = await this.subsetPdf(groups[i], RP.basename(paths[i]));
+        await window.rp.files.write(paths[i], bytes, false);
+      }
+      RP.status('');
+      RP.toast(groups.length + ' files written to ' + RP.basename(folder), 'good');
+      return true;
+    },
+
+    // -- page numbering / Bates --------------------------------------------
+
+    /**
+     * Set or change the page numbering.
+     *
+     * Nothing is rebuilt: the spec sits on the store, the canvas draws it and
+     * the exporter stamps it, so this is one checkpoint and one repaint however
+     * long the sheet set is. It also means inserting a page renumbers the rest
+     * for free, which is the whole reason it is not N annotations.
+     */
+    async numberPages() {
+      const store = RP.store;
+      if (!store.doc) return false;
+      const count = store.numPages;
+      const current = RP.render.numberingSpec(store.numbering) || RP.render.NUMBER_DEFAULTS;
+      const answer = await RP.promptDialog({
+        title: store.numbering ? 'Page numbering' : 'Add page numbers',
+        message: 'Numbers are stamped into the pages when the drawing is saved or printed, ' +
+          'and shown on screen in the meantime.',
+        fields: [
+          { name: 'prefix', label: 'Prefix', value: current.prefix, placeholder: 'e.g. ABC-' },
+          { name: 'start', label: 'First number', value: current.start },
+          { name: 'digits', label: 'Pad to digits', value: current.digits, placeholder: '0 for none' },
+          { name: 'suffix', label: 'Suffix', value: current.suffix },
+          {
+            name: 'position', label: 'Position', type: 'select', value: current.position,
+            options: RP.render.NUMBER_POSITIONS.map((key) => ({
+              value: key,
+              label: key.replace('-', ' ').replace(/^./, (c) => c.toUpperCase())
+            }))
+          },
+          { name: 'size', label: 'Type size (pt)', value: current.size },
+          { name: 'margin', label: 'Margin (pt)', value: current.margin },
+          { name: 'from', label: 'From page', value: (Math.max(0, Math.round(current.from || 0)) + 1) },
+          {
+            name: 'to', label: 'To page',
+            value: (current.to === undefined || current.to === null ? count : Math.round(current.to) + 1)
+          }
+        ],
+        confirm: store.numbering ? 'Update' : 'Add numbers',
+        cancel: 'Cancel'
+      });
+      if (!answer) return false;
+      if (RP.store !== store) return false;
+
+      const num = (value, fallback) => {
+        const parsed = parseFloat(value);
+        return isFinite(parsed) ? parsed : fallback;
+      };
+      const from = RP.clamp(Math.round(num(answer.from, 1)) - 1, 0, count - 1);
+      const to = RP.clamp(Math.round(num(answer.to, count)) - 1, from, count - 1);
+      const spec = {
+        prefix: answer.prefix || '',
+        suffix: answer.suffix || '',
+        start: Math.round(num(answer.start, 1)),
+        digits: RP.clamp(Math.round(num(answer.digits, 0)), 0, 12),
+        position: answer.position,
+        // Floors rather than refusals: a type size of zero is a number nobody
+        // can read and a negative margin puts it off the sheet, and neither is
+        // worth a second trip through the dialog.
+        size: RP.clamp(num(answer.size, current.size), 4, 72),
+        margin: RP.clamp(num(answer.margin, current.margin), 0, 200),
+        color: current.color,
+        from,
+        to
+      };
+      // `setNumbering` checks before it checkpoints, so a dialog opened and
+      // OK'd unaltered leaves no dead undo step for `Ctrl+Z` to appear to
+      // ignore — and should not claim to have done anything either.
+      if (!store.setNumbering(spec)) return false;
+      const first = RP.render.pageNumberText(spec, from);
+      RP.toast('Pages numbered from ' + first + ' on page ' + (from + 1), 'good');
+      return true;
+    },
+
+    clearNumbering() {
+      if (!RP.store.numbering) return false;
+      RP.store.setNumbering(null);
+      RP.toast('Page numbering removed', 'good');
       return true;
     },
 
@@ -692,10 +1123,15 @@
       const many = this.selected().length > 1;
       this.openMenu(event.clientX, event.clientY, [
         { label: 'Insert blank page after', run: () => this.insertBlank() },
+        { label: 'Insert pages from another PDF…', run: () => this.mergeFrom(index + 1) },
         { label: many ? 'Duplicate pages' : 'Duplicate page', run: () => this.duplicateSelected() },
         { label: 'Rotate left', run: () => this.rotateSelected(-ROT_STEP) },
         { label: 'Rotate right', run: () => this.rotateSelected(ROT_STEP) },
+        { separator: true },
         { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.extractSelected() },
+        { label: 'Split into separate PDFs…', run: () => this.splitDocument() },
+        { label: RP.store.numbering ? 'Page numbering…' : 'Add page numbers…', run: () => this.numberPages() },
+        { separator: true },
         { label: many ? 'Delete pages' : 'Delete page', run: () => this.deleteSelected(), danger: true }
       ]);
     },
@@ -729,9 +1165,33 @@
     }
   };
 
+  /**
+   * The page order, but only when it can be rebuilt from the drawing alone.
+   *
+   * The crash snapshot is JSON next to the settings file, and a merged-in
+   * source is a whole PDF held in memory — base64-ing several of those into a
+   * recovery record would put tens of megabytes on disk every autosave tick.
+   * So an order that reaches outside the file is not persisted at all: the
+   * markups still recover, and the pages come back as they are on disk, which
+   * is honest. Returning a *partial* order would be worse than returning none —
+   * it would rebuild the document with pages silently missing.
+   */
+  function recoverableOrder(store) {
+    const order = store && store.pageOrder;
+    if (!order || !order.length) return null;
+    const external = order.some((item) => item.src !== 'base' && item.src !== 'blank');
+    return external ? null : order;
+  }
+
   RP.pages = Pages;
   RP.pages.ops = ops;
   RP.pages.buildBytes = buildBytes;
   RP.pages.remapAnnotations = remapAnnotations;
+  RP.pages.recoverableOrder = recoverableOrder;
+  // Pure, so `test/verify.js` can drive the split and extract maths headless.
+  RP.pages.parseGroups = parseGroups;
+  RP.pages.chunkGroups = chunkGroups;
+  RP.pages.breakGroups = breakGroups;
+  RP.pages.rebaseNumbering = rebaseNumbering;
 
 })(window.RP);

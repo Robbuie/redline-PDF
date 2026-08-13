@@ -2212,16 +2212,40 @@
       }
       for (const field of opts.fields || []) {
         let input;
+        // A run of static text between the fields, for the caveat that belongs
+        // next to one control rather than at the top of the dialog.
+        if (field.type === 'note') {
+          body.appendChild(RP.el('p', {
+            text: field.label,
+            style: {
+              margin: '2px 0 12px', color: 'var(--txt-3, var(--txt-2))',
+              fontSize: '11.5px', lineHeight: '1.55', whiteSpace: 'pre-line'
+            }
+          }));
+          continue;
+        }
         if (field.type === 'select') {
-          input = RP.el('select', {}, (field.options || []).map((o) => RP.el('option', { value: o, text: o })));
-          input.value = field.value || (field.options || [])[0] || '';
+          /* Options are either bare strings — which is what the scale prompt
+             passes, and what the value shown and the value returned being the
+             same thing is fine for — or {value, label} pairs, for a control
+             whose value is a key and whose label is a sentence. */
+          input = RP.el('select', {}, (field.options || []).map((o) => {
+            const opt = (o && typeof o === 'object') ? o : { value: o, label: String(o) };
+            return RP.el('option', { value: String(opt.value), text: opt.label });
+          }));
+          input.value = field.value === undefined || field.value === null
+            ? '' : String(field.value);
+          // A `value` matching no option leaves a select showing its first
+          // entry while reporting something else; fall back to what it shows.
+          if (!input.value) input.selectedIndex = 0;
         } else {
           // `password` masks the box and, more to the point, keeps the value
           // out of anything that walks the DOM — the diagnostics snapshot in
           // `diag.js` among them.
           input = RP.el('input', {
             type: field.type === 'password' ? 'password' : 'text',
-            value: field.value || '',
+            // Not `field.value || ''`: a numeric 0 is a value somebody typed.
+            value: field.value === undefined || field.value === null ? '' : String(field.value),
             placeholder: field.placeholder || ''
           });
         }

@@ -1,5 +1,34 @@
 # Roadmap
 
+## Done — v0.12
+
+- **Merge** — pages pulled in from another PDF. `store.sources` and the
+  descriptor's `src` field already carried a key per source document, so this
+  was the import dialog and one `ops.insert` call it looked like. The pages are
+  copied, not linked, and the source bytes are held for the session because
+  redo has to be able to put an undone insert back
+- **Split** at fixed sizes, at the selected pages, or at typed ranges. The
+  grammar is the print dialog's, parsed *per group* rather than flattened —
+  `RP.pages.parseGroups` against `RP.print.parseCustom` is the whole difference,
+  and getting it wrong writes one file where three were asked for
+- **Page numbering / Bates**, as one spec on the store rather than N
+  annotations: inserting a page renumbers the rest for free, it is one undo
+  step, and `RP.render.pageNumberText` / `numberOffsets` are the pure pair the
+  canvas and the exporter both place from
+- **Extract keeps the markup model.** The subset is built from the *stripped*
+  base bytes and run back through the exporter, so it carries the stamp for
+  other viewers and the model for this one. Copying pages out of already-stamped
+  bytes — what it used to do — cannot embed a model without producing exactly
+  the double-markup file `splitSaved` exists to prevent. `RP.pages.subsetPdf` is
+  shared with split
+- **The crash snapshot carries the page order**, the scale and the numbering.
+  An order that reaches into another PDF is refused *whole*: half an order would
+  rebuild the document with pages silently missing and call it a recovery
+- **Compare against another open tab.** The engine always took two
+  `PDFDocumentProxy`s; the tab's *bytes* are re-parsed into a proxy of our own
+  rather than borrowing its live one, which a tab close or a page rebuild would
+  destroy mid-run
+
 ## Done — v0.11
 
 - **A markup clipboard.** Copy, cut and paste markups across sheets and across
@@ -192,16 +221,14 @@
 thing gets picked from. It is a menu, not a queue — nothing below is chosen
 yet.
 
-**Finishing the page manager**
-- Merge: pull pages in from another PDF. `store.sources` and the descriptor's
-  `src` field already carry a key per source document, so this is an import
-  dialog and one `ops.insert` call away
-- Split a document into several files at chosen boundaries
-- Page numbering / Bates stamping with prefix, start value and position
-- Extract with the markup model remapped, so extracted pages stay re-editable
-- Include the page order in the crash-recovery snapshot
-
-
+**Finishing the page manager** *(the rest of it shipped in 0.12)*
+- Merged-in sources are held in memory for the session and are not persisted
+  anywhere. A set assembled from six consultants' issues is six PDFs in memory,
+  and none of it survives a crash. Writing the sources into the crash snapshot
+  would need them base64'd next to the settings file, which is the wrong shape;
+  a session scratch file beside the recovery record is the likely answer
+- Page numbering has one spec per document. A set that needs two runs — a
+  drawing number and a Bates stamp — needs a list
 
 **Stamps and signatures** *(deferred from v0.2 by choice)*
 A stamp library — APPROVED, AS-BUILT, REVIEWED, FOR CONSTRUCTION, plus custom
@@ -213,8 +240,6 @@ stored as embedded images so they export cleanly.
   matching blob shapes between the two revisions
 - Text-aware diff on vector PDFs: diff the extracted text runs as well as the ink,
   so a changed callout reports the old and new string, not just a box
-- Compare against **another open tab** rather than only a file on disk — the
-  engine already takes two `PDFDocumentProxy`s, so this is a picker
 - Compare a page against a different page number (for re-ordered sheet sets)
 - Export the comparison itself as a PDF with the change list appended
 

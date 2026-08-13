@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.11.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.12.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -70,7 +70,7 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `snapshot.js` | copying a region of a drawing to the clipboard as a picture |
 | `compare.js` | revision-compare engine and UI |
 | `exporter.js` | pdf-lib export, embedded markup model, CSV/PDF reports |
-| `pages.js` | page order model, pdf-lib rebuild, and the Pages panel UI |
+| `pages.js` | page order model, pdf-lib rebuild, merge/split/extract, numbering UI, and the Pages panel |
 | `print.js` | print dialog, page-range parsing, fit-to-paper geometry |
 | `app.js` | wiring — boot, toolbar, shortcuts, save pipeline, settings, autosave |
 
@@ -214,6 +214,64 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   into its content stream, and the next save would draw them again on top.
   `RP.pages.ensureBase()` runs the bytes through `RP.exporter.stripToBaseBytes()`
   once and everything rebuilds from that. `test/verify.js` covers it.
+- **A subset of a document is built from the *stripped* bytes and run back
+  through the exporter — never copied out of an already-stamped file.**
+  `RP.pages.subsetPdf` backs both extract and split, and the obvious
+  implementation (stamp the whole drawing with `buildPdf({embed:false})`, then
+  `copyPages` the wanted ones out) is what extract did up to 0.11. It cannot
+  embed the markup model, because the model's page indices no longer line up
+  with the smaller document — so an extract came out flattened and a comment on
+  it could never be moved or answered again. Embedding a model *beside* those
+  baked-in stamps would be worse: it is exactly the double-markup file
+  `splitSaved` exists to prevent, and its `contentRefs` would name nothing, so
+  the stamp would never strip and would stack on every save. Building from
+  `baseBytes` + the picked descriptors and letting `buildPdf` stamp and embed
+  puts both halves back with the refs intact. The subset is handed a real
+  `RP.createStore()` rather than an object literal, because `buildPdf` calls
+  `serialize()` on it. `test/verify.js` re-opens an extract and re-saves it to
+  prove the round trip is idempotent.
+- **Page numbering is one spec on the store, not N annotations.** `store.numbering`
+  is `{prefix, suffix, start, digits, position, margin, size, color, from, to}`,
+  it rides in `snapshot()` like the page order, and it goes out in the embedded
+  model (which is why `serialize()` is at version 4). Made of annotations it
+  would have to be rebuilt on every insert, delete, duplicate and reorder, and
+  the one that got missed is the one that ships a set with two page fours. The
+  label and the placement are pure and shared: `RP.render.pageNumberText` and
+  `RP.render.numberOffsets` take units rather than assuming them, so the canvas
+  passes CSS pixels and `exporter.stampPageNumbers` passes points. The stamp
+  goes on **inside** `buildPdf`, between the `refsBefore` snapshot and the ref
+  diff, so its content streams land in `contentRefs` and the next save strips
+  them like everything else — stamped outside that window the numbers stack up
+  one set per save. Text on a turned sheet, so it is placed through `pageFrame`
+  with `rotate: degrees(frame.angle)` for the same reason every other run is;
+  `test/verify.js` reads it back through pdf.js at all four angles and checks it
+  is upright *and* in the same displayed corner.
+- **A split's ranges are groups; a print's range is one list.** They share a
+  grammar on purpose — two range syntaxes in one app is one too many — so
+  `RP.pages.parseGroups` calls `RP.print.parseCustom` once *per comma-separated
+  part* and keeps the results apart. Flattening them writes one file where the
+  user asked for three, which reads as the split having ignored the box.
+  `breakGroups` always begins a group at page 0 whether or not it was selected,
+  or the pages before the first chosen break belong to no file at all and the
+  front of the set is silently dropped.
+- **A merged-in source is copied, held for the session, and never persisted.**
+  `store.sources[key]` holds the whole PDF a descriptor's `src` points at, and
+  it stays there after an undo removes its pages because redo has to put them
+  back — an entry nothing points at is inert. Nothing writes it to disk:
+  `RP.pages.recoverableOrder` returns `null` for an order that reaches outside
+  the file, so a merged set's arrangement is not offered by crash recovery at
+  all rather than being offered incomplete. Half an order would rebuild the
+  document with pages missing and call that a recovery. An encrypted source is
+  refused at the door for the same reason saving one is: `ignoreEncryption`
+  parses rather than decrypts, so its content streams would copy across still
+  encrypted, under this document's absent `/Encrypt` — blank pages, no error.
+- **A compare baseline taken from a tab is that tab's *bytes*, re-parsed.**
+  Borrowing the live `PDFDocumentProxy` ties the run to a tab the user can
+  close, and to a page rebuild — `RP.pages.reload` destroys the old proxy — so
+  it would vanish mid-comparison and surface as pages that "could not be
+  compared" with nothing to point at. One re-parse buys a baseline nothing else
+  owns. The bytes are `slice(0)`'d because pdf.js detaches the buffer it is
+  given, and that buffer is the other tab's open document.
 - **pdf-lib's copier caches by source object.** Asking one `copyPages` call for
   the same index twice returns the *same* page node, so a duplicated page would
   alias its original and share its rotation. `buildBytes` copies in passes for

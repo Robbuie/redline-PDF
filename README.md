@@ -62,6 +62,35 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.12
+
+**Assembling a set.** The Pages panel's ⋯ button now holds the three operations
+that act on the whole document: **insert pages from another PDF**, **split into
+separate PDFs**, and **page numbering**.
+
+Inserting copies the chosen pages in — this drawing keeps no link to the file
+they came from, so moving or deleting it later changes nothing. Splitting can
+cut into fixed-size files, at each page you have selected, or at ranges you type
+(`1-4, 5-9, 10-`), and every part comes out a finished drawing with its markups
+still editable. So does an **extract**, which used to flatten them.
+
+**Page numbers and Bates stamps** take a prefix, a first number, zero padding, a
+suffix, a corner, a type size and a margin, over a page range — so a set with an
+unnumbered cover sheet works. They show on screen straight away and are stamped
+into the file when you save or print, upright in the same corner however the
+sheet is plotted. They belong to the document rather than being markups, so
+inserting or deleting a page renumbers the rest by itself and `Ctrl+Z` takes the
+whole numbering back in one step.
+
+**Compare against an open tab.** The compare panel offers *Use an open tab…*
+beside *Choose PDF…*, for the usual case where the reissue and the revision it
+supersedes are both already in front of you.
+
+**Crash recovery now covers the page arrangement**, the calibration and the
+numbering, not only the markups.
+
+---
+
 ## What's new in 0.10
 
 **Three shapes you click out a point at a time.** Click each point;
@@ -299,8 +328,11 @@ The **Pages** panel is now a page manager, not just a set of thumbnails.
 | Insert a blank page | Toolbar ⊕, dropped in after the selection at the same sheet size |
 | Duplicate | Toolbar ⧉ — the copy brings that page's markups with it |
 | Rotate | Toolbar ↺ / ↻, in 90° steps, applied to the page itself |
-| Extract | Toolbar ⇱ — writes the selected pages out as their own PDF, markups stamped in |
+| Extract | Toolbar ⇱ — writes the selected pages out as their own PDF, markups included and still editable |
 | Delete | Toolbar 🗑 or `Del` while the panel has focus |
+| Insert from another PDF | Toolbar ⋯ — choose a file, a page range and where it goes |
+| Split | Toolbar ⋯ — into fixed-size files, at the selected pages, or at typed ranges |
+| Page numbers | Toolbar ⋯ — prefix, first number, padding, suffix, corner, size, margin, range |
 
 Everything above is also on the right-click menu, and everything is undoable with
 `Ctrl+Z` like any other edit — page order rides in the same history as markups.
@@ -310,8 +342,13 @@ that page carries any).
 
 Nothing is written to disk until you save. Page edits mark the document dirty and
 go out through the normal save pipeline, so your save-mode choice still applies.
-Extract is the exception — it asks for a filename and writes immediately, leaving
-the document you are working on alone.
+Extract and split are the exceptions — they ask where the new files go and write
+immediately, leaving the document you are working on alone.
+
+Pages inserted from another PDF are **copied**, not linked. Once they are in,
+this drawing no longer depends on the file they came from. That file is held in
+memory for as long as this drawing is open, which is what lets `Ctrl+Z` and
+`Ctrl+Y` take the insert out and put it back.
 
 Rotating a page turns the page itself, so the rotation is in the saved file and any
 viewer shows it. That is different from the toolbar's rotate button, which only
@@ -322,7 +359,13 @@ turns your view.
 ## Revision compare
 
 `Compare` in the toolbar, or the compare tab in the sidebar. Pick the baseline
-(older) revision; the drawing you have open is the current one.
+(older) revision — **Choose PDF…** for a file on disk, or **Use an open tab…**
+for a drawing already open in another tab. The drawing you have open in front of
+you is the current one.
+
+A baseline taken from a tab is read as that drawing stands *now*, without this
+app's markups on it, so a comparison says what changed on the sheet rather than
+what somebody has written on it since.
 
 The comparison is designed to answer *"what actually changed?"* rather than
 *"which pixels differ?"*. Per page:
@@ -561,9 +604,16 @@ Two things happen on every save:
 - the full markup model is embedded in the document catalog under `RedlineMarkup`,
   along with the object references of everything this save stamped
 
+Page numbers are stamped the same way, from a single spec rather than one markup
+per page — which is why inserting a page renumbers the rest by itself.
+
 That last part is what makes re-editing and idempotent re-saving work. Review
-status rides in the same model, so it round-trips with everything else; the
-model is at version 3 as of 0.6, and a missing status is read as *open*.
+status rides in the same model, so it round-trips with everything else, and so
+does the page-numbering spec; the model is at version 4 as of 0.12, and a
+missing status is read as *open*. An older build reading one of these files
+keeps the statuses it cannot show but drops the numbering spec — the numbers
+stay stamped into the pages either way, only the ability to re-edit them here
+is lost.
 
 ---
 
@@ -628,11 +678,14 @@ build, so `pdfjs-dist` can be upgraded without the app going dark.
   flags on an owner-password file are not enforced.
 - A page edit rebuilds the document in memory, which takes a moment on very large
   sheet sets — the status bar says when it is working.
-- Crash recovery snapshots cover markups only. If the app dies after a page edit
-  but before a save, the recovered markups come back on the document as it was on
-  disk, not as you had rearranged it.
-- Extracted pages have their markups stamped in but not re-editable, because the
-  markup model's page numbers would no longer match the smaller document.
+- Crash recovery covers the markups, the page arrangement, the calibration and
+  the page numbering — but **not** pages inserted from another PDF. Those pages
+  cannot be rebuilt without the files they came from, and the app does not copy
+  other people's drawings into its own settings folder. A set assembled that way
+  is offered back with its markups and the pages as they are on disk, rather
+  than being offered back incomplete.
+- Page numbering is one run per document. A set that needs both a drawing number
+  and a separate Bates stamp needs two, which is not supported yet.
 - Annotations that came with the file are shown, not edited. You can read another
   reviewer's comment and follow their links; you cannot reply to one or delete
   it. Form fields display their values but are not fillable — typing into one

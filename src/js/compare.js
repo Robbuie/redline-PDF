@@ -56,6 +56,8 @@
 
     init() {
       RP.$('#btnPickBaseline').addEventListener('click', () => this.pickBaseline());
+      const fromTab = RP.$('#btnPickBaselineTab');
+      if (fromTab) fromTab.addEventListener('click', () => this.pickBaselineTab(fromTab));
       RP.$('#btnRunCompare').addEventListener('click', () => this.run());
       RP.$('#cmpClose').addEventListener('click', () => this.close());
       RP.$('#cmpPrev').addEventListener('click', () => this.showPage(this.pageIndex - 1));
@@ -116,6 +118,72 @@
       RP.$('#btnRunCompare').disabled = !ready || this.running;
     },
 
+    /** What the baseline slot reads, including where the drawing came from. */
+    baselineLabel() {
+      if (!this.baseline) return '— none —';
+      const pages = this.baseline.doc.numPages;
+      return this.baseline.name + '  (' + pages + (pages === 1 ? ' page' : ' pages') +
+        (this.baseline.fromTab ? ', from a tab' : '') + ')';
+    },
+
+    /**
+     * Offer the other open drawings as the baseline.
+     *
+     * The engine only ever wanted two `PDFDocumentProxy`s, and one of them was
+     * always coming off disk for no reason other than that is where the picker
+     * pointed — a re-issue and the revision it supersedes are usually both
+     * already open in tabs.
+     */
+    pickBaselineTab(anchor) {
+      const others = RP.tabs.all().filter((tab) => tab.store !== RP.store && tab.store.docBytes);
+      if (!others.length) {
+        RP.toast('Open the older revision in another tab first', 'warn');
+        return;
+      }
+      RP.menu.openUnder(anchor, others.map((tab) => ({
+        label: tab.store.docName || 'Untitled',
+        hint: tab.store.numPages + (tab.store.numPages === 1 ? ' page' : ' pages'),
+        run: () => this.useTabAsBaseline(tab)
+      })));
+    },
+
+    /**
+     * Take another tab's drawing as the baseline.
+     *
+     * Its bytes are re-parsed into a proxy of our own rather than borrowing the
+     * live `store.doc`. A borrowed proxy belongs to a tab that can be closed, or
+     * have its pages rebuilt — `RP.pages.reload` destroys the old proxy — and
+     * either would pull the document out from under a comparison mid-run, which
+     * surfaces as pages that "could not be compared" with nothing to point at.
+     * One re-parse buys a baseline nothing else can touch.
+     *
+     * `docBytes` is the drawing without this app's markups: `splitSaved` lifts
+     * a previous save's stamp back out before pdf.js ever sees the file. So a
+     * revision compare against an open tab compares the *drawings*, which is
+     * what it compares against a file on disk too.
+     */
+    async useTabAsBaseline(tab) {
+      const store = tab.store;
+      const name = store.docName || 'Untitled';
+      // A copy: pdf.js takes ownership of the buffer it is handed and detaches
+      // it, and that buffer is the other tab's open document.
+      const task = RP.pdfjs.attachPassword(
+        pdfjsLib.getDocument(RP.pdfjs.docParams({ data: store.docBytes.slice(0) })),
+        (state) => RP.app.askPassword(name, state)
+      );
+      try {
+        const doc = await task.promise;
+        this.baseline = { path: store.docPath, name, doc, fromTab: true };
+        RP.$('#cmpBaselineName').textContent = this.baselineLabel();
+        this.clearResults();
+        RP.$('#cmpResults').innerHTML = '';
+        this.updateRunState();
+      } catch (err) {
+        if (task.rpPassword === 'cancelled') return;
+        RP.toast('Could not read that drawing: ' + err.message, 'error');
+      }
+    },
+
     async pickBaseline() {
       const picked = await window.rp.files.openDialog({ title: 'Choose the baseline (older) revision' });
       if (!picked) return;
@@ -132,7 +200,12 @@
       try {
         const doc = await task.promise;
         this.baseline = { path: picked.path, name: picked.name, doc };
-        RP.$('#cmpBaselineName').textContent = picked.name + '  (' + doc.numPages + ' pages)';
+        RP.$('#cmpBaselineName').textContent = this.baselineLabel();
+        // Results belong to the pair that produced them; leaving the old ones
+        // up under a new baseline invites a click-through of a run that never
+        // happened against this file.
+        this.clearResults();
+        RP.$('#cmpResults').innerHTML = '';
         this.updateRunState();
       } catch (err) {
         if (task.rpPassword === 'cancelled') return;
@@ -552,9 +625,7 @@
       this.cache = (state && state.cache) || new Map();
       this.changeList = (state && state.changeList) || [];
       this.pageIndex = (state && state.pageIndex) || 0;
-      RP.$('#cmpBaselineName').textContent = this.baseline
-        ? this.baseline.name + '  (' + this.baseline.doc.numPages + ' pages)'
-        : '— none —';
+      RP.$('#cmpBaselineName').textContent = this.baselineLabel();
       RP.$('#cmpCurrentName').textContent = RP.store.docName || '— none —';
       RP.$('#cmpResults').innerHTML = '';
       if (this.results.length) this.renderSummary();

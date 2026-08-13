@@ -256,6 +256,43 @@
     });
   }
 
+  /**
+   * Stamp the page-number / Bates run onto every page inside its window.
+   *
+   * Placed exactly the way a text markup is — along the page's *displayed*
+   * axes, turned back by `rotate` — because a number laid along +x reads on its
+   * side on the landscape sheets drawings are plotted as, and a sheet set is
+   * numbered precisely so somebody can read the corner of it.
+   *
+   * Called from inside `buildPdf`, between the `refsBefore` snapshot and the
+   * ref diff that follows, so the content streams it adds are recorded in
+   * `contentRefs` and stripped by the next save like everything else. Stamping
+   * outside that window is how numbers would stack up one per save.
+   */
+  function stampPageNumbers(pages, store, font, degrees) {
+    const spec = RP.render.numberingSpec(store && store.numbering);
+    if (!spec) return;
+    const { rgb } = lib();
+    const unit = RP.hexToRgbUnit(spec.color || RP.render.NUMBER_DEFAULTS.color);
+    pages.forEach((page, index) => {
+      const text = RP.render.pageNumberText(spec, index);
+      if (!text) return;
+      const frame = pageFrame(page);
+      const box = page.getMediaBox();
+      const rect = { x: box.x, y: box.y, w: box.width, h: box.height };
+      const off = RP.render.numberOffsets(
+        screenSize(rect, frame), spec.position, spec.margin,
+        font.widthOfTextAtSize(text, spec.size), spec.size
+      );
+      const p = at(screenTopLeft(rect, frame), off.right, off.down, frame);
+      page.drawText(text, {
+        x: p[0], y: p[1], size: spec.size, font,
+        color: rgb(unit.r, unit.g, unit.b),
+        rotate: degrees(frame.angle)
+      });
+    });
+  }
+
   /** Revision-cloud outline as an SVG path in a y-down local space. */
   function cloudPath(w, h, radius) {
     const r = Math.max(5, radius);
@@ -659,6 +696,8 @@
       }
     }
 
+    stampPageNumbers(pages, store, font, degrees);
+
     if (options.embed !== false) {
       const contentRefs = {};
       const annotRefs = {};
@@ -834,6 +873,8 @@
 
   RP.exporter = {
     buildPdf,
+    stampPageNumbers,
+    pageFrame,
     readEmbeddedMarkup,
     splitSaved,
     stripToBaseBytes,

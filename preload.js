@@ -49,13 +49,17 @@ contextBridge.exposeInMainWorld('rp', {
     read: (filePath) => call('file:read', filePath),
     exists: (filePath) => call('file:exists', filePath),
     saveAsDialog: (opts) => call('dialog:save-as', opts),
+    /** A destination folder — a split writes several files into one place. */
+    chooseFolder: (opts) => call('dialog:choose-folder', opts),
     write: (filePath, bytes, backup) => call('file:write', { filePath, bytes, backup: !!backup }),
     writeText: (filePath, text) => call('file:write-text', { filePath, text }),
     reveal: (filePath) => call('shell:show-item', filePath)
   },
 
   recovery: {
-    write: (docPath, annotations) => call('recovery:write', { docPath, annotations }),
+    /** `extra` carries the rest of the session state: page order, scale, numbering. */
+    write: (docPath, annotations, extra) => call('recovery:write',
+      Object.assign({ docPath, annotations }, extra || {})),
     read: (docPath) => call('recovery:read', docPath),
     clear: (docPath) => call('recovery:clear', docPath)
   },

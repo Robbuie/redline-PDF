@@ -1012,6 +1012,11 @@
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
       const store = this.store;
+      /* Before the markups, because a number is part of the sheet rather than
+         something drawn over it — and because a markup deliberately placed over
+         the number should cover it, the way it will on paper. This pane's store
+         again, not `RP.store`: only one of two split drawings may be numbered. */
+      RP.render.drawPageNumber(ctx, record.viewport, store, index);
       for (const annot of store.forPage(index)) {
         RP.render.drawAnnotation(ctx, annot, record.viewport, {
           selected: store.selection.has(annot.id),

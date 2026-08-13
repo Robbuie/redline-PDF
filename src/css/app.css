@@ -571,6 +571,8 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 /* compare panel */
 .cmp-setup { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 12px; }
 .cmp-slot label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--txt-2); margin-bottom: 5px; }
+/* The two ways of choosing a baseline stack, so they read as one control. */
+.cmp-slot .wide + .wide { margin-top: 5px; }
 .cmp-file {
   font-size: 11.5px; color: var(--txt-1); margin-top: 5px;
   padding: 6px 8px; background: var(--bg-2); border: 1px solid var(--line-soft);

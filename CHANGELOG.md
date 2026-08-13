@@ -12,6 +12,63 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.12.0] — 2026-08-12
+
+### Added
+
+- **Insert pages from another PDF.** *Pages panel → ⋯ → Insert pages from
+  another PDF*, or the right-click menu on a thumbnail. Choose a file, choose a
+  page range, and say where it goes — a whole issue, or just the two sheets a
+  consultant reissued. The pages are *copied in*: this drawing keeps no link to
+  the file they came from, so moving or deleting it later changes nothing. The
+  markups already on the drawing stay on their own sheets, and `Ctrl+Z` takes
+  the insert back out.
+
+- **Split a document into several PDFs.** *Pages panel → ⋯ → Split into
+  separate PDFs*. Split into fixed-size files, at each page you have selected,
+  or at ranges you type (`1-4, 5-9, 10-`). Every part is a finished drawing:
+  the markups on its pages are stamped into it and stay editable. The document
+  you split is not changed.
+
+- **Page numbering and Bates stamping.** *Pages panel → ⋯ → Add page numbers*.
+  Prefix, first number, zero padding, suffix, corner, type size and margin, over
+  a page range of your choosing — so a set with an unnumbered cover sheet works.
+  The numbers appear on screen straight away and are stamped into the file when
+  you save or print, upright in the same corner however the sheet is plotted.
+  They are a property of the document rather than a markup, so inserting or
+  deleting a page renumbers the rest by itself, and `Ctrl+Z` undoes the lot in
+  one step.
+
+- **Compare against a drawing already open in another tab.** The Compare panel
+  now offers **Use an open tab…** beside **Choose PDF…**. The usual case — the
+  reissue and the revision it supersedes both open in front of you — no longer
+  means going back to the file picker.
+
+### Changed
+
+- **Extracted pages stay editable.** *Extract* used to flatten the markups into
+  the new file, so a comment on an extracted sheet could never be moved or
+  answered again. The extract now carries the same re-editable markups the
+  drawing it came from does, renumbered onto their new page.
+
+- **The crash-recovery snapshot now includes the page arrangement**, the
+  measurement calibration and the page numbering — not just the markups. A
+  session whose unsaved work was a reordered or renumbered set used to be
+  offered back as "0 markups" and lost. A set assembled from other PDFs is the
+  exception: those pages cannot be recovered without the files they came from,
+  so the arrangement is not offered rather than being offered incomplete.
+
+### Fixed
+
+- **Extracting pages from a password-protected drawing now says no** instead of
+  writing a file nothing can open. Same reason every other write is refused on
+  one: the pages cannot be rewritten, only damaged.
+
+- **Choosing a new comparison baseline clears the previous run's results**, so
+  the change list on screen always belongs to the pair named above it.
+
+---
+
 ## [0.11.1] — 2026-08-12
 
 ### Fixed

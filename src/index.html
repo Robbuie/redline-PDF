@@ -219,6 +219,13 @@
       <path d="M13.6 3.5L19 8.9h-5.4z"/>
       <path d="M20.5 4.5l-7 7M20.5 4.5h-4.4M20.5 4.5v4.4"/>
     </symbol>
+    <!-- Solid dots, so fill/stroke are presentation attributes: a stylesheet
+         rule cannot reach inside the shadow tree <use> clones this into. -->
+    <symbol id="i-more" viewBox="0 0 24 24">
+      <circle cx="5.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>
+      <circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>
+      <circle cx="18.5" cy="12" r="1.7" fill="currentColor" stroke="none"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -395,6 +402,7 @@
         <button class="ghost-btn icon-btn" id="pgRotateCw" title="Rotate right" disabled><svg><use href="#i-rot-cw"/></svg></button>
         <button class="ghost-btn icon-btn" id="pgExtract" title="Extract the selected pages to a new PDF" disabled><svg><use href="#i-extract"/></svg></button>
         <button class="ghost-btn icon-btn danger" id="pgDelete" title="Delete the selected pages" disabled><svg><use href="#i-trash"/></svg></button>
+        <button class="ghost-btn icon-btn" id="pgMore" title="Insert from another PDF, split, page numbers…" disabled><svg><use href="#i-more"/></svg></button>
       </div>
       <div class="thumb-list" id="thumbList"></div>
       <div class="side-hint">Drag thumbnails to reorder · Ctrl or Shift click to pick several · right-click for more</div>
@@ -457,6 +465,7 @@
         <div class="cmp-slot">
           <label>Baseline (old revision)</label>
           <button class="ghost-btn wide" id="btnPickBaseline">Choose PDF…</button>
+          <button class="ghost-btn wide" id="btnPickBaselineTab" title="Compare against a drawing already open in another tab">Use an open tab…</button>
           <div class="cmp-file" id="cmpBaselineName">— none —</div>
         </div>
         <div class="cmp-slot">

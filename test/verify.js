@@ -1204,9 +1204,11 @@ function testMarkupStatus() {
     JSON.stringify(counts));
 
   const payload = store.serialize();
-  check('the embedded model declares version 3', payload.version === 3, 'version ' + payload.version);
+  check('the embedded model declares version 4', payload.version === 4, 'version ' + payload.version);
   check('status is part of the embedded model',
     payload.annotations.every((a) => typeof a.status === 'string'));
+  check('the numbering spec is a document-level field, not a per-markup one',
+    'numbering' in payload && !payload.annotations.some((a) => 'numbering' in a));
 
   /* Why an older build does not lose this: `load` and `serialize` both copy
      whole annotation objects, so a field 0.5 has never heard of rides through
@@ -3846,6 +3848,300 @@ async function testRotatedStamp() {
     plateCentred.join(',') === '0,90,180,270', 'centred at ' + plateCentred.join(', ') + '°');
 }
 
+/* ---------------------------------------------------------------------------
+   Assembling and taking apart a document
+
+   Merge, split, extract and page numbering all sit on the same two pieces —
+   the pure order maths in `RP.pages.ops` and the rebuild in `buildBytes` — so
+   the interesting failures are in the grouping arithmetic and in what the
+   pieces carry with them, not in the pdf-lib calls.
+   --------------------------------------------------------------------------- */
+async function testPageAssembly() {
+  console.log('\nMerging, splitting and numbering');
+  const { ops, buildBytes, parseGroups, chunkGroups, breakGroups,
+    rebaseNumbering, recoverableOrder } = RP.pages;
+
+  // --- grouping -------------------------------------------------------------
+  check('fixed-size chunks cover every page and leave a short last part',
+    JSON.stringify(chunkGroups(7, 3)) === '[[0,1,2],[3,4,5],[6]]',
+    JSON.stringify(chunkGroups(7, 3)));
+  check('a chunk size of one is a file per page',
+    chunkGroups(4, 1).length === 4 && chunkGroups(4, 1).every((g) => g.length === 1));
+  check('a nonsense chunk size still produces something usable',
+    JSON.stringify(chunkGroups(3, 0)) === '[[0],[1],[2]]', JSON.stringify(chunkGroups(3, 0)));
+
+  /* The pages before the first chosen break belong to a file too. Without the
+     implicit break at 0 they would belong to none, and a split would quietly
+     drop the front of the set — which is the failure nobody notices until the
+     cover sheet is missing from the issue. */
+  check('a break part-way through still keeps the pages before it',
+    JSON.stringify(breakGroups(6, [3])) === '[[0,1,2],[3,4,5]]',
+    JSON.stringify(breakGroups(6, [3])));
+  check('a break selected on page one is not counted twice',
+    JSON.stringify(breakGroups(4, [0, 2])) === '[[0,1],[2,3]]',
+    JSON.stringify(breakGroups(4, [0, 2])));
+
+  /* A split's ranges are groups, not one flattened list — that is exactly how
+     it differs from the print range it shares a grammar with. Getting this
+     wrong produces one file where the user asked for three, and it looks like
+     the split silently ignored the box. */
+  check('split ranges stay separate rather than flattening like a print range',
+    JSON.stringify(parseGroups('1-2, 3-4', 6)) === '[[0,1],[2,3]]',
+    JSON.stringify(parseGroups('1-2, 3-4', 6)));
+  check('and the print range with the same text is one list',
+    JSON.stringify(RP.print.parseCustom('1-2, 3-4', 6)) === '[0,1,2,3]');
+  check('an open-ended last group runs to the end of the document',
+    JSON.stringify(parseGroups('1-2, 3-', 5)) === '[[0,1],[2,3,4]]',
+    JSON.stringify(parseGroups('1-2, 3-', 5)));
+  check('a group that names nothing is refused rather than dropped',
+    parseGroups('1-2, wat', 5) === null);
+
+  // --- the numbering label --------------------------------------------------
+  const spec = { prefix: 'ABC-', start: 5, digits: 4, suffix: '', from: 1, to: 3 };
+  check('a page before the numbered window carries no number',
+    RP.render.pageNumberText(spec, 0) === null);
+  check('the counter starts at `start` on the first numbered page',
+    RP.render.pageNumberText(spec, 1) === 'ABC-0005', RP.render.pageNumberText(spec, 1));
+  check('and runs on from there', RP.render.pageNumberText(spec, 3) === 'ABC-0007');
+  check('a page past the window is unnumbered too',
+    RP.render.pageNumberText(spec, 4) === null);
+  check('zero digits means no padding',
+    RP.render.pageNumberText({ start: 7, digits: 0, from: 0 }, 0) === '7');
+  check('no spec at all is no number', RP.render.pageNumberText(null, 0) === null);
+
+  /* One undo step for the whole numbering, and none at all for a dialog that
+     was opened and OK'd unaltered — same contract as `setStatus` and the
+     commands in `edit.js`. A dead history entry makes the next Ctrl+Z look
+     like it did nothing. */
+  const numStore = RP.createStore();
+  numStore.numbering = null;
+  check('setting numbering is one undo step',
+    numStore.setNumbering({ start: 1, from: 0 }) === true && numStore.history.length === 1);
+  check('re-setting the same numbering leaves no history behind',
+    numStore.setNumbering({ start: 1, from: 0 }) === false && numStore.history.length === 1);
+  numStore.undo();
+  check('and undo takes the whole numbering back at once', numStore.numbering === null);
+  check('clearing numbering is one step too',
+    numStore.setNumbering({ start: 1, from: 0 }) && numStore.setNumbering(null) === true &&
+    numStore.numbering === null);
+
+  /* PDF space has y up, but these offsets are down the *screen* — the canvas
+     and the exporter both work from the displayed top-left corner. A top-row
+     number sits a cap height below the margin so its ascenders stay on the
+     sheet; a bottom-row one sits `margin` up from the bottom edge. */
+  const size = { w: 600, h: 800 };
+  const bottomRight = RP.render.numberOffsets(size, 'bottom-right', 24, 40, 10);
+  check('bottom right measures in from both far edges',
+    bottomRight.right === 536 && bottomRight.down === 776, JSON.stringify(bottomRight));
+  const topLeft = RP.render.numberOffsets(size, 'top-left', 24, 40, 10);
+  check('top left drops the baseline by a cap height so ascenders stay on the sheet',
+    topLeft.right === 24 && Math.abs(topLeft.down - 32.5) < 0.001, JSON.stringify(topLeft));
+  const centred = RP.render.numberOffsets(size, 'bottom-centre', 24, 40, 10);
+  check('a centred number is centred on the sheet, not on the margin box',
+    centred.right === 280, JSON.stringify(centred));
+  check('an unknown position falls back rather than placing at NaN',
+    JSON.stringify(RP.render.numberOffsets(size, 'nowhere', 24, 40, 10)) ===
+    JSON.stringify(bottomRight));
+
+  // --- rebasing a subset's numbering ---------------------------------------
+  const rebased = rebaseNumbering(spec, [2, 3]);
+  check('an extracted run keeps the numbers its pages already had',
+    RP.render.pageNumberText(rebased, 0) === 'ABC-0006' &&
+    RP.render.pageNumberText(rebased, 1) === 'ABC-0007',
+    JSON.stringify(rebased));
+  check('a subset with no numbered pages in it carries no numbering',
+    rebaseNumbering(spec, [0]) === null);
+
+  // --- what may go in a crash snapshot -------------------------------------
+  check('an untouched document has no order worth persisting',
+    recoverableOrder({ pageOrder: null }) === null);
+  check('an order built from the file alone is persisted',
+    recoverableOrder({ pageOrder: ops.fromDocument(3) }) !== null);
+  /* Half an order is worse than none: it would rebuild the document with the
+     merged-in pages silently missing, and call that a recovery. */
+  check('an order reaching into another PDF is refused whole',
+    recoverableOrder({ pageOrder: ops.fromDocument(2).concat([ops.descriptor('src-1', 0, 0)]) }) === null);
+  check('a blank page does not make an order unrecoverable',
+    recoverableOrder({ pageOrder: ops.fromDocument(1).concat([ops.blank(612, 792)]) }) !== null);
+
+  // --- merging pages in from a second PDF ----------------------------------
+  const makeSet = async (label, count) => {
+    const doc = await PDFLib.PDFDocument.create();
+    const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+    for (let i = 0; i < count; i += 1) {
+      doc.addPage([600, 800]).drawText(label + '-' + (i + 1), { x: 60, y: 700, size: 24, font });
+    }
+    return doc.save();
+  };
+  const host = await makeSet('HOST', 2);
+  const guest = await makeSet('GUEST', 3);
+
+  const merged = ops.insert(ops.fromDocument(2), 1, [
+    ops.descriptor('guest', 1, 0), ops.descriptor('guest', 2, 0)
+  ]);
+  const mergedBytes = await buildBytes(host, merged.order, { guest });
+  const mergedDoc = await PDFLib.PDFDocument.load(mergedBytes);
+  check('merged pages land where they were asked for', mergedDoc.getPageCount() === 4);
+  check('the host document\'s own pages shift along for them',
+    JSON.stringify(merged.map) === '[0,3]', JSON.stringify(merged.map));
+
+  const pdfjs = await loadPdfjs();
+  if (pdfjs) {
+    const parsed = await pdfjs.getDocument({
+      data: new Uint8Array(mergedBytes), useWorkerFetch: false, isEvalSupported: false
+    }).promise;
+    const labels = [];
+    for (let i = 1; i <= parsed.numPages; i += 1) {
+      const content = await (await parsed.getPage(i)).getTextContent();
+      labels.push(content.items.map((item) => item.str).join('').trim());
+    }
+    check('the merged pages carry the other document\'s content, not a placeholder',
+      labels.join(',') === 'HOST-1,GUEST-2,GUEST-3,HOST-2', labels.join(', '));
+  }
+  check('a descriptor naming a source that was never registered is refused',
+    await rejects(() => buildBytes(host, merged.order, {})));
+
+  // --- a subset stays re-editable ------------------------------------------
+  /* The version this replaced stamped the whole drawing and copied pages out of
+     the result, which could not embed the model — its page indices no longer
+     lined up — so an extract came out flattened and its markups could never be
+     answered again. Building the subset from the *stripped* bytes and running
+     the exporter over that is what puts both halves back. */
+  RP.store.docBytes = await makeSourcePdf();
+  RP.store.docName = 'sheet.pdf';
+  RP.store.scale = null;
+  RP.store.numbering = null;
+  RP.store.pageOrder = null;
+  RP.store.baseBytes = null;
+  RP.store.sources = null;
+  RP.store.encrypted = false;
+  RP.store.numPages = 2;
+  RP.store.annotations = sampleAnnotations();
+  const onPageOne = RP.store.annotations.filter((a) => a.page === 1).length;
+
+  const subset = await RP.pages.subsetPdf([1], 'sheet-page-2.pdf');
+  const subsetDoc = await PDFLib.PDFDocument.load(subset);
+  check('an extract holds only the pages asked for', subsetDoc.getPageCount() === 1);
+
+  const subsetModel = await RP.exporter.readEmbeddedMarkup(subset);
+  check('an extract carries a re-editable markup model',
+    !!subsetModel && subsetModel.annotations.length === onPageOne,
+    subsetModel ? subsetModel.annotations.length + ' of ' + onPageOne : 'no model');
+  check('and its markups are renumbered onto the pages they are now on',
+    !!subsetModel && subsetModel.annotations.every((a) => a.page === 0));
+
+  const streams = async (bytes) => {
+    const doc = await PDFLib.PDFDocument.load(bytes);
+    return doc.getPages().map((page) => {
+      const contents = page.node.get(PDFLib.PDFName.of('Contents'));
+      return contents && contents.asArray ? contents.asArray().length : 1;
+    });
+  };
+  /* The trap this guards: pages copied out of already-stamped bytes carry the
+     stamp baked in, and a model embedded beside it would draw every markup
+     twice on re-open — once live and once unreachable. Re-opening the extract
+     and saving it again has to be idempotent exactly as the parent is. */
+  const reopened = await RP.exporter.splitSaved(subset);
+  const child = RP.createStore();
+  child.docBytes = reopened.bytes;
+  child.docName = 'sheet-page-2.pdf';
+  child.annotations = reopened.model.annotations;
+  const resaved = await RP.exporter.buildPdf({ store: child });
+  check('re-saving an extract does not double-stamp it',
+    JSON.stringify(await streams(resaved)) === JSON.stringify(await streams(subset)),
+    JSON.stringify(await streams(subset)) + ' -> ' + JSON.stringify(await streams(resaved)));
+
+  // The markups the parent kept are untouched by any of this.
+  check('extracting leaves the document it came from alone',
+    RP.store.annotations.length === sampleAnnotations().length &&
+    RP.store.annotations.some((a) => a.page === 1));
+
+  // --- the numbers land upright in the right corner -------------------------
+  if (pdfjs) {
+    const uprightAt = [];
+    const cornerAt = [];
+    const MARGIN = 30;
+    const NUM_SIZE = 12;
+    for (const angle of [0, 90, 180, 270]) {
+      const doc = await PDFLib.PDFDocument.create();
+      doc.addPage([612, 792]).setRotation(PDFLib.degrees(angle));
+
+      const numbered = RP.createStore();
+      numbered.docBytes = await doc.save();
+      numbered.docName = 'numbered.pdf';
+      numbered.annotations = [];
+      numbered.numbering = {
+        prefix: 'BATES-', start: 41, digits: 5, suffix: '',
+        position: 'bottom-right', margin: MARGIN, size: NUM_SIZE, from: 0, to: 0
+      };
+      const stamped = await RP.exporter.buildPdf({ store: numbered });
+      const parsed = await pdfjs.getDocument({
+        data: new Uint8Array(stamped), useWorkerFetch: false, isEvalSupported: false
+      }).promise;
+      const pageProxy = await parsed.getPage(1);
+      const viewport = pageProxy.getViewport({ scale: 1, rotation: pageProxy.rotate });
+      const content = await pageProxy.getTextContent();
+      const item = content.items.find((it) => (it.str || '').includes('BATES-00041'));
+      if (!item) { check('the number is stamped at ' + angle + '°', false); continue; }
+
+      const device = pdfjs.Util.transform(viewport.transform, item.transform);
+      if (Math.abs(device[1]) < 0.01 && device[0] > 0) uprightAt.push(angle);
+      /* Bottom right *as displayed*. The viewport is already turned, so the
+         expected place is the same pair of numbers at every angle — which is
+         the whole point, and is what a number laid along +x in user space
+         would fail: it would walk round the sheet as the page turned. */
+      const wantRight = viewport.width - MARGIN;
+      const wantDown = viewport.height - MARGIN;
+      if (Math.abs(device[4] + item.width - wantRight) < 1.5 &&
+        Math.abs(device[5] - wantDown) < 1.5) cornerAt.push(angle);
+    }
+    check('a page number reads horizontally at every /Rotate',
+      uprightAt.join(',') === '0,90,180,270', 'upright at ' + uprightAt.join(', ') + '°');
+    check('and sits in the same displayed corner however the sheet is turned',
+      cornerAt.join(',') === '0,90,180,270', 'in the corner at ' + cornerAt.join(', ') + '°');
+  }
+
+  // --- numbering is stripped and re-stamped like everything else ------------
+  const numberedStore = RP.createStore();
+  numberedStore.docBytes = await makeSet('SHEET', 3);
+  numberedStore.docName = 'set.pdf';
+  numberedStore.annotations = [];
+  numberedStore.numbering = { prefix: '', start: 1, digits: 3, position: 'bottom-centre', from: 0, to: 2 };
+  const firstSave = await RP.exporter.buildPdf({ store: numberedStore });
+  numberedStore.docBytes = firstSave;
+  const secondSave = await RP.exporter.buildPdf({ store: numberedStore });
+  check('re-saving a numbered set does not stamp the numbers twice',
+    JSON.stringify(await streams(secondSave)) === JSON.stringify(await streams(firstSave)),
+    JSON.stringify(await streams(firstSave)) + ' -> ' + JSON.stringify(await streams(secondSave)));
+
+  const label = await pageLabel(firstSave, 1);
+  if (label !== null) {
+    check('the second sheet is stamped with its own number, not the first\'s',
+      label.includes('002') && !label.includes('001'), label);
+  }
+
+  /* A print is a dead end, so it carries no model — but it must still carry the
+     numbers, or a numbered set would print unnumbered. Built from a clean store
+     rather than from `firstSave`, because that is how the app reaches it: the
+     bytes a reopened drawing prints from have had the stamp lifted back out of
+     them by `splitSaved` before pdf.js ever saw the file. */
+  const printStore = RP.createStore();
+  printStore.docBytes = await makeSet('SHEET', 3);
+  printStore.docName = 'set.pdf';
+  printStore.annotations = [];
+  printStore.numbering = numberedStore.numbering;
+  const printCopy = await RP.exporter.buildPdf({ store: printStore, embed: false });
+  check('a print copy carries no re-editable model',
+    (await RP.exporter.readEmbeddedMarkup(printCopy)) === null);
+  const printLabel = await pageLabel(printCopy, 2);
+  if (printLabel !== null) {
+    check('but a numbered set still prints numbered',
+      printLabel.includes('003'), printLabel);
+  }
+
+  RP.store.numbering = null;
+}
+
 /** Read the sheet label back out of a page, to prove content moved with it. */
 async function pageLabel(bytes, index) {
   const pdfjs = await loadPdfjs();
@@ -3884,6 +4180,7 @@ async function pageLabel(bytes, index) {
     await testReopen();
     await testRotatedStamp();
     await testPageManagement();
+    await testPageAssembly();
     await testPrinting();
   } catch (err) {
     failures += 1;

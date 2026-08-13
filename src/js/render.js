@@ -1051,6 +1051,105 @@
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Page numbering / Bates stamping
+  //
+  // Not a markup: it belongs to the *document*, not to a page, so it lives on
+  // the store as one small spec rather than as N annotations. What that buys is
+  // that inserting a page renumbers everything after it for free — a numbering
+  // made of annotations would have to be rebuilt on every page operation, and
+  // the one that got missed would be the one that shipped.
+  //
+  // Everything below is shared with `exporter.js`, for the same reason
+  // `readingLines` is: a set stamped with different numbers from the ones on
+  // screen is a set somebody files an RFI against.
+  // -------------------------------------------------------------------------
+
+  const NUMBER_POSITIONS = [
+    'bottom-right', 'bottom-centre', 'bottom-left',
+    'top-right', 'top-centre', 'top-left'
+  ];
+
+  const NUMBER_DEFAULTS = {
+    prefix: '', suffix: '', start: 1, digits: 0,
+    position: 'bottom-right', margin: 24, size: 10, color: '#16181d'
+  };
+
+  /**
+   * The label page `pageIndex` carries, or null if it is outside the numbered
+   * window. `from`/`to` are zero-based and inclusive, and the counter starts at
+   * `start` on `from` — so numbering pages 3 onward from 1 is expressible, which
+   * is what a set with an unnumbered cover sheet wants.
+   */
+  function pageNumberText(spec, pageIndex) {
+    if (!spec) return null;
+    const from = Math.max(0, Math.round(spec.from || 0));
+    const to = spec.to === undefined || spec.to === null ? Infinity : Math.round(spec.to);
+    if (pageIndex < from || pageIndex > to) return null;
+    const n = Math.round(spec.start === undefined ? 1 : spec.start) + (pageIndex - from);
+    const digits = RP.clamp(Math.round(spec.digits || 0), 0, 12);
+    const body = n < 0 ? '-' + String(-n).padStart(digits, '0') : String(n).padStart(digits, '0');
+    return (spec.prefix || '') + body + (spec.suffix || '');
+  }
+
+  /**
+   * Where the number's *baseline* sits, as offsets right and down from the
+   * displayed top-left corner of the sheet.
+   *
+   * Pure, and unit-agnostic: the canvas passes CSS pixels and the exporter
+   * passes points, and neither knows about the other. That is the whole point —
+   * the two media place the run with different arithmetic (the canvas gets the
+   * rotation from the pdf.js viewport, the exporter has to apply it by hand
+   * through `pageFrame`) and this is the part that must not drift.
+   */
+  function numberOffsets(size, position, margin, textWidth, fontSize) {
+    const pos = NUMBER_POSITIONS.indexOf(position) >= 0 ? position : NUMBER_DEFAULTS.position;
+    const dash = pos.indexOf('-');
+    const edge = pos.slice(0, dash);
+    const align = pos.slice(dash + 1);
+    // A baseline `margin` below the top edge would put the ascenders off the
+    // sheet, so the top row is pushed down by a cap height as well.
+    const down = edge === 'top' ? margin + fontSize * 0.85 : size.h - margin;
+    const right = align === 'left' ? margin
+      : align === 'right' ? size.w - margin - textWidth
+        : (size.w - textWidth) / 2;
+    return { right, down };
+  }
+
+  /** Fill in whatever the caller left out, so both media read one shape. */
+  function numberingSpec(spec) {
+    return spec ? Object.assign({}, NUMBER_DEFAULTS, spec) : null;
+  }
+
+  /**
+   * Paint the page number onto the markup canvas.
+   *
+   * The viewport has already applied the page's rotation and the zoom, so this
+   * side needs no frame maths at all — the sheet's displayed size is
+   * `viewport.width/height` and "down" is down. The margin and the type size are
+   * multiplied by the scale because they are specified in points, which is what
+   * makes the number sit in the same place on screen as it lands on paper.
+   */
+  function drawPageNumber(ctx, viewport, store, pageIndex) {
+    const spec = numberingSpec(store && store.numbering);
+    const text = pageNumberText(spec, pageIndex);
+    if (!text) return;
+    const scale = viewport.scale || 1;
+    const fontSize = spec.size * scale;
+    ctx.save();
+    ctx.font = fontSpec({ fontFamily: 'sans' }, fontSize);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = spec.color || NUMBER_DEFAULTS.color;
+    ctx.globalAlpha = 1;
+    const width = ctx.measureText(text).width;
+    const off = numberOffsets(
+      { w: viewport.width, h: viewport.height },
+      spec.position, spec.margin * scale, width, fontSize
+    );
+    ctx.fillText(text, off.right, off.down);
+    ctx.restore();
+  }
+
   RP.render = {
     NOTE_SIZE,
     HANDLE,
@@ -1084,6 +1183,12 @@
     DEFAULT_TEXT_COLOR,
     CALLOUT_PAD,
     CALLOUT_LINE,
+    NUMBER_POSITIONS,
+    NUMBER_DEFAULTS,
+    pageNumberText,
+    numberOffsets,
+    numberingSpec,
+    drawPageNumber,
     drawAnnotation,
     drawSelection,
     handlesFor,
