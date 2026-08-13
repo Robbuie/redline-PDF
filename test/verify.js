@@ -2093,6 +2093,133 @@ function testViewModes() {
 }
 
 /* ---------------------------------------------------------------------------
+   Raster cap
+
+   The blank page. Chromium refuses a canvas over ~16384 px on a side or over an
+   area it will not commit to, and it refuses *silently*: the allocation fails,
+   `page.render()` resolves as normal, and the sheet is white with nothing
+   logged. On the drawings this app is for that is not a corner case — an ANSI E
+   sheet crosses the side limit at about 335% zoom at dpr 2, and a long plot out
+   of a DWF crosses it barely above fit-width.
+
+   `rasterPlan` is the clamp, and it is pure so it can be pinned here. The rule
+   it must never break: the canvas gets smaller, the CSS box does not. A soft
+   sheet is a sheet; a refused canvas is indistinguishable from an empty
+   drawing.
+   --------------------------------------------------------------------------- */
+function testRasterCap() {
+  console.log('\nRaster cap');
+
+  const MAX_SIDE = RP.views.MAX_CANVAS_SIDE;
+  const MAX_PX = RP.views.MAX_CANVAS_PIXELS;
+  const plan = (w, h, dpr) => RP.views.rasterPlan(w, h, dpr);
+
+  // A letter sheet at 100%: nothing here should touch it.
+  const letter = plan(612, 792, 2);
+  check('an ordinary sheet rasters at the dpr it asked for',
+    !letter.capped && letter.scale === 2 && letter.width === 1224,
+    `${letter.width}x${letter.height} @ ${letter.scale}`);
+
+  // An E-size sheet at fit-width on a wide pane — the 13 MP case the retention
+  // budget was written around. Still under both limits, still untouched.
+  const eFit = plan(1600, 2070, 2);
+  check('an E-size sheet at fit-width is not capped',
+    !eFit.capped, `${eFit.width}x${eFit.height} = ${(eFit.width * eFit.height / 1e6).toFixed(1)} MP`);
+
+  /* The side limit. ANSI E is 2448 x 3168 pt, so 400% zoom is 9792 x 12672 CSS
+     px and dpr 2 asks for 19584 x 25344 — refused, silently, which is the bug
+     this whole section exists for. */
+  const e400 = plan(9792, 12672, 2);
+  check('an E-size sheet at 400% is capped rather than refused',
+    e400.capped && e400.width <= MAX_SIDE && e400.height <= MAX_SIDE,
+    `${e400.width}x${e400.height} @ ${e400.scale.toFixed(3)}`);
+
+  /* A long plot: a riser diagram or site plan run out on one continuous sheet
+     from a DWF. 7200 pt across is 100 inches, which is ordinary for one of
+     these, and at dpr 2 it crosses the side limit at 1.14x zoom. */
+  const longPlot = plan(7200, 1224, 2);
+  check('a long DWF plot is capped just above fit-width',
+    longPlot.capped && longPlot.width <= MAX_SIDE,
+    `${longPlot.width}x${longPlot.height} @ ${longPlot.scale.toFixed(3)}`);
+
+  // Every plan, whatever it was asked for, has to be something the browser will
+  // actually hand over. This is the invariant the whole fix rests on.
+  let worstSide = 0;
+  let worstPixels = 0;
+  let squashed = null;
+  for (const w of [612, 1224, 2448, 5000, 9792, 20000, 40000]) {
+    for (const h of [792, 1584, 3168, 1224, 12672, 30000]) {
+      for (const dpr of [1, 1.5, 2, 3]) {
+        const p = plan(w, h, dpr);
+        worstSide = Math.max(worstSide, p.width, p.height);
+        worstPixels = Math.max(worstPixels, p.width * p.height);
+        // Proportion is not optional: the CSS box does not change, so a raster
+        // clamped on one axis alone is stretched over it and every markup
+        // painted through `rasterScale` lands in the wrong place.
+        const wantAspect = w / h;
+        const gotAspect = p.width / p.height;
+        if (Math.abs(wantAspect - gotAspect) / wantAspect > 0.02) {
+          squashed = `${w}x${h} @${dpr} -> ${p.width}x${p.height}`;
+        }
+      }
+    }
+  }
+  check('no plan exceeds the per-side limit', worstSide <= MAX_SIDE, worstSide + ' px');
+  check('no plan exceeds the pixel budget', worstPixels <= MAX_PX,
+    (worstPixels / 1e6).toFixed(1) + ' MP vs ' + (MAX_PX / 1e6) + ' MP');
+  check('a capped raster keeps the page proportions', !squashed, squashed || 'aspect held');
+
+  // Never zero: a canvas with no dimension has no context to draw through, and
+  // the failure looks exactly like the one being fixed.
+  const degenerate = plan(0, 0, 2);
+  check('a degenerate page still gets a usable canvas',
+    degenerate.width >= 1 && degenerate.height >= 1,
+    `${degenerate.width}x${degenerate.height}`);
+
+  /* The cap is a *scale*, and `rasterScale` is what the markup canvas paints
+     through. A page capped to half the requested dpr must report exactly that,
+     or markups drift by the ratio on precisely the large sheets being fixed. */
+  const capped = plan(MAX_SIDE, 1000, 2);
+  check('the plan reports the scale the markup layer has to paint at',
+    Math.abs(capped.width - MAX_SIDE * capped.scale) < 1.5,
+    `${capped.width} px at scale ${capped.scale.toFixed(3)}`);
+
+  /* A page whose *layout* already exceeds the limit gets a scale below 1 — the
+     bitmap is smaller than the CSS box and is stretched over it. That is the
+     trade, and it is the same one `setZoom({defer:true})` already makes. */
+  const beyond = plan(MAX_SIDE * 2, 1000, 1);
+  check('a page laid out past the limit rasters below 1:1 rather than failing',
+    beyond.scale < 1 && beyond.width <= MAX_SIDE, `scale ${beyond.scale.toFixed(3)}`);
+
+  /* The blank-canvas probe. `renderPage` fills white and reads one pixel back,
+     because a refused surface reads as transparent black while `canvas.width`
+     still reports whatever was assigned to it. */
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  const pixelCtx = (rgba) => ({ getImageData: () => ({ data: rgba }) });
+  check('a canvas that took the white fill is accepted',
+    viewer.canvasTookTheFill(pixelCtx([255, 255, 255, 255]), { width: 100, height: 100 }));
+  check('a refused surface reads back transparent and is caught',
+    !viewer.canvasTookTheFill(pixelCtx([0, 0, 0, 0]), { width: 100, height: 100 }));
+  check('a zero-sized canvas is caught',
+    !viewer.canvasTookTheFill(pixelCtx([255, 255, 255, 255]), { width: 0, height: 100 }));
+  check('a context that throws on read is caught, not propagated',
+    !viewer.canvasTookTheFill(
+      { getImageData() { throw new Error('out of memory'); } }, { width: 100, height: 100 }));
+
+  /* A page that could not be rastered has to say so. The failed state is a
+     class on the container and a rule in app.css; a white rectangle on its own
+     reads as a drawing with nothing on it, which is the wrong thing to tell
+     someone about a sheet that did not render. */
+  const cssPath = path.join(ROOT, 'src', 'css', 'app.css');
+  const css = fs.readFileSync(cssPath, 'utf8');
+  check('a failed raster has something on screen saying so',
+    /\.page\.render-failed::after\s*\{[^}]*content:\s*"[^"]+"/.test(css));
+  check('the failure notice is positioned, not left in flow below the canvas',
+    /\.page\.render-failed::after\s*\{[^}]*position:\s*absolute/.test(css),
+    'in flow it lands outside the page box and is never seen');
+}
+
+/* ---------------------------------------------------------------------------
    Canvas retention
 
    Nothing frees a page canvas on its own. A 77-sheet set at fit-width holds
@@ -2176,8 +2303,14 @@ function testCanvasRetention() {
     viewer.rasterStats().rastered === stable.rastered, `${stable.rastered} pages held`);
 
   /* A single sheet can be larger than the whole budget — an E-size drawing at
-     400% is tens of megapixels on its own. The floor is what stops the viewer
-     evicting everything and rendering nothing. */
+     400% is tens of megapixels on its own. Something must survive, or the
+     viewer evicts everything and renders nothing.
+
+     What survives is where this changed. The page floor used to be
+     unconditional, so three sheets of this size were held whatever the budget
+     said — several hundred megabytes that nothing could evict, on exactly the
+     documents the budget was written for. The floor now gives way past
+     FLOOR_CEILING_PX and only the sheet under the viewport stays exempt. */
   const huge = RP.createViewer({ querySelector: () => null }, RP.store);
   huge.pages = [];
   for (let i = 0; i < 6; i += 1) {
@@ -2191,9 +2324,23 @@ function testCanvasRetention() {
   huge.currentPage = 3;
   huge.retainCanvases();
   check('a sheet larger than the whole budget is still retained',
-    huge.rasterStats().rastered >= 3, huge.rasterStats().rastered + ' pages held');
-  check('the retained ones are the pages nearest the viewport',
+    huge.rasterStats().rastered >= 1, huge.rasterStats().rastered + ' pages held');
+  check('the retained one is the page under the viewport',
     huge.pages[3].pdfCanvas.width > 0, 'current page held');
+  check('the page floor does not hold sheets this size against the budget',
+    huge.rasterStats().approxMB < 6 * 12000 * 12000 * 2 * 4 / 1e6 / 3,
+    huge.rasterStats().approxMB + ' MB held');
+
+  /* The floor still does its job at ordinary sheet sizes: three 13 MP pages
+     are what it was written for, and evicting the neighbours of the page you
+     are on means re-rendering them the moment you scroll a line. */
+  const normal = RP.createViewer({ querySelector: () => null }, RP.store);
+  normal.pages = [];
+  for (let i = 0; i < 12; i += 1) normal.pages.push(makeRecord(i, false));
+  normal.currentPage = 6;
+  normal.retainCanvases();
+  check('the floor still holds three ordinary sheets',
+    normal.rasterStats().rastered >= 3, normal.rasterStats().rastered + ' pages held');
 }
 
 /* ---------------------------------------------------------------------------
@@ -4302,6 +4449,7 @@ async function pageLabel(bytes, index) {
     testCompareGuards();
     testMarqueeZoom();
     testViewModes();
+    testRasterCap();
     testCanvasRetention();
     testScrollPage();
     testSessions();

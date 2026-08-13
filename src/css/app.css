@@ -927,6 +927,25 @@ body.presenting .viewer { background: #0b0d10; }
   background: repeating-linear-gradient(45deg, rgba(0,0,0,.02) 0 8px, rgba(0,0,0,.05) 8px 16px);
 }
 
+/* A raster the browser refused — see `rasterRefused` in viewer.js. The page
+   keeps its box in the column, so this has to say what happened: a sheet that
+   could not be drawn and a sheet with nothing on it are the same white
+   rectangle otherwise, and the first one is not the drawing's fault.
+
+   Absolutely positioned, deliberately. `.page` is sized in CSS pixels by
+   `layout()` and its canvases are positioned inside that box, so anything in
+   normal flow here lands *below* the canvas and outside the box — which on a
+   large-format sheet is a message nobody ever sees. */
+.page.render-failed::after {
+  content: "This sheet could not be rendered at this zoom — zoom out to see it.";
+  position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+  z-index: 5; max-width: min(460px, 90%);
+  padding: 10px 14px;
+  font: 500 13px/1.4 system-ui, sans-serif;
+  color: #7a2718; background: #fdece8; text-align: center;
+  border: 1px solid #f0b6a8; border-radius: 6px;
+}
+
 .page canvas.pdf-canvas,
 .page canvas.annot-canvas,
 .page canvas.hit-canvas {

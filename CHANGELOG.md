@@ -12,6 +12,27 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.13.1] — 2026-08-12
+
+### Fixed
+
+- **Large-format sheets no longer go blank when you zoom in.** A big drawing —
+  an E-size sheet past about 350%, or a long plot exported from a DWG or DWF in
+  one continuous strip, which could go blank barely above fit-width — would
+  come back as a white page with nothing to say why. The browser refuses to
+  give out a picture that large and does it silently, so the app took the empty
+  result for the drawing. It now works out how large a picture it can actually
+  have, and draws the sheet slightly softer instead of not at all. Ordinary
+  sheets are unaffected; nothing about the drawing, the markups or what gets
+  saved changes.
+- **A sheet that genuinely cannot be drawn now says so** instead of leaving a
+  white page that looks like an empty drawing. If it happens, zooming out will
+  bring the sheet back.
+- **Long sessions on large sheets stay quicker.** Only the sheets close to the
+  one you are on keep their full-resolution picture in memory; on drawings this
+  size the previous rule held on to more than it meant to, and every page after
+  that took longer to appear the further into the set you had scrolled.
+
 ## [0.13.0] — 2026-08-12
 
 ### Added

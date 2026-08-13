@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.13.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.13.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -374,6 +374,32 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   target sheet size back through the rotation first. Get this backwards and
   every landscape-plotted sheet prints off the edge of the paper.
   `test/verify.js` covers it, along with a MediaBox whose origin is not (0,0).
+- **The browser refuses a canvas past a certain size and does it silently, so
+  the raster is capped and the layout is not.** Chromium will not allocate over
+  ~16384 px on a side, or past an area it will not commit to — and the failure
+  is not an exception. The allocation "succeeds", `page.render()` resolves
+  normally, and what is on screen is a white rectangle that cannot be told from
+  an empty drawing. This is not a corner case on plotted sheets: ANSI E is
+  2448 × 3168 pt, so at dpr 2 the side limit lands at about 335% zoom, and a
+  long plot out of a DWG/DWF — a riser diagram or a site plan run out on one
+  continuous strip, 7000 pt across — crosses it barely above fit-width. That
+  was the blank page. `RP.views.rasterPlan` clamps the backing store against
+  both limits and `renderPage` rasters at the scale it returns; **the CSS box
+  set by `layout()` does not follow it**, so a capped page is stretched rather
+  than missing — the same trade `setZoom({defer: true})` already makes. Three
+  consequences. The clamp is applied to the *scale*, not to the dimensions, or
+  the raster is squashed against a CSS box that did not change. Anything
+  painting into these canvases transforms by `record.rasterScale`, **not by
+  `this.dpr`** — `redrawPage` included, or every markup lands at the wrong
+  scale on exactly the sheets this rescues. And the white fill every render
+  starts with doubles as the probe: `canvasTookTheFill` reads one pixel back,
+  because a refused surface reads transparent while `canvas.width` still
+  reports whatever was assigned. A page that fails twice over gives up, keeps
+  its box, and says so through `.page.render-failed` — a sheet that could not
+  be drawn is not the same as a sheet with nothing on it, and without that they
+  are identical on screen. `snapshot.js` has known all of this since it shipped
+  (`MAX_PIXELS`); the page canvases simply never got it. `test/verify.js`
+  covers the limits, the proportions, the probe and the notice.
 - **Page canvases are on a memory budget, and a released page is not a bug.**
   Nothing frees a canvas on its own, and an E-size sheet at fit-width is ~13
   megapixels per canvas with two per page, so a 77-sheet set scrolled end to end
@@ -385,7 +411,17 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   and `releasePage` zeroes *both* canvas dimensions — `clearRect` leaves the
   backing store allocated. Pages on screen and the `MIN_RETAINED_PAGES` floor
   are exempt, so the budget is a target and not a ceiling. The CSS size stays
-  put, or the scroll column would concertina. `test/verify.js` covers it.
+  put, or the scroll column would concertina. **The floor gives way past
+  `FLOOR_CEILING_PX`, and only the sheet under the viewport is exempt beyond
+  it** — a floor counted in *pages* is a floor on the wrong unit, and three
+  large-format sheets between them ran to several hundred megabytes that
+  nothing could evict, on exactly the documents the budget was written for.
+  The nearest page stays exempt whatever the arithmetic says: evicting the
+  sheet being drawn on means re-rendering it on the next scroll frame, and then
+  the one after. `held` is also not decremented when a page is released, or a
+  page further from the viewport could survive because a nearer one was just
+  dropped, which inverts the ordering the whole sweep is built on.
+  `test/verify.js` covers it.
 - **Rasterisation is queued, not fired off the observer.** pdf.js has one
   worker, so `requestPage` puts indices in `renderQueue` and `pumpRenders` runs
   at most `MAX_PAGE_RENDERS` at a time, nearest the viewport first. Thumbnails

@@ -45,6 +45,19 @@
   const CANVAS_BUDGET_PX = 64e6;   // ~256 MB of backing store at 4 bytes/px
   const MIN_RETAINED_PAGES = 3;
 
+  /* The point past which the page floor stops overriding the pixel budget.
+     MIN_RETAINED_PAGES on its own is a floor on the wrong unit: three ANSI E
+     sheets are hundreds of megabytes between them, so on exactly the documents
+     the budget was written for it was not enforcing anything. Beyond this the
+     floor gives way and only the sheet under the viewport is exempt. */
+  const FLOOR_CEILING_PX = CANVAS_BUDGET_PX * 2;
+
+  /* How far a refused canvas may be scaled back before the page gives up and
+     says so. An eighth of the requested dpr is already a visibly soft sheet;
+     past that it is not a page anyone can read, and continuing to halve just
+     turns a reportable failure into a slow one. */
+  const MIN_RASTER_BACKOFF = 1 / 8;
+
   /* pdf.js has one worker. Letting a 600px scroll burst start six full-page
      renders at once only makes the sheet you are looking at wait behind five
      you are not. */
@@ -513,6 +526,16 @@
         }
         record.rendered = false;
         record.annotDirty = true;
+        /* A new zoom is a new question. A sheet the browser refused at 400% is
+           usually fine at 100%, so the backoff and the failed state do not
+           survive a re-layout — otherwise zooming back out would leave the
+           page reporting a failure it is no longer having. */
+        record.rasterBackoff = 0;
+        record.needsRetry = false;
+        if (record.renderFailed) {
+          record.renderFailed = false;
+          record.container.classList.remove('render-failed');
+        }
         if (record.renderTask) { try { record.renderTask.cancel(); } catch (err) { /* ignore */ } }
         record.renderTask = null;
         // A zoom invalidates every bitmap. The off-screen ones are not being
@@ -813,6 +836,11 @@
         this.renderPage(index).then(() => {
           this.activeRenders -= 1;
           this.retainCanvases();
+          /* A raster the browser refused, backing off to a smaller one. It goes
+             back through the queue rather than retrying inside the slot: the
+             sheet that gets refused is a large one, and holding a slot open
+             through two more attempts at it stalls the pages behind it. */
+          if (record.needsRetry) { record.needsRetry = false; this.requestPage(index); }
           this.pumpRenders();
           this.pumpThumbs();
         });
@@ -883,7 +911,14 @@
     rasterStats() {
       let held = 0;
       let pixels = 0;
+      let capped = 0;
+      let failed = 0;
       for (const record of this.pages) {
+        // Counted whether or not the page currently holds a bitmap: a sheet
+        // that was refused outright has no canvas and is exactly the one worth
+        // reporting.
+        if (record.renderFailed) failed += 1;
+        if (record.rasterScale && record.rasterScale < this.dpr - 1e-9) capped += 1;
         if (!record.pdfCanvas || !record.pdfCanvas.width) continue;
         held += 1;
         pixels += record.pdfCanvas.width * record.pdfCanvas.height * 2;
@@ -891,6 +926,11 @@
       return {
         pages: this.pages.length,
         rastered: held,
+        // Sheets too large to raster at full resolution, and sheets the browser
+        // would not give a canvas for at all. Both read as "blank page" on
+        // screen without this, which is why they are here.
+        capped,
+        failed,
         approxMB: Math.round(pixels * 4 / 1e6),
         budgetMB: Math.round(CANVAS_BUDGET_PX * 4 / 1e6),
         queued: this.renderQueue.length,
@@ -906,14 +946,58 @@
       live.sort((a, b) =>
         Math.abs(a.index - this.currentPage) - Math.abs(b.index - this.currentPage));
 
-      let budget = CANVAS_BUDGET_PX;
+      let held = 0;
       for (let i = 0; i < live.length; i += 1) {
         const record = live[i];
         // Two canvases per page, always the same size as each other.
-        budget -= record.pdfCanvas.width * record.pdfCanvas.height * 2;
-        if (budget >= 0 || i < MIN_RETAINED_PAGES) continue;
+        held += record.pdfCanvas.width * record.pdfCanvas.height * 2;
+
+        /* The floor is a floor on *pages*, which on a large-format sheet used
+           to mean the budget was not a budget at all: three pages that are
+           tens of megapixels each ran to several hundred megabytes with
+           nothing able to evict them, which is the thrash the budget exists to
+           prevent. So the floor now stops applying once what it is holding is
+           itself well past the budget — with the single nearest page always
+           exempt, because evicting the sheet under the viewport means
+           re-rendering it on the next scroll frame, forever. */
+        const floored = i === 0 || (i < MIN_RETAINED_PAGES && held <= FLOOR_CEILING_PX);
+        /* `held` is what would be held if everything down to here survived, and
+           it keeps counting pages that are exempt — a visible sheet costs the
+           same memory as any other. Not decremented on eviction, or a page
+           further from the viewport could be kept because a nearer one was
+           just dropped, which inverts the whole ordering. */
+        if (held <= CANVAS_BUDGET_PX || floored) continue;
         if (record.visible || record.renderTask) continue;
         this.releasePage(record);
+      }
+    },
+
+    /**
+     * Did the browser actually give us the canvas we asked for?
+     *
+     * A refused allocation does not throw and does not come back with zeroed
+     * dimensions — `canvas.width` reads back whatever was assigned and the
+     * context is there. What is missing is the drawing surface, so nothing
+     * painted onto it lands. The white fill that every render starts with is
+     * therefore also the probe: one pixel of it read back is the difference
+     * between "this sheet is blank" and "this sheet was never drawn", and the
+     * two need different answers on screen.
+     *
+     * Same idea as the zero-ink / near-total-ink checks in `compare.js`, and
+     * for the same reason — a failed raster that goes unnoticed gets reported
+     * as a fault in the drawing.
+     */
+    canvasTookTheFill(ctx, canvas) {
+      if (!canvas || !canvas.width || !canvas.height) return false;
+      // A stubbed context (test/verify.js) has no pixels to read and is not
+      // what this guard is about.
+      if (!ctx || typeof ctx.getImageData !== 'function') return true;
+      try {
+        const px = ctx.getImageData(0, 0, 1, 1).data;
+        return px[3] !== 0 && px[0] > 250 && px[1] > 250 && px[2] > 250;
+      } catch (err) {
+        // Chromium throws here on a canvas it could not back at all.
+        return false;
       }
     },
 
@@ -921,17 +1005,36 @@
       const record = this.pages[index];
       if (!record || record.rendered || record.renderTask) return;
       const viewport = record.viewport;
-      const dpr = this.dpr;
+
+      /* The raster is capped, the layout is not.
+         `rasterPlan` clamps the backing store against the limits Chromium
+         refuses past — silently, which is what made this a blank page rather
+         than an error. The CSS box was set by `layout()` and stays at the full
+         zoom, so a capped page is stretched rather than missing. `rasterScale`
+         is what everything painting into these canvases has to transform by;
+         it is the requested dpr on every ordinary sheet. */
+      const dpr = this.dpr * (record.rasterBackoff || 1);
+      const plan = RP.views.rasterPlan(viewport.width, viewport.height, dpr);
+      record.rasterScale = plan.scale;
 
       record.container.classList.add('rendering');
-      record.pdfCanvas.width = Math.floor(viewport.width * dpr);
-      record.pdfCanvas.height = Math.floor(viewport.height * dpr);
+      record.container.classList.remove('render-failed');
+      record.pdfCanvas.width = plan.width;
+      record.pdfCanvas.height = plan.height;
       record.annotCanvas.width = record.pdfCanvas.width;
       record.annotCanvas.height = record.pdfCanvas.height;
 
       const ctx = record.pdfCanvas.getContext('2d', { alpha: false });
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, record.pdfCanvas.width, record.pdfCanvas.height);
+
+      // Before spending a render on it. A sheet this large is exactly the one
+      // that takes ten seconds to draw, and drawing it into a surface that was
+      // never allocated wastes the whole of that on the one worker.
+      if (!this.canvasTookTheFill(ctx, record.pdfCanvas)) {
+        this.rasterRefused(record, plan);
+        return;
+      }
 
       // Some native annotations (Bluebeam stamps, free text with its own
       // appearance) are rendered onto a canvas of their own rather than into
@@ -942,14 +1045,21 @@
       const task = record.pageProxy.render({
         canvasContext: ctx,
         viewport,
-        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+        transform: plan.scale !== 1 ? [plan.scale, 0, 0, plan.scale, 0, 0] : null,
         annotationCanvasMap: record.annotCanvasMap
       });
       record.renderTask = task;
 
       try {
         await task.promise;
+        // The surface can still be dropped mid-render under memory pressure,
+        // and the promise resolves either way.
+        if (!this.canvasTookTheFill(ctx, record.pdfCanvas)) {
+          this.rasterRefused(record, plan);
+          return;
+        }
         record.rendered = true;
+        record.rasterBackoff = 0;
         record.container.classList.remove('rendering');
         await this.buildTextLayer(record);
         await RP.annots.build(record);
@@ -960,6 +1070,41 @@
       } finally {
         record.renderTask = null;
       }
+    },
+
+    /**
+     * A canvas the browser would not back. Ask for half as much, once or twice,
+     * and then say so rather than leaving a white page on screen.
+     *
+     * The backoff is on the record instead of being a local retry loop because
+     * the retry has to go back through the queue: this page is holding one of
+     * two render slots and a sheet big enough to be refused is a sheet other
+     * pages are waiting behind. `pumpRenders` re-requests it once the slot is
+     * free — see `needsRetry` there.
+     */
+    rasterRefused(record, plan) {
+      record.rendered = false;
+      record.renderTask = null;
+      record.annotDirty = true;
+      record.container.classList.remove('rendering');
+
+      const next = (record.rasterBackoff || 1) / 2;
+      if (next >= MIN_RASTER_BACKOFF) {
+        record.rasterBackoff = next;
+        record.needsRetry = true;
+        return;
+      }
+
+      /* Out of room to give. The page keeps its box in the column so nothing
+         reflows, and says what happened — a drawing that could not be drawn is
+         not the same as a drawing with nothing on it, and without this the two
+         are identical on screen. */
+      record.rasterBackoff = 0;
+      record.renderFailed = true;
+      record.container.classList.add('render-failed');
+      console.error('Page ' + (record.index + 1) + ' could not be rastered: the browser refused a '
+        + plan.width + 'x' + plan.height + ' canvas (' + Math.round(plan.width * plan.height / 1e6)
+        + ' MP). Zoom out and try again.');
     },
 
     async buildTextLayer(record) {
@@ -1009,7 +1154,12 @@
       const ctx = canvas.getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      /* The markup canvas is the same size as the page canvas, so it is capped
+         with it — `rasterScale` rather than `this.dpr`. Painting at the raw dpr
+         over a capped raster puts every markup at the wrong scale on exactly
+         the large-format sheets this is meant to rescue. */
+      const scale = record.rasterScale || this.dpr;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
       const store = this.store;
       /* Before the markups, because a number is part of the sheet rather than

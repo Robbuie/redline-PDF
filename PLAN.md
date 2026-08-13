@@ -297,4 +297,14 @@ stored as embedded images so they export cleanly.
 - Replace snapshot undo with a command log once markup counts get into the
   thousands
 - Virtualise the page list for very large documents (200+ pages)
+- **Raster large sheets to the viewport rather than to the whole page.** The
+  0.13.1 cap stops a large-format sheet blanking, but it pays for it in
+  sharpness: an ANSI E sheet at 400% is clamped to about 0.44 device pixels per
+  CSS pixel, because the whole page is one canvas and the whole page will not
+  fit in one. Rendering only the part of the sheet on screen — pdf.js takes the
+  crop through the same `transform` parameter `snapshot.js` already uses —
+  would give full resolution at any zoom on a sheet of any size. It is the
+  right fix and a real change: the canvas stops covering the page box, so
+  `layout()`, `redrawPage`, the retention sweep and every conversion in
+  `render.js` need to agree on an offset they currently do not have
 - Add a smoke test that boots Electron headless and opens a sample drawing

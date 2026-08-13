@@ -39,6 +39,30 @@
   const SPREAD_GAP = 14;
   const COLUMN_PAD = 60;
 
+  /* What the browser will actually give you as a canvas.
+     ---------------------------------------------------------------------------
+     Chromium refuses a canvas over ~16384 px on a side, and over a total area
+     it will not commit to, and IT DOES BOTH SILENTLY: the allocation fails,
+     `page.render()` resolves as normal, and what you have is a white sheet with
+     nothing logged. `snapshot.js` has known this since the copy-region feature
+     went in (MAX_PIXELS there, same reasoning); the page canvases never got the
+     same treatment, so a large-format sheet blanked at high zoom and looked
+     like a broken drawing rather than a limit being hit.
+
+     The numbers are not theoretical on this app's documents. An ANSI E sheet is
+     2448 x 3168 pt, so at dpr 2 the side limit lands at about 335% zoom — and a
+     long plot out of a DWF (a riser diagram or a site plan run out on one
+     continuous sheet) can be 7000 pt wide, which crosses it barely above
+     fit-width. That is the blank page.
+
+     MAX_PIXELS is 24 megapixels to match snapshot.js. It is deliberately above
+     the common case rather than tuned down to it: an E-size sheet at fit-width
+     on a 1600px pane is ~13 MP at dpr 2, so a normal drawing is never touched
+     by this and only the sheets that would otherwise fail get a softer
+     raster. */
+  const MAX_CANVAS_SIDE = 16384;
+  const MAX_CANVAS_PIXELS = 24e6;
+
   const HINTS = {
     continuous: 'One column, scroll straight through the set',
     single: 'One sheet at a time',
@@ -183,10 +207,55 @@
     return byWidth;
   }
 
+  /**
+   * How large a page may actually be rastered, given how large it is laid out.
+   *
+   * Returns the backing-store size to give the canvas and the scale to render
+   * at — which is the requested device pixel ratio until one of the limits
+   * bites, and less than it after that. **The CSS box is not this function's
+   * business and must not follow it**: the page keeps its layout size and the
+   * smaller bitmap is stretched over it, which is the same trade `setZoom`
+   * already makes for a deferred raster. A soft sheet is a sheet; a refused
+   * canvas is a white rectangle with no way to tell it from an empty drawing.
+   *
+   * Both limits are applied to the *scale*, not to the dimensions, so the page
+   * stays in proportion — capping the long side alone would squash the raster
+   * against a CSS box that did not change and put every markup out of place.
+   *
+   * @param {number} width  laid-out page width in CSS pixels
+   * @param {number} height laid-out page height in CSS pixels
+   * @param {number} dpr    the device pixel ratio the caller would like
+   * @returns {{scale: number, width: number, height: number, capped: boolean}}
+   */
+  function rasterPlan(width, height, dpr, opts) {
+    const options = opts || {};
+    const maxSide = options.maxSide || MAX_CANVAS_SIDE;
+    const maxPixels = options.maxPixels || MAX_CANVAS_PIXELS;
+    const w = Math.max(1, Math.floor(width) || 1);
+    const h = Math.max(1, Math.floor(height) || 1);
+    const wanted = Math.max(0.01, dpr || 1);
+
+    // The side limit first: it is a hard refusal rather than a memory question,
+    // and clamping it can only reduce the area, so the order is safe.
+    let scale = Math.min(wanted, maxSide / w, maxSide / h);
+
+    const pixels = w * h * scale * scale;
+    if (pixels > maxPixels) scale *= Math.sqrt(maxPixels / pixels);
+
+    /* Floor, never round: a rounded dimension can land back *on* the limit the
+       scale was just clamped to, which is the one value that must not come
+       out of here. At least one pixel each way, or the context is unusable. */
+    const cw = Math.max(1, Math.min(maxSide, Math.floor(w * scale)));
+    const ch = Math.max(1, Math.min(maxSide, Math.floor(h * scale)));
+
+    return { scale, width: cw, height: ch, capped: scale < wanted - 1e-9 };
+  }
+
   RP.views = {
     MODES, LABELS, HINTS, SPREAD_GAP, COLUMN_PAD,
+    MAX_CANVAS_SIDE, MAX_CANVAS_PIXELS,
     normalize, isPaged, spreadOf, rowsFor, rowOfPage, rowStartOf,
-    inkBoxOf, fitScale
+    inkBoxOf, fitScale, rasterPlan
   };
 
 })(window.RP);
