@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.11.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.11.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -238,6 +238,30 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   report until the next frame and `pumpRenders` drops anything not visible, so a
   row shown and immediately requested would queue and then throw away every page
   in it.
+- **A centred page column overflows on *both* sides, and a scroll container
+  only exposes one of them.** `.pages` centres its rows, so a sheet wider than
+  the pane hangs off the left and the right equally — but `scrollLeft: 0` is
+  already past the left edge of the paper, and no amount of scrolling reaches
+  it. On an E-size drawing at 400% that is half the sheet, and it takes
+  zoom-to-area with it: `revealRect` computes the right offset and the browser
+  clamps it away. `.pages` therefore carries `width: max-content` with
+  `min-width: 100%`, which sizes the column to its widest row and never below
+  the pane, so the centring only ever acts on rows that already fit. Same
+  reasoning as the `safe center` on `.pages.paged`, one axis over;
+  `test/verify.js` reads both out of the stylesheet.
+- **Zoom is a stream, and rastering per step means rastering nothing.** A wheel
+  notch, a pinch and a held-down `Ctrl+=` all arrive faster than a page can be
+  drawn, and every step invalidates every bitmap in the column — so each render
+  is cancelled by the next and the sheet stays blank for the length of the
+  gesture, worse the larger the document. `queueZoom`/`queueZoomTo` compound a
+  frame's worth of steps into one `setZoom` (multiplicative, so the landing
+  point is unchanged), and `setZoom({defer: true})` hands `layout()` a pass
+  that re-sizes the boxes and leaves the existing bitmap stretched by CSS.
+  `scheduleRaster` takes the raster once, `ZOOM_SETTLE_MS` after the stream
+  stops. A brief soft page is the trade, and it is the right one. Only the
+  streaming inputs pass `defer` — the toolbar, the presets and `applyFit` want
+  the sharp page immediately. `test/verify.js` covers the compounding and the
+  deferral.
 - **The spread gutter and the column padding are fixed CSS pixels and do not
   scale.** `RP.views.fitScale` subtracts them before dividing by the page
   widths; dividing the pane by the two widths alone overshoots by exactly the

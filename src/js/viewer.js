@@ -62,6 +62,21 @@
      what stops one flick of an inertial trackpad from turning five sheets. */
   const PAGE_FLIP_MS = 320;
 
+  /* Zoom is a stream, not an event.
+
+     A wheel notch, a trackpad pinch and a held-down Ctrl+= all arrive far
+     faster than a page can be rastered, and every step invalidates every
+     bitmap in the column. Re-rastering per step means each render is
+     cancelled by the next one, so the sheet stays blank for as long as the
+     gesture lasts and the worker does nothing but throw work away — which is
+     what "zoom runs poorly" actually is.
+
+     So the geometry is applied immediately (the existing bitmap is stretched
+     by CSS, which is what makes the zoom feel live) and the raster is left
+     until the gesture settles. A brief soft page is the correct trade: it is
+     what every other PDF viewer does, and the alternative is no page at all. */
+  const ZOOM_SETTLE_MS = 150;
+
   /**
    * @param {HTMLElement} root a `.pane` element holding `.viewer > .pages`
    * @param {object} store the document store this pane is currently showing
@@ -81,6 +96,15 @@
     userScrollAt: 0,    // last gesture that means "I am steering now"
     landingTimer: 0,    // pending goToPage landing check
     flipAt: 0,          // last wheel-driven row step, for the flip cooldown
+
+    /* A streaming zoom: steps held for the next frame, and the raster held
+       until the stream stops. See ZOOM_SETTLE_MS. */
+    zoomFrame: 0,
+    pendingZoomFactor: 0,
+    pendingZoomTo: 0,
+    pendingZoomAnchor: null,
+    rasterTimer: 0,
+
     dpr: Math.min(window.devicePixelRatio || 1, 2),
 
     renderQueue: [],    // page indices waiting on a raster slot
@@ -149,15 +173,22 @@
          mouse notch arrives as one large deltaY, a pinch as a stream of small
          ones. Using the fixed 1.12 step for both makes a pinch feel like it
          leaps, so the factor is derived from the delta and only clamped at the
-         ends, which leaves a mouse notch at roughly its old step. */
+         ends, which leaves a mouse notch at roughly its old step.
+
+         A pinch also arrives *many times per frame*, and each `setZoom` is a
+         full pass over the column writing geometry onto every page — several
+         forced layouts per frame on a 77-sheet set, which is a gesture that
+         stutters. The factors are compounded and flushed once per animation
+         frame instead. The arithmetic is multiplicative, so a frame's worth
+         of notches applied together is exactly the zoom they would have
+         reached one at a time. */
       this.els.viewer.addEventListener('wheel', (event) => {
         if (!event.ctrlKey) return;
         event.preventDefault();
         // deltaMode 1 is lines, 2 is pages; normalise both to pixel-ish units.
         const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
         const delta = RP.clamp(event.deltaY * unit, -80, 80);
-        const factor = Math.exp(-delta / 340);
-        this.setZoom(this.zoom * factor, { anchor: { x: event.clientX, y: event.clientY } });
+        this.queueZoom(Math.exp(-delta / 340), { x: event.clientX, y: event.clientY });
       }, { passive: false });
 
       /* Paged modes: a wheel with nowhere left to scroll turns the sheet.
@@ -195,7 +226,10 @@
         const anchor = Number.isFinite(event.clientX)
           ? { x: event.clientX, y: event.clientY }
           : null;
-        this.setZoom(gestureBase * event.scale, anchor ? { anchor } : {});
+        // Same stream, same treatment as the wheel — but an absolute target,
+        // since `event.scale` is measured against the start of the gesture
+        // and compounding it would apply the whole pinch twice.
+        this.queueZoomTo(gestureBase * event.scale, anchor);
       });
 
       window.addEventListener('resize', RP.debounce(() => {
@@ -403,6 +437,12 @@
       this.pageTops = null;
       this.thumbCurrent = -1;
       if (this.landingTimer) { clearTimeout(this.landingTimer); this.landingTimer = 0; }
+      // A pending raster or zoom step belongs to the document being torn down.
+      if (this.rasterTimer) { clearTimeout(this.rasterTimer); this.rasterTimer = 0; }
+      if (this.zoomFrame) { cancelAnimationFrame(this.zoomFrame); this.zoomFrame = 0; }
+      this.pendingZoomFactor = 0;
+      this.pendingZoomTo = 0;
+      this.pendingZoomAnchor = null;
       this.pages = [];
       this.rows = [];
       this.els.pages.innerHTML = '';
@@ -438,10 +478,19 @@
       return (((pageProxy && pageProxy.rotate) || 0) + this.rotation + 360) % 360;
     },
 
-    layout() {
+    /**
+     * Re-size every page to the current zoom and rotation.
+     *
+     * `opts.defer` keeps the geometry and skips the raster: the page keeps
+     * the bitmap it has, stretched to the new box by CSS, and `scheduleRaster`
+     * takes it again once the input stops arriving. Only a streaming zoom
+     * passes it — everything else wants the sharp page immediately.
+     */
+    layout(opts) {
       // Every queued raster is for the old scale and would be thrown away.
       this.renderQueue = [];
       this.pageTops = null;
+      const defer = !!(opts && opts.defer);
       for (const record of this.pages) {
         const viewport = record.pageProxy.getViewport({
           scale: this.zoom, rotation: this.rotationOf(record.pageProxy)
@@ -472,11 +521,74 @@
         // the next eviction sweep.
         if (!record.visible) this.releasePage(record);
       }
+      if (defer) this.scheduleRaster();
+      else this.rasterNow();
+      this.emit('zoom:changed', this.zoom);
+    },
+
+    /** Raster what is on screen and repaint its markups. */
+    rasterNow() {
+      if (this.rasterTimer) { clearTimeout(this.rasterTimer); this.rasterTimer = 0; }
       for (const record of this.pages) {
         if (record.visible) this.requestPage(record.index);
       }
       this.redrawAll();
-      this.emit('zoom:changed', this.zoom);
+    },
+
+    /**
+     * Raster once the zoom stops moving.
+     *
+     * Every step of a gesture invalidates every bitmap, so rastering per step
+     * means each render is cancelled by the next and the sheet stays blank
+     * for the length of the gesture. The timer restarts on each step, so the
+     * work happens exactly once, at the zoom the user actually stopped at.
+     */
+    scheduleRaster() {
+      if (this.rasterTimer) clearTimeout(this.rasterTimer);
+      this.rasterTimer = setTimeout(() => {
+        this.rasterTimer = 0;
+        this.rasterNow();
+      }, ZOOM_SETTLE_MS);
+    },
+
+    /**
+     * Take a zoom step from a streaming input and apply it on the next frame.
+     *
+     * `factor` compounds, because that is what a wheel notch and a pinch both
+     * are: a multiplier on the zoom in force. Several in one frame multiply
+     * out to the same place they would have reached applied one at a time,
+     * so nothing is lost by holding them — only the redundant layouts.
+     */
+    queueZoom(factor, anchor) {
+      this.pendingZoomTo = 0;
+      this.pendingZoomFactor = (this.pendingZoomFactor || 1) * factor;
+      this.pendingZoomAnchor = anchor || this.pendingZoomAnchor;
+      this.scheduleZoomFlush();
+    },
+
+    /** The same, for an input that reports an absolute zoom rather than a
+        step — a trackpad `gesturechange` measures its scale from the start of
+        the pinch, so the newest value replaces the pending one. */
+    queueZoomTo(value, anchor) {
+      this.pendingZoomFactor = 0;
+      this.pendingZoomTo = value;
+      this.pendingZoomAnchor = anchor || this.pendingZoomAnchor;
+      this.scheduleZoomFlush();
+    },
+
+    scheduleZoomFlush() {
+      if (this.zoomFrame) return;
+      this.zoomFrame = requestAnimationFrame(() => {
+        this.zoomFrame = 0;
+        const anchor = this.pendingZoomAnchor;
+        const target = this.pendingZoomTo || this.zoom * (this.pendingZoomFactor || 1);
+        this.pendingZoomTo = 0;
+        this.pendingZoomFactor = 0;
+        this.pendingZoomAnchor = null;
+        // `defer`: the gesture is still running as far as we know, so stretch
+        // what is already on the canvas and raster when it stops.
+        this.setZoom(target, anchor ? { anchor, defer: true } : { defer: true });
+      });
     },
 
     setZoom(value, opts) {
@@ -496,7 +608,7 @@
 
       this.zoom = next;
       if (!options.keepFit) this.fitMode = null;
-      this.layout();
+      this.layout({ defer: !!options.defer });
 
       viewerEl.scrollLeft = relX * ratio - (anchor.x - rect.left);
       viewerEl.scrollTop = relY * ratio - (anchor.y - rect.top);

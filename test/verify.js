@@ -1719,6 +1719,45 @@ function testMarqueeZoom() {
     check('the result still respects MAX_ZOOM', viewer.zoom <= RP.MAX_ZOOM, 'zoom ' + viewer.zoom);
   }
 
+  /* A streaming zoom — a wheel notch or a trackpad pinch — arrives many times
+     per frame, and each step is a full pass over the column plus a raster that
+     the next step cancels. The steps are held for a frame and the raster until
+     the stream stops, so what has to be true is that holding them changes
+     nothing about where the zoom lands. */
+  {
+    const realRaf = global.requestAnimationFrame;
+    let frame = null;
+    global.requestAnimationFrame = (fn) => { frame = fn; return 1; };
+    try {
+      const { viewer } = harness(2);
+      let laid = null;
+      const inner = viewer.layout;
+      viewer.layout = function (opts) { laid = opts; inner.call(this, opts); };
+
+      viewer.queueZoom(1.1, { x: 500, y: 400 });
+      viewer.queueZoom(1.1, { x: 500, y: 400 });
+      viewer.queueZoom(1.1, { x: 500, y: 400 });
+      check('a frame of zoom steps is held, not applied one at a time',
+        viewer.zoom === 2, 'zoom moved to ' + viewer.zoom + ' before the frame ran');
+
+      frame();
+      check('the held steps compound to exactly where they would have landed',
+        Math.abs(viewer.zoom - 2 * 1.1 * 1.1 * 1.1) < 1e-9, 'zoom ' + viewer.zoom);
+      check('a streaming zoom defers the raster to the end of the gesture',
+        laid && laid.defer === true, JSON.stringify(laid));
+
+      // A pinch reports its scale against the start of the gesture, so the
+      // newest value replaces the pending one rather than compounding with it.
+      viewer.queueZoomTo(3, null);
+      viewer.queueZoomTo(3.5, null);
+      frame();
+      check('an absolute zoom step replaces the pending one',
+        Math.abs(viewer.zoom - 3.5) < 1e-9, 'zoom ' + viewer.zoom);
+    } finally {
+      global.requestAnimationFrame = realRaf;
+    }
+  }
+
   // A pane hands its scroll position and zoom to the tab it is leaving and gets
   // them back on the way in; without this a tab switch would silently drop you
   // at the top of the sheet.
@@ -2037,6 +2076,17 @@ function testViewModes() {
       gap === RP.views.SPREAD_GAP, 'css ' + gap + ' vs views ' + RP.views.SPREAD_GAP);
     check('a hidden row is actually hidden, despite display:flex',
       /\.page-row\[hidden\]\s*\{[^}]*display:\s*none/.test(css));
+
+    /* A page wider than the pane must be scrollable to *both* of its edges.
+       `align-items: center` alone overflows the column on both sides and a
+       scroll container only exposes the end one, so the left half of an
+       E-size sheet at 400% becomes unreachable — and with it any zoom-to-area
+       aimed there. Sizing the column to its widest row is what puts the whole
+       sheet inside the scrollable area. */
+    const pagesRule = (css.match(/\n\.pages\s*\{([^}]*)\}/) || [])[1] || '';
+    check('the page column sizes to its widest row, so a wide sheet scrolls both ways',
+      /width:\s*max-content/.test(pagesRule) && /min-width:\s*100%/.test(pagesRule),
+      pagesRule.replace(/\s+/g, ' ').trim());
   }
 }
 

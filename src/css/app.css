@@ -713,6 +713,18 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
   display: flex; flex-direction: column; align-items: center;
   gap: 18px; padding: 22px 22px 60px;
   min-height: 100%;
+  /* A sheet wider than the pane has to stay reachable in *both* directions,
+     and `align-items: center` alone does not allow that: a centred item that
+     overflows its container overflows it on both sides, and a scroll
+     container only ever exposes the end side. The left half of an E-size
+     sheet at 400% is then simply unscrollable — `scrollLeft: 0` already sits
+     past the left edge of the paper — and a zoom-to-area on the left of the
+     drawing lands somewhere the user cannot scroll to. Sizing the column to
+     its widest row, and never below the pane, puts the whole sheet inside
+     the scrollable area and leaves the centring to act on the rows that
+     actually fit. Same reasoning as `safe center` below, one axis over. */
+  width: max-content;
+  min-width: 100%;
 }
 
 .page-row { display: flex; align-items: flex-start; gap: 14px; }

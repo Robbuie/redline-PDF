@@ -12,6 +12,29 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.11.1] — 2026-08-12
+
+### Fixed
+
+- **A sheet wider than the window can now be scrolled to both of its edges.**
+  Zoomed in on a wide drawing, the left-hand side of the paper was simply
+  unreachable — the scroll bar was already at its start while the edge of the
+  sheet sat off to the left. Both edges are now inside the scroll, so a title
+  block on the far right and a keyplan on the far left are equally reachable.
+
+- **Zoom to area now lands on the area you drew, wherever it is on the sheet.**
+  A box drawn at the far left or right of a wide drawing zoomed in but stopped
+  short of it, for the same reason as above.
+
+- **Zooming is smooth on large sheet sets.** A wheel or trackpad zoom was
+  re-rendering every page on every step of the gesture, so each render was
+  thrown away by the next one and the drawing stayed blank while you zoomed —
+  worse the bigger the document. The drawing is now scaled live and re-drawn
+  sharp once the zoom stops, which is a moment of softness instead of a
+  stutter.
+
+---
+
 ## [0.11.0] — 2026-08-07
 
 ### Added
