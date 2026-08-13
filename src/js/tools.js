@@ -1186,9 +1186,19 @@
         ' — Ctrl+C to copy, right-click for more');
     },
 
-    /** Warn once if the sheet is a scan with no text to select. */
+    /**
+     * Warn once if the sheet is a scan with no text to select.
+     *
+     * Only once the layers are actually built. Both counts below are zero on a
+     * page whose text layer has not been built yet — and since 0.13.2 that is
+     * an ordinary state rather than an impossible one, because the layer is
+     * queued behind the rasters instead of being part of them. Without this
+     * guard the first click on a freshly drawn sheet reports a drawing full of
+     * schedules and callouts as an unsearchable scan.
+     */
     checkPageHasText(record) {
       if (this.warnedNoText || !record) return;
+      if (!record.layersBuilt) return;
       const spans = record.textLayer ? record.textLayer.childElementCount : 0;
       const items = record.textContent && record.textContent.items ? record.textContent.items.length : 0;
       if (spans > 0 || items > 0) return;

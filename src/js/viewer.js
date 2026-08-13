@@ -63,6 +63,25 @@
      you are not. */
   const MAX_PAGE_RENDERS = 2;
 
+  /* One at a time, and one only. Building a text layer is `getTextContent` on
+     that same worker followed by a few thousand absolutely positioned divs
+     going into the document — the second half is main-thread DOM work that
+     nothing else can proceed through, so running two concurrently buys
+     nothing and lengthens the stall. */
+  const MAX_LAYER_BUILDS = 1;
+
+  /* Run something when the main thread is not busy, but do not let it be
+     starved: a long scroll on a large set can keep the thread busy for
+     seconds, and a text layer that never arrives is a page you cannot select
+     on. Falls back to a timeout where `requestIdleCallback` is missing. */
+  function whenIdle(fn) {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(fn, { timeout: 250 });
+    } else {
+      setTimeout(fn, 1);
+    }
+  }
+
   /* How much of the gutter above a page to leave showing when navigating to
      it, and how far the landing may drift before `confirmLanding` steps in.
      The tolerance is a page, not a pixel count: a few pixels of overshoot is
@@ -122,6 +141,8 @@
 
     renderQueue: [],    // page indices waiting on a raster slot
     activeRenders: 0,
+    layerQueue: [],     // page indices waiting on a text/annotation layer
+    activeLayers: 0,
     thumbQueue: [],
     activeThumbs: 0,
     pageTops: null,     // cached container offsets; null means re-measure
@@ -155,8 +176,13 @@
           // A page that was released while off-screen, or whose markups changed
           // behind your back, comes back through here rather than being kept
           // painted the whole time.
-          if (record.rendered) { if (record.annotDirty) this.redrawPage(index); }
-          else this.requestPage(index);
+          if (record.rendered) {
+            if (record.annotDirty) this.redrawPage(index);
+            // Rendered but with no text layer: either it was skipped on the
+            // way past because the page was never on screen, or the page was
+            // released and re-rastered. Either way this is where it is caught.
+            if (!record.layersBuilt) this.requestLayers(index);
+          } else this.requestPage(index);
         }
         this.retainCanvases();
       }, { root: this.els.viewer, rootMargin: '600px 0px' });
@@ -338,6 +364,9 @@
           inkLayer,
           rendered: false,
           renderTask: null,
+          rasterScale: 0,         // what the raster was actually taken at
+          layersBuilt: false,     // text + native annotation layers are current
+          layerTask: false,
           annotDirty: false,      // markups changed while this page was off-screen
           textContent: null,
           nativeAnnots: null,     // parsed once, the DOM is rebuilt per zoom
@@ -446,6 +475,7 @@
         this.pageObserver.unobserve(record.container);
       }
       this.renderQueue = [];
+      this.layerQueue = [];
       this.thumbQueue = [];
       this.pageTops = null;
       this.thumbCurrent = -1;
@@ -500,8 +530,11 @@
      * passes it — everything else wants the sharp page immediately.
      */
     layout(opts) {
-      // Every queued raster is for the old scale and would be thrown away.
+      // Every queued raster is for the old scale and would be thrown away, and
+      // so is every queued layer — both are positioned against viewports this
+      // pass replaces.
       this.renderQueue = [];
+      this.layerQueue = [];
       this.pageTops = null;
       const defer = !!(opts && opts.defer);
       for (const record of this.pages) {
@@ -526,6 +559,11 @@
         }
         record.rendered = false;
         record.annotDirty = true;
+        /* Both layers are positioned against the viewport this pass is
+           replacing, so they are rebuilt rather than reused. A build in flight
+           notices the same way — it compares viewport identity across its
+           awaits. */
+        record.layersBuilt = false;
         /* A new zoom is a new question. A sheet the browser refused at 400% is
            usually fine at 100%, so the backoff and the failed state do not
            survive a re-layout — otherwise zooming back out would leave the
@@ -842,10 +880,105 @@
              through two more attempts at it stalls the pages behind it. */
           if (record.needsRetry) { record.needsRetry = false; this.requestPage(index); }
           this.pumpRenders();
+          this.pumpLayers();
           this.pumpThumbs();
         });
       }
-      if (!this.activeRenders && !this.renderQueue.length) this.pumpThumbs();
+      if (!this.activeRenders && !this.renderQueue.length) this.pumpLayers();
+    },
+
+    /**
+     * Queue a page's text layer and native annotation layer.
+     *
+     * Separate from the raster queue because they are separate costs with
+     * different urgency. The raster is the sheet; without it there is nothing
+     * on screen. The text layer is what makes the words on the sheet
+     * selectable and is worth nothing until someone reaches for them — and on
+     * a CAD export it is the more expensive of the two by a wide margin.
+     *
+     * `search.js` builds its own index straight off `record.textContent`, so
+     * search does not wait on any of this.
+     */
+    requestLayers(index) {
+      const record = this.pages[index];
+      if (!record || !record.rendered || record.layersBuilt || record.layerTask) return;
+      if (this.layerQueue.indexOf(index) === -1) this.layerQueue.push(index);
+      this.pumpLayers();
+    },
+
+    /**
+     * Build layers one page at a time, behind every pending raster, and only
+     * for pages still on screen.
+     *
+     * Behind the rasters because a page with no bitmap is a blank sheet and a
+     * page with no text layer is merely a sheet you cannot select on yet. On
+     * screen only because the observer prefetches 600px past the viewport in
+     * both directions and in a split there are two panes doing it — building
+     * text layers for all of that is most of what made a large set feel like
+     * it was loading in slow motion.
+     *
+     * Through the idle callback where there is one: this is main-thread DOM
+     * work measured in hundreds of milliseconds on a plotted sheet, and
+     * landing it mid-scroll is a dropped frame the user reads as jank. The
+     * timeout is what stops it being starved outright during a long scroll.
+     */
+    pumpLayers() {
+      if (this.activeRenders || this.renderQueue.length) return;
+      while (this.activeLayers < MAX_LAYER_BUILDS && this.layerQueue.length) {
+        this.layerQueue.sort((a, b) =>
+          Math.abs(a - this.currentPage) - Math.abs(b - this.currentPage));
+        const index = this.layerQueue.shift();
+        const record = this.pages[index];
+        if (!record || !record.visible || !record.rendered || record.layersBuilt) continue;
+        this.activeLayers += 1;
+        record.layerTask = true;
+        /* Settled, not resolved. There is one slot, so a build that rejects
+           and is not counted back leaves `activeLayers` stuck at 1 and every
+           later page silently never becomes selectable — a stall that would
+           look like the deferral itself being broken rather than like one page
+           throwing. `buildLayers` swallows its own failures too; this is the
+           structural guarantee behind that. */
+        const done = () => {
+          this.activeLayers -= 1;
+          record.layerTask = false;
+          this.pumpLayers();
+          this.pumpThumbs();
+        };
+        whenIdle(() => { this.buildLayers(index).then(done, done); });
+      }
+      if (!this.activeLayers && !this.layerQueue.length) this.pumpThumbs();
+    },
+
+    /**
+     * The text layer and the native annotation layer for one page.
+     *
+     * Both are positioned against `record.viewport`, so both are wrong the
+     * moment `layout()` runs — and `layout()` can run in the middle of either,
+     * since this is deliberately no longer inside the render slot that used to
+     * serialise it. The viewport is therefore captured and re-checked across
+     * every await: `layout()` replaces the object outright, so identity is the
+     * whole test.
+     */
+    async buildLayers(index) {
+      const record = this.pages[index];
+      if (!record || !record.rendered) return;
+      const viewport = record.viewport;
+
+      await this.buildTextLayer(record);
+      if (record.viewport !== viewport || !record.rendered) return;
+
+      try {
+        await RP.annots.build(record);
+      } catch (err) {
+        // A page whose own annotations could not be laid out is still a page.
+        // `buildTextLayer` already swallows its own failures for the same
+        // reason: losing selection or a link on one sheet is not worth losing
+        // the sheet over.
+        console.warn('Annotation layer failed on page ' + (record.index + 1), err);
+      }
+      if (record.viewport !== viewport || !record.rendered) return;
+
+      record.layersBuilt = true;
     },
 
     requestThumb(index) {
@@ -856,13 +989,15 @@
     },
 
     /**
-     * Thumbnails queue *behind* pages, never alongside them. They share the one
-     * pdf.js worker, and opening the panel on a 77-sheet set otherwise fires a
-     * burst of thumb rasters that the page you are actually reading has to wait
-     * out. One at a time, and only when nothing real is pending.
+     * Thumbnails queue *behind* pages and behind layers, never alongside them.
+     * They share the one pdf.js worker, and opening the panel on a 77-sheet
+     * set otherwise fires a burst of thumb rasters that the page you are
+     * actually reading has to wait out. One at a time, and only when nothing
+     * real is pending.
      */
     pumpThumbs() {
       if (this.activeRenders || this.renderQueue.length) return;
+      if (this.activeLayers || this.layerQueue.length) return;
       while (this.activeThumbs < 1 && this.thumbQueue.length) {
         const index = this.thumbQueue.shift();
         const record = this.pages[index];
@@ -890,6 +1025,10 @@
       record.renderTask = null;
       record.rendered = false;
       record.annotDirty = true;
+      // The layers go with the bitmap below, so the page has to be able to ask
+      // for them again when it comes back. A build already in flight checks
+      // `rendered` across its awaits and drops what it was doing.
+      record.layersBuilt = false;
       for (const canvas of [record.pdfCanvas, record.annotCanvas]) {
         canvas.width = 0;
         canvas.height = 0;
@@ -935,6 +1074,10 @@
         budgetMB: Math.round(CANVAS_BUDGET_PX * 4 / 1e6),
         queued: this.renderQueue.length,
         active: this.activeRenders,
+        // Pages rastered but not yet selectable. A long tail here on a set
+        // that is otherwise drawn is the signature of a CAD export with a very
+        // heavy text layer.
+        layersQueued: this.layerQueue.length,
         thumbsQueued: this.thumbQueue.length
       };
     },
@@ -1061,9 +1204,17 @@
         record.rendered = true;
         record.rasterBackoff = 0;
         record.container.classList.remove('rendering');
-        await this.buildTextLayer(record);
-        await RP.annots.build(record);
         this.redrawPage(index);
+        /* The text and annotation layers are queued, not awaited.
+           They used to be built here, inside the render slot, so
+           `activeRenders` stayed occupied for the whole chain — and on a
+           drawing exported from CAD that chain is the expensive part, not the
+           raster: the plotter emits text as thousands of short runs, so
+           `getTextContent` is a long trip through the one worker and
+           `TextLayer.render` is a few thousand absolutely positioned divs
+           behind it. With two render slots, two of those held up the sheet the
+           user was actually waiting for. See `pumpLayers`. */
+        this.requestLayers(index);
       } catch (err) {
         if (!err || err.name !== 'RenderingCancelledException') console.error('Page render failed', err);
         record.container.classList.remove('rendering');
@@ -1108,6 +1259,13 @@
     },
 
     async buildTextLayer(record) {
+      /* `getTextContent` is a trip through the same worker the rasters use,
+         and on a sheet plotted out of CAD it is not a cheap one — the text
+         arrives as thousands of short runs rather than as paragraphs. It is
+         cached on the record and survives a release for exactly that reason,
+         so this is paid once per page per document rather than once per
+         raster. `search.js` reads the same cache. */
+      const viewport = record.viewport;
       if (!record.textContent) {
         try {
           record.textContent = await record.pageProxy.getTextContent();
@@ -1115,6 +1273,10 @@
           record.textContent = { items: [], styles: {} };
         }
       }
+      // Zoomed, rotated or torn down while that was in flight. The layer is
+      // positioned against the viewport, so building it now would place every
+      // run against geometry that has already been replaced.
+      if (record.viewport !== viewport) return;
       record.textLayer.innerHTML = '';
       record.textDivs = [];
       try {

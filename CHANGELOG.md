@@ -12,6 +12,28 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.13.2] — 2026-08-13
+
+### Changed
+
+- **Sheets appear as soon as they are drawn.** The app used to finish preparing
+  a page's selectable text before it would start on the next page — and on a
+  drawing exported from CAD that preparation is the slow part, because the
+  plotter writes text as thousands of tiny fragments rather than as sentences.
+  Two sheets doing it at once held up the one you were waiting for. Drawings
+  now go on screen the moment they are drawn, and the text is prepared behind
+  them, closest sheet first, while nothing else is going on.
+- **Only the sheets you can see get prepared.** Pages just off the edge of the
+  window are drawn ahead of time so scrolling stays smooth, but they no longer
+  have their text prepared until they are actually on screen — which on a large
+  set was most of the waiting.
+- **Thumbnails wait their turn** behind both, rather than competing with the
+  sheet being read.
+
+There is one visible consequence: on a very heavy sheet there is now a brief
+moment after it appears where dragging across text selects nothing. It resolves
+itself within a moment and the sheet is drawn and markable throughout.
+
 ## [0.13.1] — 2026-08-12
 
 ### Fixed

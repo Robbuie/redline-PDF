@@ -58,6 +58,11 @@ function measuringContext(record) {
 global.window = global;
 global.window.PDFLib = PDFLib;
 global.requestAnimationFrame = (fn) => setTimeout(() => fn(Date.now()), 0);
+/* `viewer.whenIdle` defers layer building through this where the browser has
+   it. Run synchronously here so the queue can be stepped and inspected; the
+   scheduling decisions being checked are the ones made *before* it, and an
+   idle callback in the middle only makes them harder to see. */
+global.requestIdleCallback = (fn) => { fn({ timeRemaining: () => 50 }); };
 // app.js registers a DOMContentLoaded handler at load time and nothing else.
 global.addEventListener = () => {};
 global.document = {
@@ -2217,6 +2222,234 @@ function testRasterCap() {
   check('the failure notice is positioned, not left in flow below the canvas',
     /\.page\.render-failed::after\s*\{[^}]*position:\s*absolute/.test(css),
     'in flow it lands outside the page box and is never seen');
+}
+
+/* ---------------------------------------------------------------------------
+   Text layer scheduling
+
+   The slow load. `renderPage` used to await the text layer and the native
+   annotation layer inside its render slot, so `activeRenders` stayed occupied
+   for the whole chain — and on a drawing plotted out of CAD that chain is the
+   expensive half, not the raster: the text arrives as thousands of short runs,
+   so `getTextContent` is a long trip through the one pdf.js worker and
+   `TextLayer.render` is a few thousand absolutely positioned divs behind it.
+   With two slots, two of those blocked the sheet actually being waited for.
+
+   The layers are now their own queue, behind every pending raster, one at a
+   time, for pages on screen only. What is pinned here is the ordering and the
+   two ways a build can be wasted — a page that scrolled away, and a zoom that
+   landed mid-build.
+   --------------------------------------------------------------------------- */
+async function testLayerQueue() {
+  console.log('\nText layer scheduling');
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const makeRecord = (index, visible) => ({
+    index,
+    visible: !!visible,
+    rendered: true,
+    renderTask: null,
+    layersBuilt: false,
+    layerTask: false,
+    annotDirty: false,
+    viewport: { scale: 1, width: 800, height: 1000 },
+    pdfCanvas: { width: 800, height: 1000, style: {} },
+    annotCanvas: { width: 800, height: 1000, style: {} },
+    textLayer: { innerHTML: 'runs' },
+    nativeLayer: { innerHTML: 'annots', hidden: false },
+    nativeLayerObj: null,
+    textDivs: [1, 2, 3],
+    annotCanvasMap: null,
+    container: {
+      classList: { add() {}, remove() {} },
+      style: { setProperty() {} },
+      dataset: {}
+    }
+  });
+
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  const built = [];
+  // The scheduling is what is under test, not what a layer build does.
+  viewer.buildLayers = async (index) => {
+    built.push(index);
+    const record = viewer.pages[index];
+    if (record) record.layersBuilt = true;
+  };
+
+  viewer.pages = [0, 1, 2, 3, 4].map((i) => makeRecord(i, i >= 1 && i <= 3));
+  viewer.currentPage = 2;
+
+  /* A raster outranks a layer, always. A page with no bitmap is a blank sheet;
+     a page with no text layer is a sheet you cannot select on *yet*. */
+  viewer.activeRenders = 1;
+  viewer.requestLayers(2);
+  await flush();
+  check('a layer build waits behind a raster in flight', built.length === 0,
+    built.length + ' built');
+
+  viewer.activeRenders = 0;
+  viewer.renderQueue = [7];
+  viewer.pumpLayers();
+  await flush();
+  check('and behind one still queued', built.length === 0, built.length + ' built');
+
+  viewer.renderQueue = [];
+  viewer.pumpLayers();
+  await flush();
+  check('and runs once the render queue is clear', built.join(',') === '2', built.join(',') || 'none');
+
+  /* Off-screen pages are skipped outright. The page observer prefetches 600px
+     past the viewport in both directions and a split has two panes doing it —
+     building text layers for all of that is most of what made a large set feel
+     like it was loading in slow motion. */
+  built.length = 0;
+  for (const i of [0, 4]) viewer.requestLayers(i);
+  await flush();
+  check('a page off screen does not get a text layer built for it',
+    built.length === 0, built.join(',') || 'none');
+
+  // But it must be caught when it comes back, or it is a page that silently
+  // never becomes selectable. That is the observer's job; the flag it reads is
+  // what is checked here.
+  check('an off-screen page is left marked as needing one',
+    viewer.pages[0].layersBuilt === false && viewer.pages[4].layersBuilt === false);
+
+  built.length = 0;
+  viewer.pages[0].visible = true;
+  viewer.requestLayers(0);
+  await flush();
+  check('and gets one as soon as it is on screen again', built.join(',') === '0',
+    built.join(',') || 'none');
+
+  /* Nearest the viewport first, the same ordering the render queue uses. The
+     queue is seeded directly rather than through `requestLayers`, because a
+     request made while nothing is in flight is served immediately — the
+     ordering only decides anything for the ones that pile up behind a build,
+     which with one slot is all of them on a real document. */
+  built.length = 0;
+  for (const record of viewer.pages) { record.visible = true; record.layersBuilt = false; }
+  viewer.layerQueue = [4, 0, 3, 1];
+  viewer.pumpLayers();
+  for (let i = 0; i < 6; i += 1) await flush();
+  check('layers are built nearest the viewport first', built[0] === 1 || built[0] === 3,
+    built.join(','));
+  check('and every queued page is eventually built',
+    built.length === 4, built.join(','));
+
+  // Asking twice must not build twice: `requestLayers` fires from the render
+  // completion *and* from the observer on every intersection change.
+  built.length = 0;
+  viewer.pages[2].layersBuilt = true;
+  viewer.requestLayers(2);
+  await flush();
+  check('a page that already has its layers is not rebuilt', built.length === 0,
+    built.join(',') || 'none');
+
+  /* One slot means one throw is enough to stop everything. A build that
+     rejects and is not counted back leaves `activeLayers` stuck and every
+     later page silently never becomes selectable — which would read as the
+     deferral being broken rather than as one page failing. */
+  const stalled = RP.createViewer({ querySelector: () => null }, RP.store);
+  const after = [];
+  stalled.pages = [0, 1].map((i) => makeRecord(i, true));
+  stalled.buildLayers = async (index) => {
+    if (index === 0) throw new Error('text layer blew up');
+    after.push(index);
+    stalled.pages[index].layersBuilt = true;
+  };
+  stalled.layerQueue = [0, 1];
+  stalled.pumpLayers();
+  for (let i = 0; i < 4; i += 1) await flush();
+  check('a layer build that throws does not stall the queue behind it',
+    after.join(',') === '1', after.join(',') || 'nothing built after the throw');
+  check('and the slot is handed back', stalled.activeLayers === 0,
+    stalled.activeLayers + ' still active');
+
+  /* Thumbnails queue behind layers as well as behind rasters. They share the
+     one worker, and a thumbnail is the least urgent thing on screen. */
+  const thumbViewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  let thumbsPumped = 0;
+  thumbViewer.pages = [makeRecord(0, true)];
+  thumbViewer.renderThumb = async () => { thumbsPumped += 1; };
+  thumbViewer.pages[0].thumbCanvas = { width: 10, height: 10 };
+  thumbViewer.pages[0].thumbRendered = false;
+  thumbViewer.layerQueue = [0];
+  thumbViewer.thumbQueue = [0];
+  thumbViewer.pumpThumbs();
+  await flush();
+  check('a thumbnail waits behind a pending text layer', thumbsPumped === 0,
+    thumbsPumped + ' pumped');
+
+  /* A zoom mid-build. Both layers are positioned against `record.viewport`,
+     and `layout()` replaces that object — so identity is the test, and a build
+     that comes back to a different one has to drop what it did rather than
+     leave runs positioned against geometry that has gone. */
+  const guarded = RP.createViewer({ querySelector: () => null }, RP.store);
+  guarded.pages = [makeRecord(0, true)];
+  const record = guarded.pages[0];
+  const annots = RP.annots.build;
+  let annotsBuilt = 0;
+  guarded.buildTextLayer = async () => {
+    // The zoom lands while the text content is being fetched.
+    record.viewport = { scale: 2, width: 1600, height: 2000 };
+  };
+  RP.annots.build = async () => { annotsBuilt += 1; };
+  try {
+    await guarded.buildLayers(0);
+  } finally {
+    RP.annots.build = annots;
+  }
+  check('a zoom mid-build stops the annotation layer being built at the old scale',
+    annotsBuilt === 0, annotsBuilt + ' built');
+  check('and the page is left needing its layers rather than marked done',
+    record.layersBuilt === false);
+
+  /* A re-layout drops the whole queue: every entry in it is for a viewport
+     that no longer exists, and the pages will re-request as they re-raster. */
+  const relaid = RP.createViewer({ querySelector: () => null }, RP.store);
+  relaid.pages = [makeRecord(0, true), makeRecord(1, true)];
+  relaid.pages[0].layersBuilt = true;
+  relaid.layerQueue = [1];
+  relaid.els = { viewer: null, pages: null };
+  relaid.pages.forEach((r) => {
+    r.pageProxy = { rotate: 0, getViewport: () => ({ width: 800, height: 1000 }) };
+  });
+  relaid.emit = () => {};
+  relaid.rasterNow = () => {};
+  relaid.layout();
+  check('a re-layout empties the layer queue', relaid.layerQueue.length === 0,
+    relaid.layerQueue.length + ' queued');
+  check('and marks a built page as needing its layers again',
+    relaid.pages[0].layersBuilt === false);
+
+  /* A released page loses its layers with its bitmap, so it has to be able to
+     ask for them again — `releasePage` clears the DOM, and the flag has to go
+     with it or the page comes back rastered and permanently unselectable. */
+  const released = RP.createViewer({ querySelector: () => null }, RP.store);
+  released.pages = [makeRecord(0, false)];
+  released.pages[0].layersBuilt = true;
+  released.releasePage(released.pages[0]);
+  check('a released page is marked as needing its layers rebuilt',
+    released.pages[0].layersBuilt === false);
+  check('and its text layer is actually emptied',
+    released.pages[0].textLayer.innerHTML === '');
+
+  /* The "this page is a scan" warning reads counts that are both zero until
+     the layer exists. Deferred, that fires on a sheet full of schedules. */
+  RP.tools.warnedNoText = false;
+  let warned = false;
+  const toast = RP.toast;
+  RP.toast = () => { warned = true; };
+  try {
+    RP.tools.checkPageHasText({ layersBuilt: false, textLayer: { childElementCount: 0 }, textContent: null });
+    check('no "this is a scan" warning before the text layer is built', !warned);
+    RP.tools.checkPageHasText({ layersBuilt: true, textLayer: { childElementCount: 0 }, textContent: { items: [] } });
+    check('but a genuine scan still warns once the layer is built', warned);
+  } finally {
+    RP.toast = toast;
+    RP.tools.warnedNoText = false;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -4450,6 +4683,7 @@ async function pageLabel(bytes, index) {
     testMarqueeZoom();
     testViewModes();
     testRasterCap();
+    await testLayerQueue();
     testCanvasRetention();
     testScrollPage();
     testSessions();

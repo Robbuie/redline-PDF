@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.13.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.13.2. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -422,6 +422,33 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   page further from the viewport could survive because a nearer one was just
   dropped, which inverts the ordering the whole sweep is built on.
   `test/verify.js` covers it.
+- **The text layer is not part of the render, and must not go back inside it.**
+  `renderPage` used to `await buildTextLayer` and `RP.annots.build` before
+  returning, so its render slot stayed occupied for the whole chain. On a sheet
+  plotted out of CAD that chain is the expensive half rather than the raster:
+  the plotter emits text as thousands of short runs, so `getTextContent` is a
+  long trip through the one worker and `TextLayer.render` is a few thousand
+  absolutely positioned divs behind it — and with `MAX_PAGE_RENDERS` at 2, two
+  of those blocked the sheet actually being waited for. That was the slow load.
+  Layers now have their own queue: `requestLayers`/`pumpLayers`, one at a time
+  (`MAX_LAYER_BUILDS`), gated behind every pending raster, **for visible pages
+  only** — the observer prefetches 600px each way and a split has two panes
+  doing it. Four things hold it together. The observer re-requests layers for a
+  page that is `rendered` but not `layersBuilt`, which is the only thing
+  catching a page that was skipped off-screen or released and re-rastered.
+  `layout()` and `releasePage` both clear `layersBuilt`, because both layers
+  are positioned against `record.viewport`. A build in flight re-checks
+  *viewport identity* across each await — `layout()` replaces the object, so a
+  zoom mid-build has to be dropped rather than left positioned against geometry
+  that has gone. And `pumpLayers` counts its slot back on rejection as well as
+  resolution (`.then(done, done)`): with one slot, one throw would otherwise
+  stall every later page into never becoming selectable. `search.js` reads
+  `record.textContent` directly and never waited on any of this, so search is
+  unaffected. `RP.tools.checkPageHasText` had to learn about it, though — the
+  counts it reads are both zero before the layer is built, so without a
+  `layersBuilt` guard it reports a sheet full of schedules as an unsearchable
+  scan. `test/verify.js` covers the ordering, the skip, the guard and the
+  stall.
 - **Rasterisation is queued, not fired off the observer.** pdf.js has one
   worker, so `requestPage` puts indices in `renderQueue` and `pumpRenders` runs
   at most `MAX_PAGE_RENDERS` at a time, nearest the viewport first. Thumbnails
