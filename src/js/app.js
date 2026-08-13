@@ -61,8 +61,7 @@
         RP.outline.init();
         RP.compare.init();
         RP.print.init();
-        this.applyTheme(this.settings.theme);
-        this.applyNight(this.settings.nightMode);
+        this.applyAppearance(this.settings);
         this.buildSwatches();
         this.wireToolbar();
         this.wireSettings();
@@ -134,9 +133,18 @@
       return false;
     },
 
-    applyTheme(theme) {
-      document.body.className = theme === 'light' ? 'theme-light' : 'theme-dark';
-      document.body.dataset.tool = RP.tools.tool;
+    /**
+     * Theme, accent, density and paper mode in one call.
+     *
+     * All four go through `RP.appearance`, which toggles the classes it owns
+     * and nothing else. Do not reach for `document.body.className` here: the
+     * pre-0.13 version of this assigned it wholesale and took `presenting`
+     * (and `data-tool`, which then had to be put back by hand two lines
+     * later) off with it.
+     */
+    applyAppearance(settings) {
+      RP.appearance.applyAll(settings || this.settings || {});
+      this.syncPaperButton();
     },
 
     // -----------------------------------------------------------------------
@@ -786,7 +794,7 @@
       RP.$('#btnFitPage').addEventListener('click', () => RP.viewer.fitPage());
       RP.$('#btnViewMode').addEventListener('click', (event) => this.openViewMenu(event.currentTarget));
       RP.$('#btnRotate').addEventListener('click', () => RP.viewer.rotate());
-      RP.$('#btnNight').addEventListener('click', () => this.toggleNight());
+      RP.$('#btnPaper').addEventListener('click', (event) => this.openPaperMenu(event.currentTarget));
 
       const zoomInput = RP.$('#zoomInput');
       zoomInput.addEventListener('change', () => {
@@ -1042,30 +1050,70 @@
     },
 
     // -----------------------------------------------------------------------
-    // Night mode
+    // Paper display modes
+    //
+    // A filter over the drawing and nothing else. The markup canvas is a
+    // sibling of the page canvas and is deliberately outside every one of
+    // these rules, so a red cloud stays red rather than arriving as cyan —
+    // and none of it reaches the saved bytes, the print copy or a snapshot
+    // crop. See the block comment on the rules in app.css.
     // -----------------------------------------------------------------------
 
-    /**
-     * Inverts the drawing only. The filter is on `.pdf-canvas`; the markup
-     * canvas is a sibling and is left alone, so a red cloud stays red instead
-     * of arriving as cyan. See the rule in app.css.
-     */
-    applyNight(on) {
-      document.body.classList.toggle('night', !!on);
-      const button = RP.$('#btnNight');
-      if (button) {
-        button.classList.toggle('active', !!on);
-        button.setAttribute('aria-pressed', on ? 'true' : 'false');
-      }
+    paperMode() {
+      return document.body.dataset.paper || 'normal';
     },
 
-    toggleNight() {
-      const next = !document.body.classList.contains('night');
-      this.applyNight(next);
-      window.rp.settings.patch({ nightMode: next })
+    /** Keeps the toolbar button lit and its tooltip honest about the mode. */
+    syncPaperButton() {
+      const button = RP.$('#btnPaper');
+      if (!button) return;
+      const mode = this.paperMode();
+      const on = mode !== 'normal';
+      button.classList.toggle('active', on);
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      button.title = 'Paper display — ' + RP.appearance.label(RP.appearance.PAPER_MODES, mode).toLowerCase() +
+        '. Filters the drawing on screen only, never your markups or the print' +
+        '  (Ctrl+Shift+N cycles)';
+    },
+
+    setPaperMode(mode, options) {
+      const id = RP.appearance.applyPaperMode(mode);
+      this.syncPaperButton();
+      // The mode is persisted, but a failed write must not undo what the user
+      // can already see — the toggle has applied by the time this runs.
+      window.rp.settings.patch({ paperMode: id })
         .then((settings) => { this.settings = settings; })
-        .catch(() => { /* the toggle already applied; persistence is best-effort */ });
-      RP.status(next ? 'Night mode on — markups keep their colours' : 'Night mode off');
+        .catch(() => { /* best effort */ });
+      if (!(options && options.quiet)) {
+        RP.status(id === 'normal'
+          ? 'Paper: as drawn'
+          : 'Paper: ' + RP.appearance.label(RP.appearance.PAPER_MODES, id).toLowerCase() +
+            ' — screen only, markups unchanged');
+      }
+      return id;
+    },
+
+    /**
+     * Ctrl+Shift+N. It cycles rather than toggling because there are five
+     * modes now and one of them is the old night mode: a shortcut that only
+     * ever reached invert would leave the other three keyboard-unreachable,
+     * and a shortcut that opened a menu would stop being a shortcut.
+     */
+    cyclePaperMode() {
+      const list = RP.appearance.PAPER_MODES;
+      const at = list.findIndex((item) => item.id === this.paperMode());
+      this.setPaperMode(list[(at + 1) % list.length].id);
+    },
+
+    /** The dropdown under the toolbar button — every mode, one click. */
+    openPaperMenu(anchor) {
+      const current = this.paperMode();
+      RP.menu.openUnder(anchor, RP.appearance.PAPER_MODES.map((item) => ({
+        label: item.label,
+        hint: item.note,
+        checked: item.id === current,
+        run: () => this.setPaperMode(item.id)
+      })));
     },
 
     // -----------------------------------------------------------------------
@@ -1242,7 +1290,7 @@
             return;
           }
           if (key === 'g') { event.preventDefault(); this.focusPageInput(); return; }
-          if (key === 'n' && event.shiftKey) { event.preventDefault(); this.toggleNight(); return; }
+          if (key === 'n' && event.shiftKey) { event.preventDefault(); this.cyclePaperMode(); return; }
           if (key === '0') { event.preventDefault(); RP.viewer.fitMode = null; RP.viewer.setZoom(1); return; }
           if (key === '1') { event.preventDefault(); RP.viewer.fitWidth(); return; }
           if (key === '2') { event.preventDefault(); RP.viewer.fitPage(); return; }
@@ -1358,7 +1406,7 @@
         RP.$('#optResident').checked = !!this.settings.stayResident;
         RP.$('#optRestoreView').checked = this.settings.restoreView !== false;
         RP.$('#optAuthor').value = this.settings.defaultAuthor || RP.store.author || '';
-        RP.$('#optTheme').value = this.settings.theme || 'dark';
+        this.fillAppearanceControls();
         RP.$('#optAutoUpdate').checked = this.settings.autoUpdate !== false;
         RP.$('#appVersionLabel').textContent = 'Version ' + (this.appVersion || '—');
         this.updateSaveModeChip();
@@ -1412,10 +1460,71 @@
         RP.store.author = e.target.value;
         patch({ defaultAuthor: e.target.value });
       });
+      // Appearance. Each one applies first and persists second: the change is
+      // visible on the same frame the control moved, and a failed write costs
+      // the preference rather than the preview.
       RP.$('#optTheme').addEventListener('change', (e) => {
-        this.applyTheme(e.target.value);
-        patch({ theme: e.target.value });
+        patch({ theme: RP.appearance.applyTheme(e.target.value) });
       });
+      RP.$('#optDensity').addEventListener('change', (e) => {
+        patch({ density: RP.appearance.applyDensity(e.target.value) });
+      });
+      RP.$('#optPaper').addEventListener('change', (e) => {
+        this.setPaperMode(e.target.value, { quiet: true });
+      });
+      RP.$('#optAccent').addEventListener('click', (e) => {
+        const dot = e.target.closest('.accent-dot');
+        if (!dot) return;
+        patch({ accent: RP.appearance.applyAccent(dot.dataset.accent) });
+        this.fillAppearanceControls();
+      });
+    },
+
+    /**
+     * Fill the Appearance controls from the catalog and mark what is in force.
+     *
+     * The catalog is the one place a theme, accent, density or paper mode is
+     * defined, so the options are built from it rather than written out in
+     * `index.html` — a hand-written <option> that falls out of step sets a
+     * value the CSS has no rule for, and does it silently.
+     *
+     * The *selected* values come from `RP.appearance.current()`, i.e. what is
+     * applied, not from `this.settings`. Three of the four can be changed from
+     * outside this dialog and `this.settings` only catches up when an async
+     * patch resolves.
+     */
+    fillAppearanceControls() {
+      const A = RP.appearance;
+      const now = A.current();
+      const fill = (sel, list, current) => {
+        const box = RP.$(sel);
+        if (!box) return;
+        box.replaceChildren(...list.map((item) => RP.el('option', {
+          value: item.id, text: item.label, title: item.note || ''
+        })));
+        box.value = current;
+      };
+
+      fill('#optTheme', A.THEMES, now.theme);
+      fill('#optDensity', A.DENSITIES, now.density);
+      fill('#optPaper', A.PAPER_MODES, now.paperMode);
+
+      const accent = now.accent;
+      const row = RP.$('#optAccent');
+      if (row) {
+        row.replaceChildren(...A.ACCENTS.map((item) => RP.el('button', {
+          type: 'button',
+          class: 'accent-dot' + (item.id === accent ? ' on' : ''),
+          'data-accent': item.id,
+          title: item.label,
+          'aria-label': item.label,
+          role: 'radio',
+          'aria-checked': item.id === accent ? 'true' : 'false',
+          // A string, not an object: `RP.el`'s object form goes through
+          // Object.assign, which cannot set a custom property.
+          style: '--dot: rgb(' + item.rgb + ');'
+        })));
+      }
     },
 
     // -----------------------------------------------------------------------
@@ -1601,9 +1710,10 @@
 
   function FALLBACK_SETTINGS() {
     return {
-      theme: 'dark', saveMode: 'copy', backupOnOverwrite: true, autosave: false,
+      theme: 'dark', accent: 'redline', density: 'normal', paperMode: 'normal',
+      saveMode: 'copy', backupOnOverwrite: true, autosave: false,
       autosaveIntervalMs: 60000, stayResident: false, defaultAuthor: '',
-      restoreView: true, nightMode: false, autoUpdate: true, skipVersion: null, recents: []
+      restoreView: true, autoUpdate: true, skipVersion: null, recents: []
     };
   }
 

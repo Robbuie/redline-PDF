@@ -12,6 +12,54 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.13.0] — 2026-08-12
+
+### Added
+
+- **Themes.** *Settings → Appearance → Theme* now offers five: the original
+  **Dark (CAD pro)**, **Light**, **Warm paper** (light, off-white — easier over
+  a long review), **Blueprint** (deep blue chrome, so the sheet is the only
+  warm thing on screen) and **High contrast**, which is an accessibility target
+  rather than a style: pure white on near-black, every border a visible line.
+- **Accent colour.** The redline red is now a choice, not a fixture — amber,
+  field green, cyan, drafting blue and violet are the alternatives. Every
+  armed tool, active chip, banner and highlight in the interface follows it.
+  It changes the *interface* only; markups are drawn in the colour you picked
+  for them and are untouched.
+- **Interface size.** Compact, normal or large, under the same section. Compact
+  gives a laptop more sheet; large makes the toolbars, labels and type readable
+  on a high-DPI panel.
+- **Paper display modes.** Night mode has become one of five, on the half-moon
+  toolbar button (which now drops a menu) and on `Ctrl+Shift+N`, which cycles:
+  - **As drawn** — no filter.
+  - **Invert** — the old night mode.
+  - **Greyscale** — drains the drawing so a red or yellow markup stands off a
+    busy multi-colour plot instead of competing with it.
+  - **Reduced glare** — a warm off-white rather than a full invert, for a long
+    review without the disorientation of inverted linework.
+  - **Contrast boost** — for a faded or badly scanned sheet where the linework
+    has gone grey.
+
+  All five are viewing aids and nothing more: your markups keep their real
+  colours, and nothing reaches the saved file, the print or a copied snapshot.
+- Keyboard focus is now visible, and every animation in the interface is
+  dropped when Windows is set to reduce motion.
+
+### Changed
+
+- Your existing night mode setting carries across as **Invert** — nothing to
+  turn back on.
+- The cheat sheet (`?`) and the toolbar tooltip describe the paper display
+  modes rather than night mode.
+
+### Fixed
+
+- Changing the theme no longer drops you out of presentation mode. It was
+  rewriting every class on the page rather than the one it owned, so the
+  toolbars, tab strip and status bar all came back over the drawing.
+
+---
+
 ## [0.12.0] — 2026-08-12
 
 ### Added

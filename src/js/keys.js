@@ -49,7 +49,7 @@
         ['Ctrl+2', 'Fit page'],
         ['Ctrl+3', 'Fit visible — fits the ink, not the paper'],
         ['F11', 'Presentation mode'],
-        ['Ctrl+Shift+N', 'Night mode'],
+        ['Ctrl+Shift+N', 'Cycle paper display (invert, greyscale, glare, contrast)'],
         ['Ctrl+F', 'Find in the drawing'],
         ['F3 / Shift+F3', 'Next / previous hit']
       ]

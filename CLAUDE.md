@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.12.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.13.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -49,6 +49,7 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | File | Responsibility |
 |---|---|
 | `util.js` | `RP.$`, `RP.el`, geometry (`RP.geom`), colours, the `RP.bus` event bus, toasts |
+| `appearance.js` | the four display axes — theme, accent, chrome density, paper mode: the catalog of each, the normalisers, and the four functions that apply them |
 | `diag.js` | error capture, on-screen diagnostics panel, log file streaming |
 | `menu.js` | the one popup menu — right-click menus and toolbar dropdowns both |
 | `pdfjs-loader.js` | loads PDF.js (ESM v4+ or UMD v3), worker path, `docParams()` |
@@ -582,8 +583,9 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   than the whole sheet at 4x. Two consequences worth keeping: the crop passes
   **no `annotationCanvasMap`** — that map hands stamps and some free text to a
   live annotation layer, and a crop has none, so passing one makes a stamped
-  sheet copy without its stamp — and night mode cannot leak into a copy,
-  because it is a CSS filter on `.pdf-canvas` that a fresh render never sees.
+  sheet copy without its stamp — and the paper display mode cannot leak into a
+  copy, because every one of those filters is CSS on `.pdf-canvas` that a fresh
+  render never sees.
 - **Never assume a PDF.js flavour.** v3 is UMD (`build/pdf.js`, `renderTextLayer`,
   `--scale-factor`); v4+ is ESM (`build/pdf.mjs`, `TextLayer` class,
   `--total-scale-factor` plus `--scale-round-x/y`). `pdfjs-loader.js` picks one
@@ -650,10 +652,47 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   itself. `RP.clip.isGlyph` is the predicate, and it deliberately returns false
   for the `.text-layer` container, which is `inset: 0` and covers blank paper
   too. Both halves are needed; remove either and one of the two gestures breaks.
-- **Night mode filters `.pdf-canvas` and nothing else.** The markup canvas is a
-  sibling, so markups keep their real colours — invert them and every redline
-  comes back cyan. `test/verify.js` asserts the rule does not name
-  `.annot-canvas`.
+- **Every paper display mode filters `.pdf-canvas` and nothing else.** The
+  markup canvas is a *sibling*, so markups keep their real colours — filter
+  them and every redline comes back inverted, and the user is choosing colours
+  that are not the colours that will print. None of the five reaches the
+  exported bytes, the print copy or a snapshot crop either: they are viewing
+  aids, and a contrast boost that baked into a saved drawing would be a data
+  change dressed up as a display option. Thumbnails follow the page, or the
+  panel and the viewer disagree about what the drawing looks like.
+  `test/verify.js` asserts no rule names `.annot-canvas`, that every mode in
+  the catalog has a rule, and that the thumbnails were not forgotten.
+- **Appearance is four independent axes, and they stay independent.**
+  `appearance.js` owns the catalog for each (theme, accent, density, paper
+  mode); a theme sets the greys, the accent sets one colour, the density sets
+  the chrome metrics. Fold any two together — a "dark compact" preset, a theme
+  that hardcodes the red — and the combinations multiply while most of them
+  never get looked at. Three rules follow, and `test/verify.js` covers all
+  three. **The accent is one channel triple, not a hex**: every tint derives
+  from `--accent-rgb` with `rgba()`/`color-mix`, so a literal
+  `rgba(255, 91, 74, …)` anywhere in `app.css` is a spot that silently stops
+  tracking the picker. **The density metrics are a set**: a block that
+  overrides nine of the ten leaves the tenth at the normal size, so the toolbar
+  grows and the status bar does not. **Every theme restates every core
+  colour**, because an unset one inherits from `:root`, which is the *dark*
+  set — a light theme with a forgotten `--bg-3` gets a near-black hover state
+  on white chrome.
+- **Nothing may assign `document.body.className`.** Up to 0.12 `applyTheme`
+  did, which took `presenting` off with it (and `data-tool`, which it then put
+  back by hand two lines later) — so changing the theme from inside a
+  presentation dropped every toolbar back over the drawing, and any state class
+  added later would have joined them. `RP.appearance` toggles the `theme-*`
+  classes it owns and sets `data-density` / `data-paper`; `test/verify.js`
+  fails on a wholesale assignment.
+- **`nightMode` is a migration, not a setting.** It was replaced by `paperMode`
+  in 0.13 and nothing writes it any more, but a settings file from an older
+  build still carries it. The fold-in happens in `loadSettings` against the
+  **stored** object, before the defaults are merged: afterwards `paperMode` is
+  present whether the user ever set it or not, and the old answer would read as
+  an explicit "no filter" — a setting quietly reverting on upgrade, which gets
+  reported as the app forgetting rather than as a migration that was missed.
+  `RP.appearance.paperModeOf` folds it in again on the renderer side as belt
+  and braces.
 - **`RP.tools.pending` is the only gesture in this app that outlives a pointer
   up, and clearing it is the whole problem.** Every other tool is
   press-drag-release, so the drag state cannot leak: the pointer coming up ends

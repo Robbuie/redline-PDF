@@ -76,7 +76,7 @@ global.document = {
 };
 
 const globalEval = eval; // indirect eval => runs in global scope
-for (const file of ['util.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
+for (const file of ['util.js', 'appearance.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
   'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'clip.js',
   'tools.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
@@ -2573,7 +2573,115 @@ function testNativeAnnotations() {
 }
 
 /**
- * The chrome added for view/copy/navigation: night mode, the clipboard path,
+ * Appearance — theme, accent, density and paper mode.
+ *
+ * Four independent axes, and the ways they break are all "one of the four
+ * pieces was not updated with the other three": a catalog entry with no CSS
+ * rule behind it, a literal accent colour that stops tracking the picker, a
+ * density that leaves one piece of chrome at its old fixed size, a settings
+ * value nothing normalises. None of that shows up as an exception — it shows
+ * up as a control that appears to work and does not, which is why it is
+ * checked statically here rather than trusted to be noticed.
+ */
+function testAppearance() {
+  console.log('\nAppearance');
+
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8');
+  const A = RP.appearance;
+
+  // --- themes ---------------------------------------------------------------
+  // `dark` is the :root block and deliberately has no class of its own.
+  const themeless = A.THEMES.map((t) => t.id)
+    .filter((id) => id !== 'dark' && !new RegExp('body\\.theme-' + id + '\\s*\\{').test(css));
+  check('every theme in the catalog has a block', themeless.length === 0, themeless.join(', '));
+
+  /* A theme that leaves one of the greys unset inherits it from :root, which
+     is the dark set — so a light theme with a forgotten --bg-3 gets a near
+     black hover state on white chrome. Each theme has to restate all of
+     them. */
+  const CORE = ['--bg-0', '--bg-1', '--bg-2', '--bg-3', '--bg-4', '--canvas-bg',
+    '--line', '--line-soft', '--txt-0', '--txt-1', '--txt-2'];
+  for (const theme of A.THEMES) {
+    if (theme.id === 'dark') continue;
+    const block = (css.match(new RegExp('body\\.theme-' + theme.id + '\\s*\\{([^}]*)\\}')) || [])[1] || '';
+    const gaps = CORE.filter((name) => !new RegExp(name + '\\s*:').test(block));
+    check('theme "' + theme.id + '" sets every core colour', gaps.length === 0, gaps.join(', '));
+  }
+
+  // --- accent ---------------------------------------------------------------
+  /* The accent is one channel triple and every tint derives from it. A literal
+     `rgba(255, 91, 74, …)` left anywhere in the sheet is a spot re-pinned to
+     the default red, which reads as a picker that half works. Comments are
+     stripped first — the note explaining this rule quotes the literal. */
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const pinned = (rules.match(/rgba?\(\s*255,\s*91,\s*74|#ff5b4a|#ff8375|#ff8f80|#ff8a5b/gi) || []);
+  check('no literal accent colour is left in the stylesheet',
+    pinned.length === 0, pinned.join(', '));
+  check('the accent is declared once, as a channel triple',
+    (rules.match(/--accent-rgb:\s*255,\s*91,\s*74/g) || []).length === 1);
+  check('the accent picker sets one property, not many',
+    /setProperty\('--accent-rgb'/.test(fs.readFileSync(path.join(ROOT, 'src', 'js', 'appearance.js'), 'utf8')));
+  check('every accent in the catalog is a channel triple',
+    A.ACCENTS.every((a) => /^\d{1,3}, \d{1,3}, \d{1,3}$/.test(a.rgb)));
+
+  // --- density --------------------------------------------------------------
+  /* The metrics are a *set*: a density block that overrides five of the six
+     leaves the sixth at the normal size, so the toolbar grows and the status
+     bar does not. */
+  const METRICS = ['--ui-font', '--tb-h', '--row1-h', '--row2-h', '--status-h',
+    '--side-w', '--tbtn-h', '--tool-w', '--tool-h', '--tool-icon'];
+  for (const density of A.DENSITIES) {
+    if (density.id === 'normal') continue;
+    const block = (css.match(new RegExp('body\\[data-density="' + density.id + '"\\]\\s*\\{([^}]*)\\}')) || [])[1] || '';
+    const gaps = METRICS.filter((name) => !new RegExp(name + '\\s*:').test(block));
+    check('density "' + density.id + '" sets every metric', gaps.length === 0, gaps.join(', '));
+  }
+  /* Nothing outside those blocks may restate a metric as a literal — that
+     piece of chrome then stops scaling with the rest, and it is always the
+     one nobody looks at in the density they do not use. */
+  const bodyFont = (rules.match(/html,\s*body\s*\{([^}]*)\}/) || [])[1] || '';
+  check('the base font size comes from the density', /font-size:\s*var\(--ui-font\)/.test(bodyFont));
+
+  // --- normalisers ----------------------------------------------------------
+  /* Settings can be hand-edited, or written by a later build, or left over
+     from one where the option did not exist. None of that may leave the app
+     with chrome it has no rule for. */
+  check('an unknown theme falls back to the default',
+    A.themeOf('chartreuse') === 'dark' && A.themeOf(undefined) === 'dark' &&
+    A.themeOf('blueprint') === 'blueprint');
+  check('an unknown accent falls back to the default',
+    A.accentOf('puce') === 'redline' && A.accentRgb('puce') === '255, 91, 74');
+  check('an unknown density falls back to the default',
+    A.densityOf('enormous') === 'normal' && A.densityOf('compact') === 'compact');
+
+  // --- wiring ---------------------------------------------------------------
+  check('appearance.js is loaded before app.js',
+    html.indexOf('js/appearance.js') > 0 &&
+    html.indexOf('js/appearance.js') < html.indexOf('js/app.js'));
+  /* The 0.12 bug: assigning body.className wholesale took `presenting` (and
+     data-tool) off with it, so changing theme from inside a presentation
+     dropped every toolbar back over the drawing. */
+  check('nothing assigns body.className wholesale',
+    !/body\.className\s*=/.test(app) &&
+    !/body\.className\s*=/.test(fs.readFileSync(path.join(ROOT, 'src', 'js', 'appearance.js'), 'utf8')));
+  check('the theme swap toggles only the theme classes',
+    /classList\.toggle\('theme-' \+ item\.id/.test(
+      fs.readFileSync(path.join(ROOT, 'src', 'js', 'appearance.js'), 'utf8')));
+
+  // --- reduced motion -------------------------------------------------------
+  /* Every transition in the sheet is decoration on a state that has already
+     changed, so all of them can go — but only if the query is actually
+     there. */
+  check('transitions are dropped under prefers-reduced-motion',
+    /@media \(prefers-reduced-motion: reduce\)/.test(css) &&
+    /transition-duration:[^;]*!important/.test(css));
+}
+
+/**
+ * The chrome added for view/copy/navigation: paper display modes, the
+ * clipboard path,
  * the recents surface, the context menu and the status bar. All of it is
  * wiring rather than maths, so these are static checks — they catch the ways
  * this breaks in practice, which are a missing <script> tag, a filter that
@@ -2603,16 +2711,40 @@ function testChrome() {
       html.indexOf(module) > 0 && html.indexOf(module) < html.indexOf(before));
   }
 
-  // --- night mode -----------------------------------------------------------
-  // The whole point is that the drawing inverts and the markups do not. A
-  // filter that reaches .annot-canvas turns every redline cyan.
-  const nightRules = (css.match(/body\.night[^{]*\{[^}]*\}/g) || []).join('\n');
-  check('night mode filters the PDF canvas', /\.pdf-canvas/.test(nightRules) &&
-    /invert\(1\)/.test(nightRules));
-  check('night mode never touches the markup canvas', !/annot-canvas/.test(nightRules));
-  check('night mode is persisted, not just toggled',
-    /nightMode/.test(main) && /nightMode/.test(app));
-  check('night mode is applied at boot', /applyNight\(this\.settings\.nightMode\)/.test(app));
+  // --- paper display modes --------------------------------------------------
+  // The whole point is that the *drawing* is filtered and the markups are not.
+  // A filter that reaches .annot-canvas turns every redline cyan, and the user
+  // is then choosing colours that are not the colours that will print.
+  const paperRules = (css.match(/body\[data-paper[^{]*\{[^}]*\}/g) || []).join('\n');
+  check('every paper mode filters the PDF canvas', /\.pdf-canvas/.test(paperRules) &&
+    /invert\(1\)/.test(paperRules) && /grayscale\(/.test(paperRules) &&
+    /sepia\(/.test(paperRules) && /contrast\(/.test(paperRules));
+  check('no paper mode touches the markup canvas', !/annot-canvas/.test(paperRules));
+  // Thumbnails follow the page, or the panel and the viewer disagree about
+  // what the drawing looks like and the thumbnails read as the "real" one.
+  const thumbFiltered = (css.match(/body\[data-paper="([a-z]+)"\] \.thumb canvas/g) || []).length;
+  check('thumbnails follow the page in every filtered mode', thumbFiltered === 4,
+    thumbFiltered + ' of 4');
+  // Every mode the catalog can produce needs a rule, or picking it from the
+  // menu is a no-op that still lights the toolbar button.
+  const RPa = RP.appearance;
+  const unruled = RPa.PAPER_MODES.map((m) => m.id).filter((id) =>
+    id !== 'normal' && !new RegExp('body\\[data-paper="' + id + '"\\]').test(css));
+  check('every paper mode in the catalog has a rule', unruled.length === 0, unruled.join(', '));
+  check('the paper mode is persisted, not just applied',
+    /paperMode/.test(main) && /paperMode: id/.test(app));
+  check('appearance is applied at boot',
+    /this\.applyAppearance\(this\.settings\)/.test(app));
+  // A settings file from 0.12 has `nightMode` and no `paperMode`; dropping it
+  // turns night mode off for everyone who had it on, which gets reported as
+  // the app forgetting rather than as a missed migration.
+  check('the pre-0.13 nightMode flag still migrates',
+    /stored\.paperMode === undefined && stored\.nightMode/.test(main));
+  check('paperModeOf folds the legacy flag in',
+    RPa.paperModeOf({ nightMode: true }) === 'invert' &&
+    RPa.paperModeOf({ nightMode: true, paperMode: 'grey' }) === 'grey' &&
+    RPa.paperModeOf({ paperMode: 'normal', nightMode: true }) === 'normal' &&
+    RPa.paperModeOf({}) === 'normal');
 
   // --- clipboard ------------------------------------------------------------
   const clip = fs.readFileSync(path.join(ROOT, 'src', 'js', 'clip.js'), 'utf8');
@@ -4155,6 +4287,7 @@ async function pageLabel(bytes, index) {
   console.log('Redline PDF — verification');
   try {
     testLayoutContract();
+    testAppearance();
     testChrome();
     testNativeAnnotations();
     testGeometry();

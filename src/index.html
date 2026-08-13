@@ -7,7 +7,10 @@
   <title>Redline PDF</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
-<body class="theme-dark" data-tool="select">
+<!-- The three appearance hooks are declared here as well as being set by
+     `RP.appearance.applyAll` at boot, so the first paint is the default rather
+     than whatever a half-applied state looks like. -->
+<body class="theme-dark" data-density="normal" data-paper="normal" data-tool="select">
 
 <!-- ===================== icon sprite =====================
      Every symbol is stroke-only on a 24x24 grid so the whole set reads the same
@@ -294,7 +297,7 @@
     <button class="tbtn icon-only" id="btnFitPage" title="Fit page  (Ctrl+2)"><svg><use href="#i-fit-page"/></svg></button>
     <button class="tbtn icon-only" id="btnViewMode" title="Page layout — continuous, one sheet at a time, or facing spreads. Presentation mode lives here too  (F11)"><svg><use href="#i-view-mode"/></svg></button>
     <button class="tbtn icon-only" id="btnRotate" title="Rotate view"><svg><use href="#i-rotate"/></svg></button>
-    <button class="tbtn icon-only" id="btnNight" title="Night mode — inverts the drawing, not your markups  (Ctrl+Shift+N)"><svg><use href="#i-night"/></svg></button>
+    <button class="tbtn icon-only" id="btnPaper" title="Paper display — filters the drawing on screen only, never your markups or the print  (Ctrl+Shift+N cycles)"><svg><use href="#i-night"/></svg></button>
   </div>
 
   <div class="tsep"></div>
@@ -640,13 +643,28 @@
       </section>
       <section>
         <h3>Appearance</h3>
+        <!-- Every control in this section is filled from RP.appearance at open
+             time rather than listed here: the catalog is the one place a theme
+             or a paper mode is defined, and a hand-written <option> that drops
+             out of step with it is an option that sets a value the CSS has no
+             rule for. -->
         <label class="opt field">
           <span>Theme</span>
-          <select id="optTheme">
-            <option value="dark">Dark (CAD pro)</option>
-            <option value="light">Light</option>
-          </select>
+          <select id="optTheme"></select>
         </label>
+        <div class="opt field">
+          <span>Accent colour</span>
+          <div class="accent-row" id="optAccent" role="radiogroup" aria-label="Accent colour"></div>
+        </div>
+        <label class="opt field">
+          <span>Interface size</span>
+          <select id="optDensity"></select>
+        </label>
+        <label class="opt field">
+          <span>Paper display</span>
+          <select id="optPaper"></select>
+        </label>
+        <p class="opt-note">Paper display filters the drawing on screen only — your markups keep their real colours, and saved files, prints and copied snapshots are never affected.</p>
       </section>
       <section>
         <h3>Updates</h3>
@@ -756,6 +774,7 @@
      v4 onward, so it is loaded by pdfjs-loader.js, which handles both. -->
 <script src="../node_modules/pdf-lib/dist/pdf-lib.min.js"></script>
 <script src="js/util.js"></script>
+<script src="js/appearance.js"></script>
 <script src="js/diag.js"></script>
 <script src="js/menu.js"></script>
 <script src="js/pdfjs-loader.js"></script>

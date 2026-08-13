@@ -62,6 +62,25 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.13
+
+**Themes.** Five of them, under **Settings → Appearance**: the original dark, a
+light, a warm off-white **paper**, a deep **blueprint** blue, and a **high
+contrast** set built for legibility rather than looks.
+
+**Accent colour.** The redline red is the default, not a requirement — pick
+amber, green, cyan, drafting blue or violet and every armed tool, active chip
+and highlight in the interface follows it. This is the *interface* accent; it
+does not change the colour any markup is drawn in.
+
+**Interface size.** Compact, normal or large. Compact gives a laptop more sheet;
+large makes the toolbars and type readable on a 4K panel.
+
+**Paper display modes** replace the old night mode — invert, greyscale, reduced
+glare and contrast boost. See *Paper display* under Tools and shortcuts.
+
+---
+
 ## What's new in 0.12
 
 **Assembling a set.** The Pages panel's ⋯ button now holds the three operations
@@ -138,8 +157,8 @@ you want for a schedule.
 
 The crop is redrawn rather than screenshotted, at a density picked for the
 picture rather than for your current zoom, so a detail copied from a
-zoomed-out view is still readable at the other end. Night mode never travels
-into the copy — you get the real drawing.
+zoomed-out view is still readable at the other end. The paper display mode
+never travels into the copy — you get the real drawing.
 
 **Password-protected drawings open — and are read-only.** A drawing that needs
 a password now asks for one, with three attempts and a clear message when one
@@ -464,7 +483,7 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 | | | | `↑` / `↓` | Up / down the sheet, turning over at the edge |
 | | | | `F11` | Presentation mode |
 | | | | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste markups |
-| | | | `Ctrl+Shift+N` | Night mode |
+| | | | `Ctrl+Shift+N` | Cycle paper display |
 | `Ctrl+Tab` | Next tab | | `?` | Show every shortcut |
 | `Alt+1`…`Alt+9` | Jump to a tab | | `Ctrl+Shift+D` | Diagnostics |
 
@@ -504,9 +523,20 @@ else and you get the usual marquee. `Ctrl+C` copies the text selection when no
 markup is selected; with markups selected it copies those instead — into the
 drawing, and as text for everywhere else.
 
-**Night mode** (`Ctrl+Shift+N`, or the half-moon button) inverts the drawing so a
-white E-size sheet is not a floodlight at 11pm. Your markups are drawn on a
-separate canvas and keep their real colours — red stays red.
+**Paper display** (the half-moon button, or `Ctrl+Shift+N` to cycle) filters the
+drawing on screen without touching your markups or anything that leaves the app:
+
+- **Invert** — the old night mode. A white E-size sheet is not a floodlight at 11pm.
+- **Greyscale** — drains the drawing so a red or yellow markup stands off a busy
+  multi-colour plot instead of competing with it.
+- **Reduced glare** — a warm off-white instead of a full invert, for a long
+  review without the disorientation of inverted linework.
+- **Contrast boost** — for a faded or badly scanned sheet where the linework is
+  grey mush.
+
+Your markups are drawn on a separate canvas and keep their real colours — red
+stays red. None of these reach the saved file, the print, or a copied snapshot;
+they are viewing aids and nothing more.
 
 **Zoom.** The percentage box takes a typed value, and the caret beside it drops a
 list of presets (25–400%, fit width, fit page, fit visible, actual size). `Ctrl`

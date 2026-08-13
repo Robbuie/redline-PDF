@@ -1,5 +1,27 @@
 # Roadmap
 
+## Done — v0.13
+
+- **Themes** — five presets (dark, light, warm paper, blueprint, high
+  contrast). The variable system was already there and only the light theme
+  used it; the work was extracting the last hardcoded colours and making each
+  theme restate the full core set, since an unset variable inherits the dark
+  one
+- **Accent picker** — the accent became one channel triple (`--accent-rgb`)
+  with every tint derived from it, so the picker sets one property. The
+  compare overlay's added/removed colours were deliberately *not* folded in:
+  they have to agree with the ink `compare.js` paints
+- **Interface density** — compact / normal / large over ten chrome metrics.
+  The page-column constants (`SPREAD_GAP`, `COLUMN_PAD`) stayed fixed on
+  purpose: they are fit maths, not chrome
+- **Paper display modes** — night mode became five, all CSS filters on
+  `.pdf-canvas` and the thumbnails. The pre-0.13 `nightMode` boolean migrates
+  in `loadSettings`
+- Keyboard focus rings, and every transition dropped under
+  `prefers-reduced-motion`
+- Fixed: changing the theme dropped presentation mode, because `applyTheme`
+  assigned `body.className` wholesale
+
 ## Done — v0.12
 
 - **Merge** — pages pulled in from another PDF. `store.sources` and the

@@ -16,10 +16,11 @@
 
    Two things follow from re-rendering that are easy to undo by accident:
 
-   - **Night mode does not travel.** The invert is a CSS filter on
-     `.pdf-canvas`, and a fresh render never sees it, so the copy is the real
-     drawing whatever the screen is doing. Anybody "fixing" that has misread
-     what night mode is for.
+   - **The paper display mode does not travel.** Invert, greyscale, reduced
+     glare and contrast boost are all CSS filters on `.pdf-canvas`, and a fresh
+     render never sees one, so the copy is the real drawing whatever the screen
+     is doing. Anybody "fixing" that has misread what those modes are for: they
+     are viewing aids, and a crop pasted into an RFI has to be the drawing.
    - **A released page still copies.** `retainCanvases` zeroes the backing
      store of pages away from the viewport, so compositing would hand back a
      blank image for a page that is merely off-screen. This path never touches

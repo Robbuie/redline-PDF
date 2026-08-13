@@ -52,7 +52,13 @@ let printWindow = null;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS = {
-  theme: 'dark',
+  // Appearance is four independent axes — see src/js/appearance.js, which owns
+  // the catalog of valid values and normalises anything it does not recognise.
+  theme: 'dark',               // dark | light | paper | blueprint | contrast
+  accent: 'redline',           // the one colour every tint in the UI derives from
+  density: 'normal',           // compact | normal | large — chrome metrics only
+  paperMode: 'normal',         // normal | invert | grey | soft | contrast
+
   saveMode: 'copy',            // 'copy' | 'overwrite' | 'ask'
   backupOnOverwrite: true,
   autosave: true,
@@ -62,7 +68,10 @@ const DEFAULT_SETTINGS = {
   lastTool: 'select',
   toolDefaults: {},
   restoreView: true,           // reopen a drawing at the page and zoom you left
-  nightMode: false,            // invert the drawing (never the markups)
+  // Superseded by `paperMode` in 0.13 and kept only so a settings file written
+  // by an older build still carries its answer across the upgrade;
+  // `RP.appearance.paperModeOf` folds it in. Nothing writes it any more.
+  nightMode: false,
   autoUpdate: true,            // the app's only network call — see updater.js
   skipVersion: null,           // a release the user asked not to be told about
 
@@ -81,9 +90,17 @@ function settingsPath() {
 function loadSettings() {
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf8');
-    settings = Object.assign({}, DEFAULT_SETTINGS, JSON.parse(raw));
+    const stored = JSON.parse(raw);
+    settings = Object.assign({}, DEFAULT_SETTINGS, stored);
     settings.compare = Object.assign({}, DEFAULT_SETTINGS.compare, settings.compare || {});
     settings.window = Object.assign({}, DEFAULT_SETTINGS.window, settings.window || {});
+    // Night mode became one of five paper modes in 0.13. The migration has to
+    // happen here, against the *stored* object: by the time the defaults have
+    // been merged in, `paperMode` is present whether the user ever set it or
+    // not, and the old answer would be read as an explicit "no filter" —
+    // which is a setting silently reverting on upgrade, and gets reported as
+    // the app forgetting rather than as a migration that was missed.
+    if (stored.paperMode === undefined && stored.nightMode) settings.paperMode = 'invert';
   } catch (err) {
     settings = Object.assign({}, DEFAULT_SETTINGS);
   }

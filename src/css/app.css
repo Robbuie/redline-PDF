@@ -2,6 +2,22 @@
    Redline PDF — dark technical / CAD-pro theme
    ========================================================================== */
 
+/* --------------------------------------------------------------------------
+   Themes, accent and density are three independent axes, and they are kept
+   independent on purpose: a theme sets the greys, the accent picker sets one
+   colour, and the density sets the chrome metrics. Anything that mixes them —
+   a theme that hardcodes the redline red, a density that also changes a
+   colour — means the combinations multiply and half of them look wrong.
+
+   THE ACCENT IS ONE CHANNEL TRIPLE, NOT A HEX. Every tint of it (the soft
+   fill behind an armed tool, the border on an active chip, the glow on the
+   compare slider) is derived here with rgba()/color-mix from `--accent-rgb`,
+   so the picker sets exactly one property and the whole app follows. Writing
+   a literal `rgba(255, 91, 74, …)` anywhere below re-pins that spot to the
+   default red and it stops tracking the choice — which reads as a picker that
+   half works. `test/verify.js` fails on a literal accent in the stylesheet.
+   -------------------------------------------------------------------------- */
+
 :root {
   --bg-0: #101216;          /* app backdrop */
   --bg-1: #171a20;          /* chrome */
@@ -14,26 +30,58 @@
   --txt-0: #e7ebf2;
   --txt-1: #aab3c0;
   --txt-2: #79828f;
-  --accent: #ff5b4a;        /* redline red — the brand */
-  --accent-dim: #b83f33;
-  --accent-soft: rgba(255, 91, 74, 0.14);
+
+  --accent-rgb: 255, 91, 74;              /* redline red — the brand default */
+  --accent: rgb(var(--accent-rgb));
+  --accent-dim: color-mix(in srgb, rgb(var(--accent-rgb)) 70%, #000);
+  --accent-text: color-mix(in srgb, rgb(var(--accent-rgb)) 74%, #fff);
+  --accent-lift: color-mix(in srgb, rgb(var(--accent-rgb)) 62%, #ffb066);
+  --accent-soft: rgba(var(--accent-rgb), .14);
+  --accent-wash: rgba(var(--accent-rgb), .17);
+  --accent-line: rgba(var(--accent-rgb), .45);
+  --accent-glow: rgba(var(--accent-rgb), .8);
+
   --info: #4aa8ff;
   --good: #46c98b;
   --warn: #f2c14e;
   --sel: #4aa8ff;
+
+  /* Compare's added/removed reds and blues are *semantic* and deliberately do
+     NOT follow the accent: they have to agree with the ink the overlay paints
+     in `compare.js`, and a legend that disagrees with the overlay is worse
+     than no legend. They are variables only so no literal accent-looking
+     colour is left in the sheet for the next person to "tidy up". */
+  --diff-added-rgb: 74, 168, 255;
+  --diff-removed-rgb: 255, 91, 74;
+
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .5);
   --shadow-2: 0 6px 24px rgba(0, 0, 0, .45);
   --shadow-3: 0 18px 60px rgba(0, 0, 0, .55);
+  --page-ring: rgba(0, 0, 0, .55);   /* the hairline around a sheet */
   --radius: 7px;
   --radius-sm: 5px;
+  --font: "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+  /* Density metrics. Overridden as a set by the [data-density] blocks below;
+     nothing outside those blocks may restate one of these as a literal, or
+     that piece of chrome stops scaling with the rest. */
+  --ui-font: 13px;
   --tb-h: 34px;
   --row1-h: 40px;
   --row2-h: 56px;
   --status-h: 26px;
   --side-w: 268px;
-  --font: "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
-  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --tbtn-h: 30px;
+  --tool-w: 52px;
+  --tool-h: 46px;
+  --tool-icon: 20px;
 }
+
+/* --- themes --------------------------------------------------------------
+   `theme-dark` is the :root set above and needs no block of its own. Each
+   theme below restates the greys only; the accent and the density come from
+   their own axes. */
 
 body.theme-light {
   --bg-0: #eceef2;
@@ -50,6 +98,104 @@ body.theme-light {
   --shadow-1: 0 1px 2px rgba(20, 24, 31, .12);
   --shadow-2: 0 6px 20px rgba(20, 24, 31, .14);
   --shadow-3: 0 18px 48px rgba(20, 24, 31, .2);
+  --page-ring: rgba(0, 0, 0, .12);
+}
+
+/* Warm light. The canvas behind the paper is a desk rather than a screen, and
+   the chrome is knocked off pure white — the same reason the "reduced glare"
+   paper mode exists, for people who review on a bright monitor all day. */
+body.theme-paper {
+  --bg-0: #ece7dd;
+  --bg-1: #f7f3ea;
+  --bg-2: #fffdf8;
+  --bg-3: #eae4d7;
+  --bg-4: #d9d1c0;
+  --canvas-bg: #c8bfae;
+  --line: #d8d0c0;
+  --line-soft: #e6e0d3;
+  --txt-0: #211d17;
+  --txt-1: #564f43;
+  --txt-2: #857c6c;
+  --shadow-1: 0 1px 2px rgba(50, 40, 24, .13);
+  --shadow-2: 0 6px 20px rgba(50, 40, 24, .16);
+  --shadow-3: 0 18px 48px rgba(50, 40, 24, .22);
+  --page-ring: rgba(60, 48, 30, .16);
+}
+
+/* Blueprint. A cool, deep chrome that puts a white sheet a long way forward —
+   the drawing is the only warm thing on screen. */
+body.theme-blueprint {
+  --bg-0: #0a1220;
+  --bg-1: #0f1b2d;
+  --bg-2: #142339;
+  --bg-3: #1b2f4a;
+  --bg-4: #26405f;
+  --canvas-bg: #060d17;
+  --line: #21374f;
+  --line-soft: #182b40;
+  --txt-0: #e2ecf8;
+  --txt-1: #9fb4cc;
+  --txt-2: #6d8299;
+  --info: #6cc0ff;
+  --sel: #6cc0ff;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .55);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, .5);
+  --shadow-3: 0 18px 60px rgba(0, 0, 0, .6);
+  --page-ring: rgba(0, 0, 0, .6);
+}
+
+/* High contrast. Not a style — an accessibility target. Text goes to pure
+   white on near-black, every border is a visible line rather than a hint, and
+   the muted grey (`--txt-2`) is lifted until it passes as body text, because
+   in this theme it is being read rather than skimmed. */
+body.theme-contrast {
+  --bg-0: #000000;
+  --bg-1: #0a0a0c;
+  --bg-2: #141418;
+  --bg-3: #23232a;
+  --bg-4: #3a3a45;
+  --canvas-bg: #000000;
+  --line: #55555f;
+  --line-soft: #3d3d46;
+  --txt-0: #ffffff;
+  --txt-1: #e4e4ea;
+  --txt-2: #b6b6c0;
+  --info: #7cc4ff;
+  --good: #5ee0a0;
+  --warn: #ffd75e;
+  --sel: #7cc4ff;
+  --page-ring: rgba(255, 255, 255, .35);
+}
+
+/* --- density -------------------------------------------------------------
+   One drawing on a laptop wants the chrome out of the way; the same app on a
+   4K panel wants it legible. Both are the same six numbers. `normal` is the
+   :root set and has no block. */
+
+body[data-density="compact"] {
+  --ui-font: 12px;
+  --tb-h: 30px;
+  --row1-h: 34px;
+  --row2-h: 48px;
+  --status-h: 22px;
+  --side-w: 238px;
+  --tbtn-h: 26px;
+  --tool-w: 46px;
+  --tool-h: 40px;
+  --tool-icon: 18px;
+}
+
+body[data-density="large"] {
+  --ui-font: 14.5px;
+  --tb-h: 38px;
+  --row1-h: 46px;
+  --row2-h: 64px;
+  --status-h: 30px;
+  --side-w: 304px;
+  --tbtn-h: 34px;
+  --tool-w: 60px;
+  --tool-h: 53px;
+  --tool-icon: 23px;
 }
 
 * { box-sizing: border-box; }
@@ -59,7 +205,7 @@ html, body {
   margin: 0;
   overflow: hidden;
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--ui-font);
   color: var(--txt-0);
   background: var(--bg-0);
   user-select: none;
@@ -108,6 +254,17 @@ kbd {
   color: var(--txt-1);
 }
 
+/* Keyboard focus.
+   `:focus-visible` rather than `:focus`, so a clicked button does not keep a
+   ring the mouse user never asked for — and it is the accent rather than the
+   browser default, which is a blue that fights every theme here except the
+   blueprint one. Nothing inside `.viewer` ever holds focus (see the note on
+   `nudgeScroll` in CLAUDE.md), so this is chrome only. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
@@ -116,7 +273,7 @@ kbd {
   background-clip: content-box;
   border-radius: 8px;
 }
-::-webkit-scrollbar-thumb:hover { background: #3d4552; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--txt-2); background-clip: content-box; }
 
 /* ==========================================================================
    Title bar
@@ -140,8 +297,8 @@ kbd {
 
 .logo-mark {
   width: 13px; height: 13px; border-radius: 3px;
-  background: linear-gradient(135deg, var(--accent), #ff8a5b);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, .08) inset, 0 0 10px rgba(255, 91, 74, .45);
+  background: linear-gradient(135deg, var(--accent), var(--accent-lift));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .08) inset, 0 0 10px var(--accent-line);
 }
 
 .logo-text { font-size: 12px; font-weight: 650; letter-spacing: .3px; color: var(--txt-1); }
@@ -200,13 +357,13 @@ kbd {
 
 .tbtn {
   display: inline-flex; align-items: center; gap: 7px;
-  height: 30px; padding: 0 10px;
+  height: var(--tbtn-h); padding: 0 10px;
   background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
   color: var(--txt-1); font: inherit; font-size: 12px; cursor: pointer;
   white-space: nowrap;
   transition: background .12s, color .12s, border-color .12s;
 }
-.tbtn.icon-only { padding: 0; width: 32px; justify-content: center; }
+.tbtn.icon-only { padding: 0; width: calc(var(--tbtn-h) + 2px); justify-content: center; }
 .tbtn:hover { background: var(--bg-3); color: var(--txt-0); }
 .tbtn:active { background: var(--bg-4); }
 .tbtn:disabled { opacity: .35; cursor: default; background: none; }
@@ -214,7 +371,7 @@ kbd {
 /* Tool buttons carry a permanent label — icons alone are guesswork. */
 .tools .tbtn {
   flex-direction: column; justify-content: center; gap: 2px;
-  width: 52px; height: 46px; padding: 0;
+  width: var(--tool-w); height: var(--tool-h); padding: 0;
   color: var(--txt-1);
 }
 .tools .tbtn b {
@@ -222,14 +379,14 @@ kbd {
   color: var(--txt-2); line-height: 1;
 }
 .tools .tbtn:hover b { color: var(--txt-1); }
-.tools .tbtn svg { width: 20px; height: 20px; }
+.tools .tbtn svg { width: var(--tool-icon); height: var(--tool-icon); }
 
 .tbtn.active {
   background: var(--accent-soft);
-  border-color: rgba(255, 91, 74, .5);
-  color: #ff8f80;
+  border-color: var(--accent-line);
+  color: var(--accent-text);
 }
-.tools .tbtn.active b { color: #ff8f80; }
+.tools .tbtn.active b { color: var(--accent-text); }
 
 /* A markup tool draws one markup and hands back to Select. Arming it twice
    locks it on instead, and the two states have to be told apart at a glance —
@@ -332,8 +489,8 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 11px;
   padding: 9px 12px;
-  background: linear-gradient(180deg, rgba(255, 91, 74, .16), rgba(255, 91, 74, .09));
-  border-bottom: 1px solid rgba(255, 91, 74, .4);
+  background: linear-gradient(180deg, var(--accent-wash), var(--accent-soft));
+  border-bottom: 1px solid var(--accent-line);
   color: var(--txt-0);
 }
 .banner-icon { width: 20px; height: 20px; flex: none; color: var(--accent); }
@@ -597,15 +754,15 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 }
 .cmp-summary b { color: var(--txt-0); }
 .cmp-summary .tag { display: inline-block; padding: 0 5px; border-radius: 3px; font-family: var(--mono); font-size: 10.5px; }
-.cmp-summary .tag.added { background: rgba(74, 168, 255, .18); color: #7cc0ff; }
-.cmp-summary .tag.removed { background: rgba(255, 91, 74, .18); color: #ff8375; }
+.cmp-summary .tag.added { background: rgba(var(--diff-added-rgb), .18); color: color-mix(in srgb, rgb(var(--diff-added-rgb)) 74%, #fff); }
+.cmp-summary .tag.removed { background: rgba(var(--diff-removed-rgb), .18); color: color-mix(in srgb, rgb(var(--diff-removed-rgb)) 74%, #fff); }
 
 .cmp-row { grid-template-columns: 40px 1fr auto; }
 .cmp-row .pg { font-family: var(--mono); font-size: 10px; color: var(--txt-2); }
 .cmp-row .desc { font-size: 11.5px; color: var(--txt-1); }
 .cmp-row .kind { font-size: 10px; font-family: var(--mono); }
-.cmp-row .kind.added { color: #7cc0ff; }
-.cmp-row .kind.removed { color: #ff8375; }
+.cmp-row .kind.added { color: color-mix(in srgb, rgb(var(--diff-added-rgb)) 74%, #fff); }
+.cmp-row .kind.removed { color: color-mix(in srgb, rgb(var(--diff-removed-rgb)) 74%, #fff); }
 .cmp-row .kind.changed { color: var(--warn); }
 
 /* --- viewer -------------------------------------------------------------- */
@@ -762,10 +919,9 @@ body.presenting .viewer { background: #0b0d10; }
 .page {
   position: relative;
   background: #fff;
-  box-shadow: var(--shadow-2), 0 0 0 1px rgba(0, 0, 0, .55);
+  box-shadow: var(--shadow-2), 0 0 0 1px var(--page-ring);
   border-radius: 2px;
 }
-body.theme-light .page { box-shadow: var(--shadow-2), 0 0 0 1px rgba(0, 0, 0, .12); }
 .page.rendering::after {
   content: ""; position: absolute; inset: 0;
   background: repeating-linear-gradient(45deg, rgba(0,0,0,.02) 0 8px, rgba(0,0,0,.05) 8px 16px);
@@ -779,17 +935,54 @@ body.theme-light .page { box-shadow: var(--shadow-2), 0 0 0 1px rgba(0, 0, 0, .1
 .page canvas.pdf-canvas { position: relative; }
 .page canvas.annot-canvas { pointer-events: none; }
 
-/* Night mode. The filter is on `.pdf-canvas` alone, deliberately: the markup
-   canvas is a sibling, so red stays red and a redline does not come back as
-   cyan. `hue-rotate(180deg)` after the invert is what keeps the drawing's own
-   colours roughly where they were instead of complementing them.
+/* Paper display modes.
+   ---------------------------------------------------------------------------
+   EVERY FILTER HERE IS ON `.pdf-canvas` AND `.thumb canvas` ALONE, AND THAT
+   IS THE WHOLE DESIGN. The markup canvas is a *sibling* of the page canvas,
+   so a filter that reaches it comes back with every redline inverted — a red
+   cloud arrives cyan — and the user is then marking up in a colour that is not
+   the colour that will print. `test/verify.js` fails if `.annot-canvas` ever
+   appears in one of these rules.
 
-   The page's white background is inverted with it, so a sheet that has not
-   finished rendering does not flash white on a dark screen. Thumbnails follow
-   the viewer so the two do not disagree about what the drawing looks like. */
-body.night .page { background: #000; }
-body.night .page canvas.pdf-canvas,
-body.night .thumb canvas { filter: invert(1) hue-rotate(180deg); }
+   These are viewing aids and nothing more. None of them touches the exported
+   bytes, the print copy or a snapshot crop (`RP.snapshot` re-renders through
+   pdf.js and never sees a CSS filter), so what is on paper is unaffected by
+   what is on screen. That is deliberate: a contrast boost that silently baked
+   into a saved drawing would be a data change dressed up as a display option.
+
+   Thumbnails follow the page, or the panel and the viewer disagree about what
+   the drawing looks like and the thumbnails read as the "real" one.
+
+   - invert   the old night mode. `hue-rotate(180deg)` after the invert puts
+              the drawing's own colours roughly back where they were instead
+              of leaving every one of them complemented. The page's white
+              background is inverted with it so a sheet that has not finished
+              rendering does not flash white on a dark screen.
+   - grey     desaturates the *drawing* only, which is what makes a red or
+              yellow markup stand off a multi-colour plot instead of competing
+              with it.
+   - soft     reduced glare. Knocks the paper down to a warm off-white rather
+              than inverting it — long reviews without the disorientation of
+              inverted linework, which is the thing people bounce off night
+              mode for.
+   - contrast for faded or badly scanned sheets where the linework is grey
+              mush. Deliberately mild: pushed harder it starts eating the thin
+              lines it is meant to rescue.
+   --------------------------------------------------------------------------- */
+
+body[data-paper="invert"] .page { background: #000; }
+body[data-paper="invert"] .page canvas.pdf-canvas,
+body[data-paper="invert"] .thumb canvas { filter: invert(1) hue-rotate(180deg); }
+
+body[data-paper="grey"] .page canvas.pdf-canvas,
+body[data-paper="grey"] .thumb canvas { filter: grayscale(1) contrast(1.05); }
+
+body[data-paper="soft"] .page { background: #f4ecdd; }
+body[data-paper="soft"] .page canvas.pdf-canvas,
+body[data-paper="soft"] .thumb canvas { filter: sepia(.22) saturate(.85) brightness(.95); }
+
+body[data-paper="contrast"] .page canvas.pdf-canvas,
+body[data-paper="contrast"] .thumb canvas { filter: contrast(1.4) brightness(1.04); }
 
 /* Text layer — mirrors the rules pdf.js expects. v3 sets left/top/font-size
    inline against --scale-factor; v4+ sets percentages plus --font-height and
@@ -1130,7 +1323,7 @@ body.panning .viewer * { cursor: grabbing !important; }
   color: var(--txt-2); font: inherit; font-size: 11px; cursor: pointer;
 }
 .chip:hover { color: var(--txt-0); }
-.chip.active { background: var(--accent-soft); border-color: rgba(255, 91, 74, .45); color: #ff8375; }
+.chip.active { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-text); }
 
 /* ==========================================================================
    Status bar
@@ -1167,7 +1360,7 @@ body.panning .viewer * { cursor: grabbing !important; }
 .st-toggle:hover { color: var(--txt-0); border-color: var(--txt-2); }
 .st-toggle:hover::after { opacity: 1; }
 .st-toggle:active { transform: translateY(1px); }
-.st-toggle.overwrite { background: rgba(255, 91, 74, .16); border-color: rgba(255, 91, 74, .45); color: #ff8375; }
+.st-toggle.overwrite { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-text); }
 /* A protected drawing. The caret goes, because in this state the chip does not
    cycle — it explains. Leaving the caret up would promise a control that is not
    there, which is the same lie the chip's old label told about Ctrl+S. */
@@ -1276,7 +1469,7 @@ body.panning .viewer * { cursor: grabbing !important; }
 .cmp-swipe .top { position: absolute; inset: 0; overflow: hidden; }
 .cmp-swipe .handle {
   position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent);
-  cursor: ew-resize; box-shadow: 0 0 10px rgba(255, 91, 74, .8);
+  cursor: ew-resize; box-shadow: 0 0 10px var(--accent-glow);
 }
 .cmp-swipe .handle::after {
   content: ""; position: absolute; top: 50%; left: 50%;
@@ -1439,6 +1632,34 @@ body.panning .viewer * { cursor: grabbing !important; }
 .opt.field { grid-template-columns: 150px 1fr; align-items: center; cursor: default; }
 .opt.field > span { margin: 0; color: var(--txt-1); font-size: 12.5px; }
 
+/* A standing note under a group of options — not attached to any one control,
+   so deliberately not an `.opt span`, which is styled as a control's caption. */
+.opt-note {
+  margin: 2px 0 0; padding: 0 10px;
+  font-size: 11.5px; line-height: 1.55; color: var(--txt-2);
+}
+
+/* --- accent picker -------------------------------------------------------
+   Each dot carries its own colour in `--dot`, set inline from the catalog in
+   appearance.js, so the swatches cannot drift from the accents the app can
+   actually apply. The selected ring is drawn with box-shadow rather than a
+   border: a border would resize the dot and make the row jump as the choice
+   moves along it. */
+.accent-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.accent-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--dot);
+  border: 0; padding: 0; cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35) inset;
+  transition: box-shadow .12s, transform .12s;
+}
+.accent-dot:hover { transform: scale(1.08); }
+.accent-dot.on {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35) inset,
+              0 0 0 2px var(--bg-1),
+              0 0 0 4px var(--dot);
+}
+
 /* Modal footer: actions pinned below the scrolling body, never scrolled away. */
 .modal-foot {
   display: flex; align-items: center; gap: 8px;
@@ -1561,3 +1782,26 @@ body.panning .viewer * { cursor: grabbing !important; }
 
 /* keeps a hidden element out of layout even with display:flex rules above */
 [hidden] { display: none !important; }
+
+/* ==========================================================================
+   Reduced motion
+
+   Every transition in this sheet is decoration on a state that has already
+   changed — a hover tint, the sidebar collapsing, a toast fading out. None of
+   them carries information, so all of them can go. `!important` because they
+   are declared inline on the rules above and this has to beat them without
+   listing every selector, which is the version that goes stale.
+
+   Note what is deliberately NOT here: nothing in the *viewer* animates in the
+   first place. Scrolling, zooming and page turns are immediate by design —
+   see the zoom-streaming note in CLAUDE.md — so a user on reduced motion is
+   not getting a different drawing experience, only quieter chrome.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
