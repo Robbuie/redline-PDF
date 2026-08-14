@@ -12,6 +12,23 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.16.0] — 2026-08-13
+
+### Added
+
+- **The page thumbnail is now a navigator.** Once you are zoomed in far enough
+  that the pane holds only part of a sheet, a box on that sheet's thumbnail
+  shows you which part. Click anywhere on a thumbnail to bring that part of the
+  drawing into the middle of the pane — at the zoom you are already at, rather
+  than jumping to the top of the page — and drag the box to pan without
+  touching the scrollbars. On a large-format sheet at high zoom this is the
+  difference between finding a panel schedule and hunting for it.
+- The box appears only when there is something to say. At fit-width the whole
+  sheet is on screen, so nothing is drawn.
+- Everything the thumbnails already did still works: a click still selects that
+  page for the page operations, and dragging a thumbnail still reorders it.
+  Only a drag that begins on the box pans.
+
 ## [0.15.1] — 2026-08-13
 
 ### Fixed

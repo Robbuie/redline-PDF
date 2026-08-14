@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.15.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.16.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -515,6 +515,40 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   there is no later render. `pumpRenders` also calls `scheduleDetail` as each
   slot clears, so the crop is requested whenever the drawing settles rather
   than only off the success path of the render that happened to be capped.
+- **The thumbnail navigator is measured in fractions, positioned in
+  percentages, and must never measure the DOM.** The box on the current
+  thumbnail runs off `onScroll`, so the rules that handler lives under are its
+  rules too. `RP.views.visibleBox` takes the cached page box and the pane box —
+  the same two `detailTile` takes — and answers in fractions of the *page*,
+  because a fraction is the one quantity that means the same thing on the
+  thumbnail and on the sheet. It is rotation-safe for nothing as a result: the
+  thumbnail is rendered through the same `rotationOf` the page viewport is, so
+  the two are in the same displayed orientation by construction and no angle
+  enters the arithmetic. Those fractions go on as CSS **percentages** of
+  `.thumb-shot`, a wrapper that exists only to be exactly the canvas box —
+  `.thumb` carries the page label underneath, so a box positioned against it is
+  short by the label, and reading the canvas back with
+  `getBoundingClientRect()` puts a measurement per page in the scroll handler.
+  Any padding or margin added to `.thumb-shot` silently slides the box off what
+  it describes; `test/verify.js` asserts there is none.
+- **The box swallows its own press, and that is what stops a pan reordering the
+  document.** `RP.pages` starts a page-reorder drag from a `pointerdown` on any
+  `.thumb`, delegated on the list — so without `stopPropagation` in
+  `startNavDrag`, dragging the box picks the sheet up and drops it somewhere
+  else in the set. It also takes a pointer capture, which is what keeps the
+  moves coming after the pointer leaves the box (on the sheets this exists for
+  the box is a few pixels across) *and* retargets the trailing `click` onto the
+  box, where it is stopped, so a drag cannot end as a click on the thumbnail
+  behind it. `navDrag` pins the box to the sheet it grabbed for the length of
+  the gesture: `onScroll` decides the current page from the scroll offset, so a
+  drag to the top or bottom edge flips it to the neighbour, and re-parenting
+  the element mid-drag takes it out of the document and releases the capture.
+- **A box around the whole thumbnail is not a navigator, it is a border.** The
+  box is hidden when the sheet is entirely on screen, which is the state every
+  ordinary document sits in — drawn there it is decoration on every letter-sized
+  file. The threshold is a hair under the whole page rather than exactly it,
+  because the fractions are a division of measured pixels and land on 0.999 as
+  readily as on 1.
 - **`redrawAll()` only repaints what is on screen.** It fires on
   `selection:changed`, i.e. every click; repainting every page still holding a
   raster meant clearing 77 canvases per click. Off-screen pages get

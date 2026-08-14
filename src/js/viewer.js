@@ -181,6 +181,8 @@
     pageLefts: null,    // and across, for the tile maths — a spread's second
                         // sheet does not start at x = 0
     thumbCurrent: -1,
+    navBox: null,       // the one viewport box, re-parented between thumbnails
+    navDrag: null,      // the page whose box is being dragged, if any
     badgeFrame: 0,
 
     els: {},
@@ -551,6 +553,11 @@
       this.els.pages.innerHTML = '';
       this.els.pages.classList.remove('paged');
       if (this.els.thumbs) this.els.thumbs.innerHTML = '';
+      // Went with the list, like it does in `buildThumbs`. The drag with it —
+      // its `pointerup` is on an element that no longer exists, so nothing
+      // else is going to clear it.
+      this.navBox = null;
+      this.navDrag = null;
     },
 
     /** Empty the pane. Whether the empty state shows is RP.tabs' decision — a
@@ -665,6 +672,11 @@
       // The sharp crop waits on the whole-page raster it sits over — `pumpDetail`
       // refuses to start while one is pending, and this is only the timer.
       this.scheduleDetail();
+      /* A zoom changes how much of the sheet is on screen without necessarily
+         moving the scroll, so `onScroll` cannot be relied on to notice. This
+         is the settle, which is where every other consequence of a zoom is
+         already dealt with. */
+      this.updateNavBox();
     },
 
     /**
@@ -1918,6 +1930,11 @@
          measurement of its own, and the render it leads to is behind
          DETAIL_SETTLE_MS rather than on this frame. */
       this.refreshDetail();
+      /* And the navigator box, for the same reason and at the same cost: what
+         is on screen is what it draws, so the scroll *is* the change. It reads
+         the same cached page boxes and writes five style properties on one
+         element — no measurement, nothing per page. */
+      this.updateNavBox();
     },
 
     goToPage(index, opts) {
@@ -2098,6 +2115,11 @@
       const host = this.els.thumbs;
       if (!host || !this.isActive()) return;
       host.innerHTML = '';
+      // Emptying the list took the navigator box with it. It is one element
+      // re-parented between thumbnails rather than one per page, so the
+      // reference has to go too or the next update writes into a detached node.
+      this.navBox = null;
+      this.navDrag = null;
       this.thumbQueue = [];
       this.thumbCurrent = -1;
       for (const record of this.pages) {
@@ -2106,6 +2128,15 @@
         const canvas = RP.el('canvas');
         canvas.width = Math.floor(base.width * scale);
         canvas.height = Math.floor(base.height * scale);
+        /* The canvas gets a wrapper of its own so the navigator box has
+           something to be a percentage *of*. `.thumb` is the whole control and
+           carries the page label under the picture, so a box positioned
+           against it would be short by the height of the label — and reading
+           the canvas box back with `getBoundingClientRect` would put a DOM
+           measurement per page in the scroll handler, which is the one thing
+           `onScroll` may not do. A wrapper that is exactly the canvas makes
+           every offset a percentage and needs no measurement at all. */
+        const shot = RP.el('span', { class: 'thumb-shot' }, [canvas]);
         const button = RP.el('button', {
           class: 'thumb placeholder',
           'data-page': String(record.index),
@@ -2113,11 +2144,18 @@
             // The page manager claims modifier-clicks for multi-select; a plain
             // click still means "take me to that page".
             if (RP.pages && RP.pages.handleThumbClick(record.index, event)) return;
-            this.goToPage(record.index);
+            /* And *where* on that page. At fit-width the two are the same
+               thing, but the whole point of the navigator is the zoom where
+               they are not: a click on the title block of an E-size sheet at
+               800% means the title block, not the top of the sheet. */
+            const at = this.thumbFraction(shot, event);
+            if (at) this.revealFraction(record.index, at.x, at.y);
+            else this.goToPage(record.index);
           }
-        }, [canvas, RP.el('span', { class: 'thumb-label', text: String(record.index + 1) })]);
+        }, [shot, RP.el('span', { class: 'thumb-label', text: String(record.index + 1) })]);
         host.appendChild(button);
         record.thumbButton = button;
+        record.thumbShot = shot;
         record.thumbCanvas = canvas;
         record.thumbScale = scale;
         record.thumbRendered = false;
@@ -2127,6 +2165,7 @@
       if (count) count.textContent = this.pages.length + ' pages';
       this.highlightThumb();
       this.updateThumbBadges();
+      this.updateNavBox();
       this.emit('thumbs:built', this.pages.length);
     },
 
@@ -2164,6 +2203,187 @@
           host.scrollTo({ top: top - host.clientHeight / 2, behavior: 'smooth' });
         }
       }
+    },
+
+    // -- the thumbnail navigator -------------------------------------------
+
+    /* What the box is for.
+       -------------------------------------------------------------------------
+       Past about 300% on a large-format sheet the pane holds a few percent of
+       the drawing and the scrollbars are the only thing saying which few. The
+       thumbnail is already a picture of the whole sheet, so the answer costs
+       one rectangle drawn on it — and once the rectangle is there, moving it
+       is the obvious way to ask for somewhere else.
+
+       One element, re-parented to the current sheet, rather than one per page.
+       A per-page box would be N nodes to keep in step on every scroll frame on
+       a 77-sheet set, and N-1 of them would be describing a sheet that is not
+       on screen. Which sheet is "current" is already decided by `onScroll` and
+       already shown by `.thumb.current`, so the box goes where that goes and
+       the two cannot disagree about which page you are on. */
+
+    /** The box, created on demand. `buildThumbs` drops it with the list. */
+    ensureNavBox() {
+      if (this.navBox && this.navBox.isConnected) return this.navBox;
+      const box = RP.el('span', { class: 'thumb-view', hidden: true });
+      /* The press is swallowed here and nowhere else. `RP.pages` starts a
+         reorder drag from a `pointerdown` on any `.thumb`, delegated on the
+         list, so without this a drag of the box would pick the sheet up and
+         drop it somewhere else in the document — a page order change from a
+         gesture that was meant to pan. `click` is stopped for the same reason
+         one layer up: it is dispatched after the drag regardless, and it would
+         otherwise be read as a click on the thumbnail behind. */
+      box.addEventListener('pointerdown', (event) => this.startNavDrag(event));
+      box.addEventListener('click', (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+      });
+      this.navBox = box;
+      return box;
+    },
+
+    /**
+     * Put the box over the part of the current sheet that is on screen.
+     *
+     * Called from `onScroll`, so it measures nothing: the page box comes from
+     * the same cached `pageTops`/`pageLefts` the detail overlay reads, and the
+     * box is positioned in percentages of `.thumb-shot`, which is the canvas
+     * exactly. The only DOM writes are five style properties on one element.
+     */
+    updateNavBox() {
+      if (!this.isActive() || !this.els.thumbs) return;
+      /* Pinned to the sheet being dragged for the length of the gesture.
+         `onScroll` decides the current page from the scroll offset, so a drag
+         to the very top or bottom of a sheet flips it to the neighbour — and
+         re-parenting the box mid-drag takes the element out of the document,
+         which releases the pointer capture and ends the drag under the
+         pointer. Which is also the behaviour you want on its own terms: the
+         box you grabbed is the box you are moving. */
+      const index = this.navDrag == null ? this.currentPage : this.navDrag;
+      const record = this.pages[index];
+      const box = record && record.thumbShot ? this.ensureNavBox() : this.navBox;
+      if (!box) return;
+
+      const page = record ? this.pageBox(record) : null;
+      const view = this.detailView();
+      const seen = page && view ? RP.views.visibleBox(page, view) : null;
+
+      /* Nothing to say, so nothing drawn. A box around the whole thumbnail is
+         the state every ordinary document sits in at fit-width, and drawing it
+         there turns a navigator into a permanent border that means nothing —
+         the feature should appear when the sheet stops fitting and not before.
+         The threshold is a hair under the whole page rather than exactly it,
+         because the fractions are a division of measured pixels and land on
+         0.999 as often as on 1. */
+      if (!seen || (seen.w >= 0.995 && seen.h >= 0.995)) {
+        box.hidden = true;
+        return;
+      }
+
+      if (box.parentNode !== record.thumbShot) record.thumbShot.appendChild(box);
+      const pct = (n) => (RP.clamp(n, 0, 1) * 100).toFixed(3) + '%';
+      box.style.left = pct(seen.x);
+      box.style.top = pct(seen.y);
+      box.style.width = pct(Math.min(seen.w, 1 - RP.clamp(seen.x, 0, 1)));
+      box.style.height = pct(Math.min(seen.h, 1 - RP.clamp(seen.y, 0, 1)));
+      box.hidden = false;
+    },
+
+    /**
+     * Where on a thumbnail a pointer event landed, as fractions of the sheet.
+     *
+     * Measured off `.thumb-shot` rather than the event's `offsetX/offsetY`,
+     * which are relative to whatever node the event happened to hit — the
+     * canvas, the box, or the button — and would jump by the border width
+     * depending on where the press started.
+     */
+    thumbFraction(shot, event) {
+      if (!shot || !event) return null;
+      const rect = shot.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: RP.clamp((event.clientX - rect.left) / rect.width, 0, 1),
+        y: RP.clamp((event.clientY - rect.top) / rect.height, 0, 1)
+      };
+    },
+
+    /**
+     * Scroll so that a fraction of a page sits in the middle of the pane, at
+     * whatever zoom is in force. `revealRect`'s sibling — that one is given a
+     * markup and has to convert out of PDF space; this one is given a point on
+     * a picture of the sheet and does not, because the thumbnail and the page
+     * viewport are in the same displayed orientation by construction.
+     */
+    revealFraction(pageIndex, fx, fy, opts) {
+      const record = this.pages[pageIndex];
+      if (!record) return;
+      // A sheet on a hidden row cannot be scrolled to; its row has to come up
+      // first, exactly as `revealRect` does it. `showRow` nulls `pageTops`, so
+      // the measurement below is taken against the new layout.
+      if (RP.views.isPaged(this.viewMode) && this.rowIndexOf(pageIndex) !== this.rowIndexOf(this.currentPage)) {
+        this.showRow(this.rowIndexOf(pageIndex));
+      }
+      const page = this.pageBox(record);
+      const view = this.detailView();
+      if (!page || !view) { this.goToPage(pageIndex); return; }
+
+      const to = RP.views.scrollToFraction(page, view, fx, fy);
+      this.els.viewer.scrollTo({
+        top: RP.clamp(to.top, 0, this.maxScrollTop()),
+        left: Math.max(0, to.left),
+        behavior: (opts && opts.instant) ? 'auto' : 'smooth'
+      });
+      this.currentPage = RP.views.rowStartOf(pageIndex, this.viewMode);
+      this.highlightThumb();
+      this.updateNavBox();
+    },
+
+    /**
+     * Drag the box to pan.
+     *
+     * Instant, never smooth: a smooth scroll is an animation towards a target,
+     * and a drag issues a new target every few milliseconds — the two fight
+     * and the page swims behind the pointer. The pointer is captured so the
+     * drag survives leaving the thumbnail, which it will, because the box is a
+     * few pixels across on exactly the sheets this exists for.
+     */
+    startNavDrag(event) {
+      if (event.button !== 0) return;
+      const record = this.pages[this.currentPage];
+      if (!record || !record.thumbShot) return;
+      event.stopPropagation();
+      event.preventDefault();
+
+      const shot = record.thumbShot;
+      const index = record.index;
+      const box = this.navBox;
+      if (!box) return;
+
+      const move = (moveEvent) => {
+        const at = this.thumbFraction(shot, moveEvent);
+        if (at) this.revealFraction(index, at.x, at.y, { instant: true });
+      };
+      const up = () => {
+        box.removeEventListener('pointermove', move);
+        box.removeEventListener('pointerup', up);
+        box.removeEventListener('pointercancel', up);
+        box.classList.remove('dragging');
+        this.navDrag = null;
+        this.updateNavBox();
+      };
+
+      /* Captured, so the moves keep arriving once the pointer leaves the box —
+         which it does immediately, because on the sheets this exists for the
+         box is a few pixels across. Capture also retargets the `click` that
+         follows onto the box, where it is swallowed, so the drag cannot end as
+         a click on the thumbnail behind it. */
+      try { box.setPointerCapture(event.pointerId); } catch (err) { /* not fatal */ }
+      this.navDrag = index;
+      box.classList.add('dragging');
+      box.addEventListener('pointermove', move);
+      box.addEventListener('pointerup', up);
+      box.addEventListener('pointercancel', up);
+      move(event);
     },
 
     /* Badges are recounted from the whole annotation list, and `redrawAll` asks

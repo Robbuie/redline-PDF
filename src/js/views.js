@@ -350,12 +350,66 @@
       && y + hit.h <= tile.y + tile.h + 0.5;
   }
 
+  /* The thumbnail navigator.
+     ---------------------------------------------------------------------------
+     Two questions, both answered in *fractions of the page box* rather than in
+     pixels of either surface. The thumbnail is the page at some other scale,
+     so a fraction is the one quantity that means the same thing on both — and
+     it is rotation-safe for free, because the thumbnail is rendered through
+     the same `rotationOf` the page viewport is and the two are therefore
+     always in the same displayed orientation. Going via PDF space instead
+     would need the rotation applying and unapplying for no gain. */
+
+  /**
+   * The part of a page that is on screen, as fractions of the page box.
+   *
+   * `page` and `view` are boxes in the scroller's own coordinates — the same
+   * space `detailTile` works in, which `viewer.topOf`/`leftOf` measure and
+   * which does not move when the pane scrolls.
+   *
+   * Null when the sheet is not on screen at all. A box covering the whole
+   * sheet is returned as such rather than as null: "all of it is visible" is a
+   * real answer, and it is the caller's business whether a box around the
+   * entire thumbnail is worth drawing.
+   */
+  function visibleBox(page, view) {
+    if (!page || !view || page.w <= 0 || page.h <= 0) return null;
+    const hit = intersect(page, view);
+    if (!hit) return null;
+    return {
+      x: (hit.x - page.x) / page.w,
+      y: (hit.y - page.y) / page.h,
+      w: hit.w / page.w,
+      h: hit.h / page.h
+    };
+  }
+
+  /**
+   * Where to scroll so that a given fraction of a page sits in the middle of
+   * the pane. The answer is deliberately *unclamped* — the caller owns the
+   * scroll limits (`maxScrollTop` measures the live container) and clamping
+   * here would need this function to know about them.
+   *
+   * Centred, not cornered: a click on a thumbnail means "show me this", and
+   * putting the point under the pointer at the top-left of the pane hides it
+   * behind the toolbars on one axis and shows a screenful of the sheet the
+   * user did not point at on the other.
+   */
+  function scrollToFraction(page, view, fx, fy) {
+    if (!page || !view) return { top: 0, left: 0 };
+    return {
+      top: page.y + fy * page.h - view.h / 2,
+      left: page.x + fx * page.w - view.w / 2
+    };
+  }
+
   RP.views = {
     MODES, LABELS, HINTS, SPREAD_GAP, COLUMN_PAD,
     MAX_CANVAS_SIDE, MAX_CANVAS_PIXELS,
     TILE_MARGIN, MAX_TILE_PIXELS, MIN_TILE_GAIN,
     normalize, isPaged, spreadOf, rowsFor, rowOfPage, rowStartOf,
-    inkBoxOf, fitScale, rasterPlan, intersect, detailTile, tileCovers
+    inkBoxOf, fitScale, rasterPlan, intersect, detailTile, tileCovers,
+    visibleBox, scrollToFraction
   };
 
 })(window.RP);

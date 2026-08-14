@@ -2787,6 +2787,175 @@ async function testDetailTiles() {
 }
 
 /* ---------------------------------------------------------------------------
+   The thumbnail navigator
+
+   Past about 300% on a large-format sheet the pane holds a few percent of the
+   drawing, and the scrollbars are the only thing saying which few. The
+   thumbnail is already a picture of the whole sheet, so the box on it is the
+   answer — and once it is there, dragging it is how you ask for somewhere
+   else.
+
+   Everything here is in *fractions of the page box* rather than pixels of
+   either surface, because that is the one quantity that means the same thing
+   on the thumbnail and on the page. It is also what makes the whole thing
+   rotation-safe for nothing: the thumbnail is rendered through the same
+   `rotationOf` the page viewport is, so the two are in the same displayed
+   orientation by construction and no angle ever enters the arithmetic.
+   --------------------------------------------------------------------------- */
+function testNavigator() {
+  console.log('\nThumbnail navigator');
+
+  const sheet = { x: 0, y: 0, w: 1000, h: 2000 };
+
+  const mid = RP.views.visibleBox(sheet, { x: 250, y: 500, w: 500, h: 400 });
+  check('the box is the visible part of the sheet, as fractions of it',
+    mid.x === 0.25 && mid.y === 0.25 && mid.w === 0.5 && mid.h === 0.2,
+    `${mid.x}, ${mid.y}, ${mid.w}×${mid.h}`);
+
+  /* Clipped to the sheet, not to the pane. Scrolled to the bottom of a
+     document the pane holds the last of the drawing *and* the gap under it,
+     and a box drawn from the raw pane height hangs off the end of the
+     thumbnail claiming there is sheet down there that is not. */
+  const foot = RP.views.visibleBox(sheet, { x: 0, y: 1800, w: 1000, h: 600 });
+  check('and clipped to the sheet where the pane runs past it',
+    foot.y === 0.9 && Math.abs(foot.y + foot.h - 1) < 1e-9,
+    `y ${foot.y} + h ${foot.h}`);
+
+  /* A page is not at the origin of the scroller: the column is padded, and the
+     second sheet of a facing spread starts most of a page across. Both boxes
+     are in the scroller's coordinates and the subtraction is what puts the
+     answer back in the page's own space — dropping it reads the column
+     position as a scroll offset and slides the box off the sheet. */
+  const second = { x: 1040, y: 3120, w: 1000, h: 2000 };
+  const onSecond = RP.views.visibleBox(second, { x: 1290, y: 3620, w: 500, h: 400 });
+  check('a sheet away from the origin is measured in its own space',
+    onSecond.x === 0.25 && onSecond.y === 0.25,
+    `${onSecond.x}, ${onSecond.y}`);
+
+  check('a sheet with none of it on screen has no box at all',
+    RP.views.visibleBox(sheet, { x: 0, y: 9000, w: 500, h: 400 }) === null);
+  const whole = RP.views.visibleBox(sheet, { x: -50, y: -50, w: 1200, h: 2200 });
+  check('a sheet entirely on screen reports itself whole, not null',
+    whole.w === 1 && whole.h === 1, 'the caller decides whether to draw it');
+
+  /* Centred, and deliberately unclamped: the scroll limits live on the live
+     container and the caller owns them. A clamp here would have to be given
+     `maxScrollTop`, which is a DOM measurement, and this file could not test
+     any of it. */
+  const to = RP.views.scrollToFraction(sheet, { x: 0, y: 0, w: 500, h: 400 }, 0.5, 0.5);
+  check('clicking the middle of a thumbnail centres the middle of the sheet',
+    to.top === 800 && to.left === 250, `top ${to.top}, left ${to.left}`);
+  const corner = RP.views.scrollToFraction(sheet, { x: 0, y: 0, w: 500, h: 400 }, 0, 0);
+  check('and a corner asks for a negative offset rather than pretending',
+    corner.top < 0 && corner.left < 0, `top ${corner.top}, left ${corner.left}`);
+
+  // -- the viewer's half ---------------------------------------------------
+
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  const scrolled = [];
+  const scroller = {
+    scrollTop: 500, scrollLeft: 250, clientWidth: 500, clientHeight: 400,
+    scrollHeight: 2400, scrollWidth: 1000,
+    scrollTo: (opts) => scrolled.push(opts)
+  };
+  const box = {
+    style: {}, hidden: true, isConnected: true, parentNode: null,
+    classList: { add() {}, remove() {} },
+    addEventListener() {}, setPointerCapture() {}, removeEventListener() {}
+  };
+  const shot = {
+    appendChild: (el) => { el.parentNode = shot; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 120, height: 240 })
+  };
+  viewer.els = { viewer: scroller, thumbs: {} };
+  viewer.navBox = box;
+  viewer.pages = [{
+    index: 0,
+    viewport: { width: sheet.w, height: sheet.h },
+    thumbShot: shot,
+    thumbButton: null
+  }];
+  viewer.pageTops = [0];
+  viewer.pageLefts = [0];
+  viewer.currentPage = 0;
+  viewer.highlightThumb = () => {};
+  const wasViewer = RP.viewer;
+  RP.viewer = viewer;   // isActive()
+
+  viewer.updateNavBox();
+  check('the box lands over the part of the sheet on screen',
+    !box.hidden && box.style.left === '25.000%' && box.style.top === '25.000%',
+    `${box.style.left} / ${box.style.top}, ${box.style.width}×${box.style.height}`);
+  check('and adopts the current sheet\'s thumbnail', box.parentNode === shot);
+
+  /* At fit-width the whole sheet is on screen and a box around all of it is a
+     border that means nothing. The feature has to appear when the sheet stops
+     fitting and not before, or it is decoration on every ordinary document. */
+  scroller.clientWidth = 1200;
+  scroller.clientHeight = 2400;
+  scroller.scrollTop = 0;
+  scroller.scrollLeft = 0;
+  viewer.updateNavBox();
+  check('and is not drawn at all when the whole sheet is on screen', box.hidden === true);
+
+  // Back to a zoomed-in view for the click.
+  scroller.clientWidth = 500;
+  scroller.clientHeight = 400;
+  viewer.revealFraction(0, 0.5, 0.5, { instant: true });
+  const landed = scrolled[scrolled.length - 1];
+  check('clicking a thumbnail scrolls to that spot at the zoom in force',
+    landed.top === 800 && landed.left === 250, `top ${landed.top}, left ${landed.left}`);
+  check('and lands instantly rather than animating', landed.behavior === 'auto');
+
+  /* The clamp the pure half leaves to the caller. A click at the very top of a
+     thumbnail asks for a negative scroll; handing that to `scrollTo` unclamped
+     is a no-op on one browser and a jump to zero on another. */
+  scrolled.length = 0;
+  viewer.revealFraction(0, 0, 0, { instant: true });
+  const clamped = scrolled[scrolled.length - 1];
+  check('a click at the edge is clamped to the scroll range, not passed through',
+    clamped.top === 0 && clamped.left === 0, `top ${clamped.top}, left ${clamped.left}`);
+
+  /* The press has to be swallowed. `RP.pages` starts a page-reorder drag from
+     a pointerdown on any `.thumb`, delegated on the list, so a drag of the box
+     that lets the event through moves the sheet to a different place in the
+     document — a page order change from a gesture that meant "pan". */
+  let stopped = false;
+  let defaulted = false;
+  viewer.revealFraction = () => {};
+  viewer.startNavDrag({
+    button: 0, pointerId: 1, clientX: 0, clientY: 0,
+    stopPropagation: () => { stopped = true; },
+    preventDefault: () => { defaulted = true; }
+  });
+  check('dragging the box does not also start a page reorder',
+    stopped && defaulted, `stopPropagation ${stopped}, preventDefault ${defaulted}`);
+  check('and the drag pins the box to the sheet it grabbed',
+    viewer.navDrag === 0, 'a drag to the edge must not re-parent it mid-gesture');
+
+  RP.viewer = wasViewer;
+
+  // -- the stylesheet's half -----------------------------------------------
+
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+  const shotRule = (css.match(/\.thumb-shot\s*\{[^}]*\}/) || [''])[0];
+  check('the canvas wrapper is positioned, so the box can be a percentage of it',
+    /position:\s*relative/.test(shotRule) && /display:\s*block/.test(shotRule),
+    shotRule.replace(/\s+/g, ' ') || 'no .thumb-shot rule');
+  check('and adds no spacing of its own, or the box is offset from the sheet',
+    !/padding|margin/.test(shotRule), shotRule.replace(/\s+/g, ' '));
+
+  const viewRule = (css.match(/\.thumb-view\s*\{[^}]*\}/) || [''])[0];
+  check('the box is absolute over the canvas', /position:\s*absolute/.test(viewRule));
+  check('and has a floor on its size, or it is ungrabbable at high zoom',
+    /min-width/.test(viewRule) && /min-height/.test(viewRule),
+    'a few percent of a thumbnail is a fraction of a pixel');
+  check('and can actually be hidden',
+    /\.thumb-view\[hidden\]\s*\{[^}]*display:\s*none/.test(css),
+    'author display:block beats the UA [hidden] rule — same trap as the crop');
+}
+
+/* ---------------------------------------------------------------------------
    Text layer scheduling
 
    The slow load. `renderPage` used to await the text layer and the native
@@ -5247,6 +5416,7 @@ async function pageLabel(bytes, index) {
     testViewModes();
     testRasterCap();
     await testDetailTiles();
+    testNavigator();
     await testLayerQueue();
     testCanvasRetention();
     testScrollPage();

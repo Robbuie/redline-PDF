@@ -62,6 +62,42 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.16
+
+**The thumbnail is a navigator.** Zoomed in far enough that the pane holds a
+corner of the sheet, a box on the current page's thumbnail shows you which
+corner. Click anywhere on a thumbnail to put that part of the drawing in the
+middle of the pane at the zoom you are already at, or grab the box and drag it
+to pan. The box appears only when there is something to say — at fit-width the
+whole sheet is on screen and nothing is drawn.
+
+Clicking a thumbnail still selects that page for the page operations, and
+dragging a thumbnail still reorders it. Only a drag that starts *on the box*
+pans.
+
+---
+
+## What's new in 0.15
+
+**Large-format sheets are sharp at any zoom.** A whole sheet is drawn onto one
+bitmap and there is a hard limit on how big a bitmap the browser will hand
+over, so an ANSI E drawing used to get steadily softer the further in you went
+— past about 335% the limit was doing the choosing. The part of the sheet you
+are looking at is now drawn separately at full resolution, so a schedule or a
+panel detail reads at 800% the way it reads at 100%. Ordinary letter- and
+A3-sized documents are untouched, and nothing about it changes what saves,
+prints or copies out of the drawing.
+
+---
+
+## What's new in 0.14
+
+**Groups.** Select several markups and `Ctrl`+`Shift`+`G` binds them into one:
+they move, resize, restyle and delete together, and the grouping is saved in
+the drawing. `Ctrl`+`Shift`+`U` releases them. A group lives on one sheet.
+
+---
+
 ## What's new in 0.13
 
 **Themes.** Five of them, under **Settings → Appearance**: the original dark, a
@@ -343,6 +379,8 @@ The **Pages** panel is now a page manager, not just a set of thumbnails.
 | Action | How |
 |---|---|
 | Select pages | Click; `Ctrl`+click to add one; `Shift`+click for a run |
+| Go to a spot on a sheet | Click that spot on the thumbnail — the main view centres there at the current zoom |
+| Pan without scrolling | Drag the box on the thumbnail (it shows what is on screen; it appears once the sheet stops fitting) |
 | Reorder | Drag the thumbnails — a line shows where they will land |
 | Insert a blank page | Toolbar ⊕, dropped in after the selection at the same sheet size |
 | Duplicate | Toolbar ⧉ — the copy brings that page's markups with it |

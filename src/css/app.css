@@ -612,12 +612,47 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
   margin-bottom: 10px; padding: 0;
   background: none; border: 0; cursor: pointer; width: 100%;
 }
+/* The canvas's own box, and nothing else — the wrapper the navigator box is a
+   percentage of. It must shrink-wrap the canvas exactly: `display: block` with
+   no padding of its own, so its border box and the canvas's are the same
+   rectangle and `left: 40%` on the box below means 40% across the *sheet*. Any
+   spacing added here silently offsets the navigator from what it describes. */
+.thumb-shot { display: block; position: relative; }
 .thumb canvas {
   display: block; width: 100%; height: auto;
   border: 1px solid var(--line); border-radius: 3px;
   background: #fff;
   transition: border-color .12s, box-shadow .12s;
 }
+
+/* The part of the sheet on screen in the main pane. See `updateNavBox`.
+
+   Positioned in percentages, which is what keeps it correct without measuring
+   anything: the thumbnail is one width today and another when the sidebar is
+   dragged wider, and a box in pixels would need re-computing on both. It sits
+   over the canvas rather than over `.thumb`, or it would be short by the
+   height of the page label underneath.
+
+   `[hidden]` needs saying out loud — the author-level `display: block` above
+   beats the UA stylesheet's `[hidden] { display: none }`, the same trap the
+   detail crop has — and a box that cannot be hidden is one that stays on the
+   sheet at fit-width claiming the view is somewhere it is not. */
+.thumb-view {
+  position: absolute; display: block;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .25);
+  cursor: grab;
+  /* Never smaller than a thing you can put a pointer on. At 800% on an E-size
+     sheet the visible fraction is under a percent in each direction, which is
+     a box a fraction of a pixel across — visible as nothing and grabbable as
+     nothing. The floor costs a little accuracy at the extreme and buys back
+     the whole gesture. */
+  min-width: 10px; min-height: 10px;
+}
+.thumb-view[hidden] { display: none; }
+.thumb-view.dragging { cursor: grabbing; background: var(--accent-wash); }
 .thumb.placeholder canvas { background: var(--bg-2); }
 .thumb:hover canvas { border-color: var(--txt-2); }
 .thumb.current canvas { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
