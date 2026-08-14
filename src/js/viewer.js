@@ -942,7 +942,7 @@
         // Scrolled back out, or already dealt with, between queue and slot.
         if (!record || !record.visible || record.rendered || record.renderTask) continue;
         this.activeRenders += 1;
-        this.renderPage(index).then(() => {
+        const done = () => {
           this.activeRenders -= 1;
           this.retainCanvases();
           /* A raster the browser refused, backing off to a smaller one. It goes
@@ -953,6 +953,26 @@
           this.pumpRenders();
           this.pumpLayers();
           this.pumpThumbs();
+          /* And ask for the sharp crop. `pumpDetail` will not start while a
+             raster is pending, so the moment a slot clears is the moment worth
+             asking again — the alternative is relying on the capped render's
+             own success path, and on a single large sheet there is no later
+             render to carry the request. */
+          this.scheduleDetail();
+        };
+        /* **Both arms.** `renderPage` handles its own render errors, but it
+           can still reject before it reaches its `try` — `getContext` returns
+           null on a surface the browser will not back, and that is a
+           TypeError one line later. `.then(done)` alone drops the slot on the
+           floor there, and `activeRenders` never comes back down: with two
+           slots the app carries on looking fine, one page at a time, while
+           `pumpDetail` — which waits for the count to reach zero — is switched
+           off for the rest of the session. That is a large-format sheet that
+           stays soft at every zoom with nothing on screen to explain it, and
+           it is why `pumpLayers` has counted both arms since it was written. */
+        this.renderPage(index).then(done, (err) => {
+          console.error('Page render failed', err);
+          done();
         });
       }
       if (!this.activeRenders && !this.renderQueue.length) this.pumpLayers();
@@ -1206,7 +1226,22 @@
      */
     pumpDetail() {
       if (this.detailBusy) return;
-      if (this.activeRenders || this.renderQueue.length) return;
+      /* Still behind the rasters, but **re-armed rather than dropped**, and
+         measured off the pages rather than off `activeRenders`.
+         Two separate mistakes lived on this line. It returned outright, so a
+         pass that happened to land while a sheet was still drawing threw the
+         request away — and the only thing that ever asked again was a *later*
+         capped render succeeding, which on a single large sheet never comes.
+         And it trusted a counter: one leaked slot (see `pumpRenders`) pinned
+         it above zero and stood the overlay down for the rest of the session.
+         A count that has drifted is exactly the thing that must not be able to
+         switch a feature off silently, so the question asked here is the one
+         that was always meant — is a sheet on screen still being drawn — and
+         the answer is read off the records themselves. */
+      if (this.renderQueue.length || this.pages.some((r) => r.visible && r.renderTask)) {
+        this.scheduleDetail();
+        return;
+      }
       const view = this.detailView();
       if (!view) return;
 
@@ -1289,6 +1324,9 @@
       }
 
       const ctx = record.detailCanvas.getContext('2d', { alpha: false });
+      // No context at all, same as the base raster. Nothing is lost by standing
+      // down — the soft sheet underneath is still on screen.
+      if (!ctx) { record.detailOff = true; this.releaseDetail(record); return; }
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, plan.width, plan.height);
       // Same probe as the base raster: a surface the browser would not back
@@ -1547,7 +1585,15 @@
       record.annotCanvas.width = record.pdfCanvas.width;
       record.annotCanvas.height = record.pdfCanvas.height;
 
+      /* The other half of the refusal, and the one that is not silent: where
+         `canvasTookTheFill` catches a surface that was handed over and never
+         backed, this catches one the browser would not even give a context
+         for. It returns null rather than throwing, so the throw lands on the
+         next line instead — outside every `try` in here, which used to take
+         the render slot with it. Same answer as a failed probe: back off and
+         come round again with a smaller ask. */
       const ctx = record.pdfCanvas.getContext('2d', { alpha: false });
+      if (!ctx) { this.rasterRefused(record, plan); return; }
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, record.pdfCanvas.width, record.pdfCanvas.height);
 

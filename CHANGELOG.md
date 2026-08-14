@@ -12,6 +12,26 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.15.1] — 2026-08-13
+
+### Fixed
+
+- **Zooming a long way into a large sheet stayed blurry.** 0.15.0 draws the
+  part of the sheet you are looking at at full resolution over the top of the
+  soft whole-sheet version — but on a big drawing it often never got as far as
+  drawing it, so the sheet stayed soft at 800% however long you waited. The
+  sharp part waits for the sheet underneath it to finish drawing, and it was
+  giving up rather than asking again a moment later; on a document showing one
+  large sheet, nothing ever asked a second time. Compounding it, a page whose
+  canvas the browser refused outright left the app believing a sheet was still
+  drawing for the rest of the session, which held the sharp part off
+  permanently. Both are fixed, and the sharp crop is now asked for every time
+  the drawing settles.
+- A sheet the browser will not give a drawing surface for at all is now treated
+  the same as one it refuses part way through — retried smaller, and reported
+  on the page if it still cannot be drawn — instead of stopping page rendering
+  from that point on.
+
 ## [0.15.0] — 2026-08-13
 
 ### Changed

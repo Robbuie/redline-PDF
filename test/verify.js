@@ -2491,7 +2491,7 @@ function testRasterCap() {
      time the view leaves the margin means the sheet being read queues behind a
      crop of itself on the one pdf.js worker.
    --------------------------------------------------------------------------- */
-function testDetailTiles() {
+async function testDetailTiles() {
   console.log('\nDetail overlay');
 
   const MARGIN = RP.views.TILE_MARGIN;
@@ -2706,6 +2706,84 @@ function testDetailTiles() {
   check('and can actually be hidden while the next one renders',
     /\.page canvas\.detail\[hidden\]\s*\{[^}]*display:\s*none/.test(css),
     'author display:block beats the UA [hidden] rule');
+
+  /* Whether the crop is ever asked for at all.
+     ---------------------------------------------------------------------------
+     Everything above tests a crop that gets taken. This is the half that
+     decides whether it does, and it is where the overlay went silently dead:
+     on an ANSI E sheet at 800% the drawing stayed soft for the whole session,
+     with `capped 1` and `active 1` in the diagnostics and nothing else to go
+     on. Two faults compounded, and neither raises anything.
+
+     `pumpDetail` returned outright while a raster was pending instead of
+     asking again, so the request was simply dropped — and the only thing that
+     ever re-asked was a *later* capped render succeeding, which on a document
+     showing one large sheet never comes. And the thing it asked was
+     `activeRenders`, a counter `pumpRenders` only decremented on the success
+     arm of its `.then`. One rejection — `getContext` returns null rather than
+     throwing when the browser will not back a surface, so the throw lands on
+     the next line, outside every `try` in `renderPage` — pinned the count
+     above zero permanently.
+
+     So: the slot comes back from both arms, and the gate reads the pages
+     rather than the counter. Both are needed. Either alone leaves a sheet
+     that is soft at every zoom with nothing on screen to explain it. */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const gate = RP.createViewer({ querySelector: () => null }, RP.store);
+  gate.dpr = 2;
+  gate.els = { viewer: { scrollTop: 5000, scrollLeft: 0, clientWidth: 1600, clientHeight: 1000 } };
+  gate.pages = [Object.assign(makeRecord(0, 0.44),
+    { viewport: { width: sheet.w, height: sheet.h } })];
+  gate.pageTops = [0];
+  gate.pageLefts = [0];
+  let rearmed = 0;
+  gate.scheduleDetail = () => { rearmed += 1; };
+  let picked = 0;
+  gate.renderDetail = (record, wanted) => {
+    picked += 1;
+    record.tile = wanted;
+    return Promise.resolve();
+  };
+
+  gate.pages[0].renderTask = {};
+  gate.pumpDetail();
+  check('a crop waits for the sheet under it, and asks again rather than giving up',
+    picked === 0 && rearmed === 1, `taken ${picked}, re-armed ${rearmed}`);
+
+  gate.pages[0].renderTask = null;
+  // The leak this replaced. The sheet is drawn and settled; only the counter
+  // disagrees, and it must not be the thing holding the answer. Counted from
+  // zero rather than from whatever the check above left behind, or a gate that
+  // fires too eagerly passes this one on the previous scenario's crop.
+  picked = 0;
+  gate.activeRenders = 2;
+  gate.pumpDetail();
+  check('but a leaked render slot cannot switch the overlay off for the session',
+    picked === 1, `taken ${picked}`);
+
+  /* The slot itself. Note that the old code does not merely fail this check —
+     an unhandled rejection takes the whole suite down with a non-zero exit,
+     which is the correct amount of noise for a counter that silently disables
+     a feature in the shipped app. */
+  const slots = RP.createViewer({ querySelector: () => null }, RP.store);
+  slots.pages = [Object.assign(makeRecord(0, 0.44),
+    { rendered: false, viewport: { width: sheet.w, height: sheet.h } })];
+  slots.currentPage = 0;
+  let slotAsked = 0;
+  slots.scheduleDetail = () => { slotAsked += 1; };
+  slots.pumpLayers = () => {};
+  slots.pumpThumbs = () => {};
+  slots.renderPage = () => Promise.reject(new Error('no 2d context'));
+  const realError = console.error;
+  console.error = () => {};
+  slots.requestPage(0);
+  await flush();
+  console.error = realError;
+  check('a render that rejects still counts its slot back',
+    slots.activeRenders === 0, slots.activeRenders + ' left in flight');
+  check('and the crop is asked for as the slot clears, not only on a capped success',
+    slotAsked === 1, slotAsked + ' requests');
 }
 
 /* ---------------------------------------------------------------------------
@@ -5168,7 +5246,7 @@ async function pageLabel(bytes, index) {
     testMarqueeZoom();
     testViewModes();
     testRasterCap();
-    testDetailTiles();
+    await testDetailTiles();
     await testLayerQueue();
     testCanvasRetention();
     testScrollPage();

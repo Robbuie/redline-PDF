@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.15.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.15.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -491,6 +491,30 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   pending — they share that worker, and opening the panel on a long set
   otherwise queues 77 thumb rasters ahead of the sheet being read. Call
   `requestPage`, never `renderPage` directly.
+- **Every one of these queues counts its slot back on rejection as well as
+  resolution, and nothing may gate a feature on the counter alone.**
+  `pumpRenders` used `.then(done)`, and `renderPage` can reject before it
+  reaches its own `try`: `getContext('2d')` returns **null** on a surface the
+  browser will not back rather than throwing, so the throw lands one line
+  later, outside every handler in there. One of those and `activeRenders`
+  never came back down. With two slots the app carries on looking fine — one
+  page at a time, a bit slower — which is why this survived: the only visible
+  symptom was `pumpDetail` refusing to start, because it waited for the count
+  to reach zero. That is a large-format sheet soft at every zoom for the rest
+  of the session, with `capped 1` and `active 1` in the diagnostics and
+  nothing else to go on. Two rules came out of it, and `test/verify.js` covers
+  both. `.then(done, done)` everywhere, `pumpLayers`-style. And a gate on
+  "is the worker busy" asks the **records** — `pages.some(r => r.visible &&
+  r.renderTask)` — not the counter, because a count that has drifted must not
+  be able to switch a feature off silently. A null context is now
+  `rasterRefused` like any other refusal.
+- **`pumpDetail` re-arms rather than returning.** It is behind the rasters by
+  design, so the pass that finds one in flight is the common case, not the
+  edge — and dropping the request there means the only thing left to ask again
+  is a *later* capped render succeeding. On a document showing one large sheet
+  there is no later render. `pumpRenders` also calls `scheduleDetail` as each
+  slot clears, so the crop is requested whenever the drawing settles rather
+  than only off the success path of the render that happened to be capped.
 - **`redrawAll()` only repaints what is on screen.** It fires on
   `selection:changed`, i.e. every click; repainting every page still holding a
   raster meant clearing 77 canvases per click. Off-screen pages get
