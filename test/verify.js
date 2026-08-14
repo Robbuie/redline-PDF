@@ -2468,6 +2468,247 @@ function testRasterCap() {
 }
 
 /* ---------------------------------------------------------------------------
+   The detail overlay
+
+   What the cap above costs. An ANSI E sheet at 400% rasters at about 0.44
+   device pixels per CSS pixel, because the whole page is one canvas and the
+   whole page will not fit in one — a sheet you can see the shape of and not
+   read. The viewport always fits, though, so a capped sheet gets a second pair
+   of canvases over the first covering only the visible crop, at the full dpr.
+
+   Three things are pinned here, and each of them is a way this goes wrong
+   quietly rather than loudly:
+
+   - the crop is in *page-local* coordinates, so a sheet that does not start at
+     the origin of the scroll column — the right-hand page of a spread, any
+     page below the first — gets a tile offset by exactly the wrong amount if
+     the subtraction is missed, and a piece of the drawing lands over a
+     different piece of the drawing;
+   - the tile is only taken when there is something to gain, or an ordinary
+     sheet pays for a second full-resolution canvas it cannot tell apart from
+     the first;
+   - the margin is slack against scrolling, not a trigger. Re-cropping every
+     time the view leaves the margin means the sheet being read queues behind a
+     crop of itself on the one pdf.js worker.
+   --------------------------------------------------------------------------- */
+function testDetailTiles() {
+  console.log('\nDetail overlay');
+
+  const MARGIN = RP.views.TILE_MARGIN;
+
+  /* The case the whole feature is for. ANSI E is 2448 x 3168 pt, so 400% is
+     9792 x 12672 CSS px, and at dpr 2 that asks for a canvas four times over
+     every limit Chromium has. */
+  const sheet = { x: 0, y: 0, w: 9792, h: 12672 };
+  const base = RP.views.rasterPlan(sheet.w, sheet.h, 2);
+  check('the whole-page raster of an E sheet at 400% is well below 1:1',
+    base.capped && base.scale < 0.5, `scale ${base.scale.toFixed(3)}`);
+
+  const pane = { x: 0, y: 5000, w: 1600, h: 1000 };
+  const tile = RP.views.detailTile(sheet, pane);
+  check('a sheet larger than the pane gets a crop of it',
+    !!tile, tile ? `${tile.w}x${tile.h} at ${tile.x},${tile.y}` : 'none');
+  check('the crop is the view plus a margin, clamped to the paper',
+    tile.x === 0 && tile.y === pane.y - MARGIN
+      && tile.w <= pane.w + MARGIN * 2 + 2 && tile.h <= pane.h + MARGIN * 2 + 2,
+    `${tile.x},${tile.y} ${tile.w}x${tile.h}`);
+
+  const detail = RP.views.rasterPlan(tile.w, tile.h, 2, { maxPixels: RP.views.MAX_TILE_PIXELS });
+  check('and it rasters at the full device pixel ratio',
+    !detail.capped && detail.scale === 2, `scale ${detail.scale}`);
+  check('which is the point: several times the resolution of the base',
+    detail.scale / base.scale > 4,
+    `${base.scale.toFixed(3)} -> ${detail.scale} (${(detail.scale / base.scale).toFixed(1)}x)`);
+
+  /* Page-local, not column-local. Everything in the scroll column past the
+     first page has a non-zero origin, and the right-hand sheet of a spread has
+     a non-zero origin across as well — `viewer.leftOf` exists for that. A tile
+     that forgot to subtract it renders one part of the drawing over another,
+     which reads as a corrupt page rather than as a coordinate bug. */
+  const second = { x: 1614, y: 3000, w: 3000, h: 2000 };
+  const offsetTile = RP.views.detailTile(second, { x: 2000, y: 3400, w: 1000, h: 800 });
+  check('a crop is measured from the page, not from the scroll column',
+    offsetTile.x === 2000 - MARGIN - second.x && offsetTile.y === 3400 - MARGIN - second.y,
+    `${offsetTile.x},${offsetTile.y}`);
+  check('and never runs past the edge of the paper',
+    offsetTile.x >= 0 && offsetTile.y >= 0
+      && offsetTile.x + offsetTile.w <= second.w && offsetTile.y + offsetTile.h <= second.h,
+    `${offsetTile.x},${offsetTile.y} ${offsetTile.w}x${offsetTile.h}`);
+
+  /* Null is the ordinary answer, and it means "the base canvas already is the
+     tile". A letter sheet at 100%, or any sheet zoomed out to fit, takes this
+     path and comes out with nothing over it. */
+  check('a page that fits in the pane gets no crop at all',
+    RP.views.detailTile({ x: 0, y: 0, w: 612, h: 792 }, { x: 0, y: 0, w: 1600, h: 1000 }) === null);
+  check('a page scrolled off screen gets no crop either',
+    RP.views.detailTile(sheet, { x: 0, y: 40000, w: 1600, h: 1000 }) === null);
+
+  /* The margin is slack. It buys a scroll of about its own size before the
+     crop has to be taken again; spending it on the *test* instead — treating
+     the margin as the boundary — would re-crop continuously. */
+  check('the crop it just took covers the view it was taken for',
+    RP.views.tileCovers(tile, sheet, pane));
+  check('and still covers it after a scroll shorter than the margin',
+    RP.views.tileCovers(tile, sheet, { x: 0, y: pane.y + MARGIN - 20, w: 1600, h: 1000 }),
+    `scrolled ${MARGIN - 20}px into a ${MARGIN}px margin`);
+  check('but not after one longer than it',
+    !RP.views.tileCovers(tile, sheet, { x: 0, y: pane.y + MARGIN * 2, w: 1600, h: 1000 }));
+  check('a page with nothing on screen needs no cover',
+    RP.views.tileCovers(tile, sheet, { x: 0, y: 40000, w: 1600, h: 1000 }));
+
+  // -- the viewer's half ---------------------------------------------------
+
+  const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+  viewer.dpr = 2;
+  const canvas = () => ({ width: 0, height: 0, hidden: true, style: {} });
+  const makeRecord = (index, rasterScale, visible) => ({
+    index,
+    visible: visible !== false,
+    rendered: true,
+    renderTask: null,
+    rasterScale,
+    pdfCanvas: { width: 1600, height: 2070, style: {} },
+    annotCanvas: { width: 1600, height: 2070, style: {} },
+    detailCanvas: canvas(),
+    detailAnnot: canvas(),
+    tile: null,
+    detailTask: null,
+    textLayer: { innerHTML: '' },
+    nativeLayer: { innerHTML: '', hidden: false },
+    textDivs: []
+  });
+
+  /* The gate. A sheet already at the device pixel ratio has nothing to gain
+     from a second canvas of the same pixels, and would pay for it in the same
+     memory budget — so on every ordinary document none of this runs. */
+  check('an uncapped sheet is not offered a crop',
+    !viewer.wantsDetail(makeRecord(0, 2)));
+  check('a capped one is', viewer.wantsDetail(makeRecord(0, 0.44)));
+  check('but not while it is off screen',
+    !viewer.wantsDetail(makeRecord(0, 0.44, false)));
+  check('and not once it has stood itself down',
+    !viewer.wantsDetail(Object.assign(makeRecord(0, 0.44), { detailOff: true })));
+
+  /* Releasing has to hand the backing store back, not just drop the flag —
+     the same thing `releasePage` gets wrong if `clearRect` is used instead.
+     This pair is the largest single allocation the app makes. */
+  const held = makeRecord(0, 0.44);
+  held.tile = { x: 0, y: 0, w: 1840, h: 1240 };
+  held.detailCanvas.width = 3680;
+  held.detailCanvas.height = 2480;
+  held.detailAnnot.width = 3680;
+  held.detailAnnot.height = 2480;
+  const withDetail = viewer.pixelsOf(held);
+  viewer.releaseDetail(held);
+  check('releasing a crop zeroes both canvases, not just the tile',
+    held.detailCanvas.width === 0 && held.detailAnnot.width === 0 && held.tile === null);
+  check('a crop is hidden as well as emptied, so the base shows through',
+    held.detailCanvas.hidden === true && held.detailAnnot.hidden === true);
+  check('the crop counts against the same memory budget as the sheet',
+    withDetail > viewer.pixelsOf(held),
+    `${(withDetail / 1e6).toFixed(1)} MP -> ${(viewer.pixelsOf(held) / 1e6).toFixed(1)} MP`);
+
+  /* A crop belongs to a viewport, so a page that has left the viewport has no
+     use for one whatever the eviction ordering says. Without this the pages
+     inside MIN_RETAINED_PAGES — which are never released — would each carry a
+     viewport-sized pair for the rest of the session. */
+  const sweep = RP.createViewer({ querySelector: () => null }, RP.store);
+  sweep.dpr = 2;
+  sweep.pages = [];
+  for (let i = 0; i < 5; i += 1) {
+    const record = makeRecord(i, 0.44, i === 2);
+    record.tile = { x: 0, y: 0, w: 1840, h: 1240 };
+    record.detailCanvas.width = 3680;
+    record.detailCanvas.height = 2480;
+    record.detailAnnot.width = 3680;
+    record.detailAnnot.height = 2480;
+    sweep.pages.push(record);
+  }
+  sweep.currentPage = 2;
+  sweep.retainCanvases();
+  check('the sweep drops every crop that is no longer on screen',
+    sweep.pages.filter((r) => r.tile).length === 1 && !!sweep.pages[2].tile,
+    sweep.pages.map((r) => (r.tile ? r.index + 1 : null)).filter(Boolean).join(',') || 'none');
+  check('and keeps the one under the viewport',
+    sweep.pages[2].detailCanvas.width > 0);
+  check('a crop on a neighbouring sheet is released even though the sheet is not',
+    sweep.pages[1].detailCanvas.width === 0 && sweep.pages[1].pdfCanvas.width > 0,
+    'the page floor holds the sheet, not its crop');
+
+  /* Which sheet the next crop goes to, and when.
+
+     Everything above is arithmetic; this is the part that decides whether the
+     arithmetic is ever reached. Two failures live here and neither shows up as
+     an exception: a scroll that releases the crop instead of marking it (a
+     soft flash on every scroll of a large sheet), and a page with nothing to
+     crop stopping the scan (the other sheet of a spread never gets one). */
+  const picker = RP.createViewer({ querySelector: () => null }, RP.store);
+  picker.dpr = 2;
+  const scroller = { scrollTop: 5000, scrollLeft: 0, clientWidth: 1600, clientHeight: 1000 };
+  picker.els = { viewer: scroller };
+  picker.pages = [
+    // A sheet that fits the pane whole — capped, but with nothing to gain.
+    Object.assign(makeRecord(0, 0.44), { viewport: { width: 900, height: 700 } }),
+    // And an E-size sheet at 400% behind it.
+    Object.assign(makeRecord(1, 0.44), { viewport: { width: sheet.w, height: sheet.h } })
+  ];
+  picker.pageTops = [0, 0];
+  picker.pageLefts = [0, 0];
+
+  let asked = null;
+  picker.renderDetail = (record, wanted) => {
+    asked = { index: record.index, tile: wanted };
+    record.tile = wanted;
+    return Promise.resolve();
+  };
+  picker.pumpDetail();
+  check('a sheet with nothing to crop does not stop the scan',
+    asked && asked.index === 1, asked ? 'page ' + (asked.index + 1) : 'nothing picked');
+  /* And it is skipped without being stood down. "The whole sheet is on screen"
+     is a fact about the scroll position, which changes freely; `detailOff` is
+     a fact about the zoom and is only cleared by `layout()`. Setting it here
+     would mean a sheet that fits at the top of the column never gets a crop
+     once you scroll it half out of the pane. */
+  check('a sheet that fits is skipped, not stood down',
+    !picker.pages[0].detailOff && !picker.pages[0].tile);
+
+  /* Scrolling marks, it does not release. The crop is positioned inside the
+     page and scrolls with it, so what is left of it on screen is still right;
+     dropping it here would trade a sharp region for a soft one at the exact
+     moment the user stopped scrolling to look at something. */
+  scroller.scrollTop = 5000 + MARGIN * 3;
+  picker.refreshDetail();
+  check('a scroll off the crop marks it rather than dropping it',
+    picker.pages[1].tileStale === true && !!picker.pages[1].tile);
+  check('and a scroll still inside it changes nothing',
+    (scroller.scrollTop = 5000 + 20, picker.pages[1].tileStale = false,
+      picker.refreshDetail(), picker.pages[1].tileStale === false));
+
+  /* The markup pass is shared by the two canvases on purpose. A crop that drew
+     its markups through a different path could disagree with the sheet under
+     it about what is selected, which is invisible until it happens and then
+     looks like the drawing having two states at once. Same reasoning as
+     render.js being shared with the exporter. */
+  check('one markup pass serves both the sheet and the crop',
+    typeof viewer.paintMarkups === 'function' && typeof viewer.redrawDetail === 'function');
+
+  /* The crop covers part of the page, so the `inset: 0` every other canvas in
+     the app relies on has to be given back — left in, a viewport-sized crop is
+     stretched across the whole sheet. */
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'css', 'app.css'), 'utf8');
+  const detailRule = (css.match(/\.page canvas\.detail\s*\{[^}]*\}/) || [''])[0];
+  check('the crop is positioned rather than inset over the whole page',
+    /position:\s*absolute/.test(detailRule) && /inset:\s*auto/.test(detailRule),
+    detailRule.replace(/\s+/g, ' ') || 'no .page canvas.detail rule');
+  check('it comes after the rule it has to override',
+    css.indexOf('.page canvas.detail') > css.indexOf('.page canvas.pdf-canvas { position: relative; }'),
+    'equal specificity — source order is what decides');
+  check('and can actually be hidden while the next one renders',
+    /\.page canvas\.detail\[hidden\]\s*\{[^}]*display:\s*none/.test(css),
+    'author display:block beats the UA [hidden] rule');
+}
+
+/* ---------------------------------------------------------------------------
    Text layer scheduling
 
    The slow load. `renderPage` used to await the text layer and the native
@@ -4927,6 +5168,7 @@ async function pageLabel(bytes, index) {
     testMarqueeZoom();
     testViewModes();
     testRasterCap();
+    testDetailTiles();
     await testLayerQueue();
     testCanvasRetention();
     testScrollPage();

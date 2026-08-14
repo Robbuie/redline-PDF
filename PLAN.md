@@ -1,5 +1,28 @@
 # Roadmap
 
+## Done — v0.15
+
+- **Large sheets raster to the viewport, not to the whole page.** The 0.13.1
+  cap stopped a large-format sheet blanking and paid for it in sharpness: an
+  ANSI E drawing at 400% was clamped to about 0.44 device pixels per CSS pixel,
+  because the page is one canvas and the page will not fit in one. The
+  viewport always will, and pdf.js renders a crop through the same `transform`
+  parameter `snapshot.js` has used since 0.8
+- Done as an **overlay rather than a replacement**, which is where this
+  differs from the debt item as written. The whole-page pair underneath is
+  unchanged and still covers the page box, so `layout()`, the retention sweep
+  and every conversion in `render.js` carry on meaning what they meant — the
+  offset the note anticipated needing everywhere lives in one transform in
+  `renderDetail`. Scrolling ahead of the crop falls back to the soft base
+  rather than to blank paper, and the failure mode of the whole feature is
+  0.14's behaviour
+- `RP.views.detailTile` / `tileCovers` are the pure pair. The margin is slack
+  against a scroll rather than the re-crop trigger: testing against the margin
+  would re-crop every `TILE_MARGIN` pixels, which on the one pdf.js worker is
+  the sheet you are reading queueing behind a copy of itself
+- The crop is only taken where there is something to gain (`MIN_TILE_GAIN`), so
+  an ordinary sheet never allocates a second canvas of the same pixels
+
 ## Done — v0.14
 
 - **Group markups** — a set that moves, styles, copies and deletes as one
@@ -320,14 +343,10 @@ stored as embedded images so they export cleanly.
 - Replace snapshot undo with a command log once markup counts get into the
   thousands
 - Virtualise the page list for very large documents (200+ pages)
-- **Raster large sheets to the viewport rather than to the whole page.** The
-  0.13.1 cap stops a large-format sheet blanking, but it pays for it in
-  sharpness: an ANSI E sheet at 400% is clamped to about 0.44 device pixels per
-  CSS pixel, because the whole page is one canvas and the whole page will not
-  fit in one. Rendering only the part of the sheet on screen — pdf.js takes the
-  crop through the same `transform` parameter `snapshot.js` already uses —
-  would give full resolution at any zoom on a sheet of any size. It is the
-  right fix and a real change: the canvas stops covering the page box, so
-  `layout()`, `redrawPage`, the retention sweep and every conversion in
-  `render.js` need to agree on an offset they currently do not have
+- **The detail overlay is one crop, taken on settle.** That is the right first
+  version — it is a bonus over a sheet that is already on screen — but a fast
+  scroll across a large sheet spends its whole length on the soft base. A ring
+  of two or three crops, or one kept while the next renders, would cover it;
+  both cost a second viewport-sized pair of canvases against the same budget,
+  so it needs measuring rather than assuming
 - Add a smoke test that boots Electron headless and opens a sample drawing

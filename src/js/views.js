@@ -63,6 +63,35 @@
   const MAX_CANVAS_SIDE = 16384;
   const MAX_CANVAS_PIXELS = 24e6;
 
+  /* The detail tile.
+     ---------------------------------------------------------------------------
+     The cap above stops a large sheet blanking, and it pays for it in
+     sharpness: an ANSI E sheet at 400% is clamped to about 0.44 device pixels
+     per CSS pixel, because the whole page is one canvas and the whole page
+     will not fit in one. But only the part of it on screen ever needs to be
+     sharp, and a crop is what pdf.js's `transform` parameter is for —
+     `snapshot.js` has rendered regions that way since 0.8.
+
+     So a capped sheet gets a *second* pair of canvases over the top of the
+     first, covering the visible crop at the full device pixel ratio. The
+     whole-page pair underneath is unchanged and still covers the page box,
+     which is the whole reason this is an overlay rather than a replacement:
+     scrolling off the tile falls back to a soft sheet, never to a blank one,
+     and nothing outside `viewer.js` has to learn about an offset.
+
+     MARGIN is small on purpose. It is slack against a scroll, and every pixel
+     of it is paid for in a canvas that competes with the base for the same
+     memory budget; the base is already covering anything the tile does not.
+     MAX_TILE_PIXELS is below MAX_CANVAS_PIXELS for the same reason — two
+     canvases at 16 MP is 128 MB, which is what a viewport-sized crop on a 4K
+     pane costs, and the base pair is still live underneath it. */
+  const TILE_MARGIN = 120;
+  const MAX_TILE_PIXELS = 16e6;
+  /* Below this the tile is not worth taking. Re-rendering a crop through the
+     one pdf.js worker to gain a few percent of resolution is work the sheet
+     you are reading has to wait behind, and the difference is not visible. */
+  const MIN_TILE_GAIN = 1.25;
+
   const HINTS = {
     continuous: 'One column, scroll straight through the set',
     single: 'One sheet at a time',
@@ -251,11 +280,82 @@
     return { scale, width: cw, height: ch, capped: scale < wanted - 1e-9 };
   }
 
+  /** Overlap of two axis-aligned boxes, or null when they do not meet. */
+  function intersect(a, b) {
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    const r = Math.min(a.x + a.w, b.x + b.w);
+    const t = Math.min(a.y + a.h, b.y + b.h);
+    if (r <= x || t <= y) return null;
+    return { x, y, w: r - x, h: t - y };
+  }
+
+  /**
+   * The part of a page worth rastering at full resolution, in *page-local*
+   * CSS pixels.
+   *
+   * `page` and `view` are both boxes in the scroller's own coordinate space —
+   * the space `viewer.topOf`/`leftOf` measure in, which does not move when the
+   * pane scrolls. The result is translated to the page's own origin, because
+   * that is the space the render transform and the markup pass work in.
+   *
+   * Returns null when there is nothing to do, and the two null cases are
+   * different things worth keeping apart in the caller's head: the page is not
+   * on screen at all, or the whole page is already inside the tile — in which
+   * case the base canvas *is* the tile and a second copy of it would be pure
+   * cost. That second case is what makes an ordinary sheet, or any sheet
+   * zoomed out to fit, take this path and come out unchanged.
+   */
+  function detailTile(page, view, opts) {
+    const options = opts || {};
+    const margin = options.margin == null ? TILE_MARGIN : options.margin;
+    if (!page || !view || page.w <= 0 || page.h <= 0) return null;
+
+    const grown = {
+      x: view.x - margin, y: view.y - margin,
+      w: view.w + margin * 2, h: view.h + margin * 2
+    };
+    const hit = intersect(page, grown);
+    if (!hit) return null;
+
+    // Outward, never inward: a tile rounded in leaves a hairline of the soft
+    // base showing along two edges of the sharp crop, which reads as a seam.
+    const x = Math.max(0, Math.floor(hit.x - page.x));
+    const y = Math.max(0, Math.floor(hit.y - page.y));
+    const w = Math.min(Math.ceil(page.w) - x, Math.ceil(hit.w) + 1);
+    const h = Math.min(Math.ceil(page.h) - y, Math.ceil(hit.h) + 1);
+    if (w <= 0 || h <= 0) return null;
+    // The whole page is on screen; the base already covers it.
+    if (x === 0 && y === 0 && w >= page.w - 1 && h >= page.h - 1) return null;
+    return { x, y, w, h };
+  }
+
+  /**
+   * Is the part of the page actually on screen still inside `tile`?
+   *
+   * The margin is deliberately *not* applied here. Re-rendering the moment the
+   * view leaves the margin would take the tile again every `margin` pixels of
+   * scroll, which on the one pdf.js worker is the sheet you are reading
+   * queueing behind a crop of itself. Asking only about the strictly visible
+   * part spends the whole margin as slack instead.
+   */
+  function tileCovers(tile, page, view) {
+    if (!tile || !page || !view) return false;
+    const hit = intersect(page, view);
+    if (!hit) return true;   // nothing on screen; nothing to cover
+    const x = hit.x - page.x;
+    const y = hit.y - page.y;
+    return x >= tile.x - 0.5 && y >= tile.y - 0.5
+      && x + hit.w <= tile.x + tile.w + 0.5
+      && y + hit.h <= tile.y + tile.h + 0.5;
+  }
+
   RP.views = {
     MODES, LABELS, HINTS, SPREAD_GAP, COLUMN_PAD,
     MAX_CANVAS_SIDE, MAX_CANVAS_PIXELS,
+    TILE_MARGIN, MAX_TILE_PIXELS, MIN_TILE_GAIN,
     normalize, isPaged, spreadOf, rowsFor, rowOfPage, rowStartOf,
-    inkBoxOf, fitScale, rasterPlan
+    inkBoxOf, fitScale, rasterPlan, intersect, detailTile, tileCovers
   };
 
 })(window.RP);

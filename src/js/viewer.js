@@ -109,6 +109,36 @@
      what every other PDF viewer does, and the alternative is no page at all. */
   const ZOOM_SETTLE_MS = 150;
 
+  /* The detail overlay.
+     ---------------------------------------------------------------------------
+     `rasterPlan` clamps the whole-page raster so the browser will actually
+     hand the canvas over, and on a large-format sheet that clamp is severe: an
+     ANSI E drawing at 400% comes out at about 0.44 device pixels per CSS
+     pixel, which is a sheet you can see the shape of and not read. The page is
+     one canvas and the page will not fit in one — but the *viewport* always
+     will, and pdf.js renders a crop through the same `transform` parameter
+     `snapshot.js` has used since 0.8.
+
+     So a capped page gets a second pair of canvases over the first, covering
+     the visible crop at the full dpr. Deliberately an overlay and not a
+     replacement: the whole-page pair underneath still covers the page box, so
+     scrolling ahead of the tile shows a soft sheet rather than a blank one,
+     the retention sweep and every conversion in `render.js` carry on working
+     against a canvas that means what it always meant, and the failure mode of
+     everything below is "you get 0.14's behaviour".
+
+     Settled, never streamed. A tile taken per scroll frame is the zoom problem
+     again on the other axis — each crop cancelled by the next, the one worker
+     doing nothing but throwing work away. It is taken once the view stops
+     moving, and a scroll away from it *marks* it rather than dropping it: the
+     crop is positioned inside the page and therefore scrolls with the page, so
+     what is left of it on screen is still exactly right, and releasing early
+     trades a sharp region for a soft one at the moment the user stopped to
+     look at something. A zoom is the other case and does drop it outright —
+     there the CSS box itself has changed, so the crop is a piece of the
+     drawing at the wrong scale over the top of the right one. */
+  const DETAIL_SETTLE_MS = 220;
+
   /**
    * @param {HTMLElement} root a `.pane` element holding `.viewer > .pages`
    * @param {object} store the document store this pane is currently showing
@@ -145,7 +175,11 @@
     activeLayers: 0,
     thumbQueue: [],
     activeThumbs: 0,
+    detailTimer: 0,     // pending detail-tile pass, once the view settles
+    detailBusy: false,  // one crop at a time; they share the page worker
     pageTops: null,     // cached container offsets; null means re-measure
+    pageLefts: null,    // and across, for the tile maths — a spread's second
+                        // sheet does not start at x = 0
     thumbCurrent: -1,
     badgeFrame: 0,
 
@@ -346,9 +380,19 @@
         // our own markup canvas. RP.annots owns everything inside it.
         const nativeLayer = RP.el('div', { class: RP.annots.LAYER_CLASS, hidden: true });
         const annotCanvas = RP.el('canvas', { class: 'annot-canvas' });
+        /* The sharp crop, over the top of both. Carries `pdf-canvas` so the
+           paper display filters reach it — they are scoped to that class and a
+           detail canvas the invert mode did not reach would be a bright
+           rectangle in the middle of an inverted sheet. The markup half
+           carries `annot-canvas` for the opposite reason: no filter may touch
+           it, or the redlines inside the tile come back a different colour
+           from the ones outside it. */
+        const detailCanvas = RP.el('canvas', { class: 'pdf-canvas detail', hidden: true });
+        const detailAnnot = RP.el('canvas', { class: 'annot-canvas detail', hidden: true });
         const inkLayer = RP.el('div', { class: 'ink-layer' });
         const tag = RP.el('span', { class: 'page-tag', text: 'Page ' + (i + 1) });
-        container.append(pdfCanvas, textLayer, nativeLayer, annotCanvas, inkLayer, tag);
+        container.append(pdfCanvas, textLayer, nativeLayer, annotCanvas,
+          detailCanvas, detailAnnot, inkLayer, tag);
         // Parented by `buildRows` below — the column holds rows, not pages.
 
         records.push({
@@ -359,6 +403,16 @@
           container,
           pdfCanvas,
           annotCanvas,
+          detailCanvas,
+          detailAnnot,
+          tile: null,             // the crop the detail pair currently holds
+          tileStale: false,       // ...and the view has since moved off it
+          detailScale: 0,         // the density that crop was taken at
+          detailTask: null,
+          /* Stood down for this zoom: the browser refused the canvas, or there
+             was nothing to gain by taking it. Cleared by `layout()`, because
+             both are answers about a zoom rather than about the sheet. */
+          detailOff: false,
           textLayer,
           nativeLayer,
           inkLayer,
@@ -471,6 +525,7 @@
     destroyPages() {
       for (const record of this.pages) {
         if (record.renderTask) { try { record.renderTask.cancel(); } catch (err) { /* ignore */ } }
+        if (record.detailTask) { try { record.detailTask.cancel(); } catch (err) { /* ignore */ } }
         if (record.nativeLayerObj) { try { record.nativeLayerObj.destroy(); } catch (err) { /* ignore */ } }
         this.pageObserver.unobserve(record.container);
       }
@@ -480,8 +535,13 @@
       this.pageTops = null;
       this.thumbCurrent = -1;
       if (this.landingTimer) { clearTimeout(this.landingTimer); this.landingTimer = 0; }
-      // A pending raster or zoom step belongs to the document being torn down.
+      // A pending raster, crop or zoom step belongs to the document being torn
+      // down. `detailBusy` is cleared too: the render it was holding the slot
+      // for is cancelled below with the page it belongs to, and a slot left
+      // occupied would stop the incoming document ever taking a crop.
       if (this.rasterTimer) { clearTimeout(this.rasterTimer); this.rasterTimer = 0; }
+      if (this.detailTimer) { clearTimeout(this.detailTimer); this.detailTimer = 0; }
+      this.detailBusy = false;
       if (this.zoomFrame) { cancelAnimationFrame(this.zoomFrame); this.zoomFrame = 0; }
       this.pendingZoomFactor = 0;
       this.pendingZoomTo = 0;
@@ -576,6 +636,14 @@
         }
         if (record.renderTask) { try { record.renderTask.cancel(); } catch (err) { /* ignore */ } }
         record.renderTask = null;
+        /* The sharp crop is a crop of the *old* geometry — its canvas is sized
+           and positioned in CSS pixels at the zoom it was taken at, so left up
+           it would be a piece of the drawing at the wrong scale sitting on top
+           of the right one. `detailOff` goes with it: a tile the browser
+           refused at 400%, or one that was not worth taking at 100%, is a
+           question about a zoom that no longer applies. */
+        this.releaseDetail(record);
+        record.detailOff = false;
         // A zoom invalidates every bitmap. The off-screen ones are not being
         // repainted this pass, so hand their memory back now rather than
         // carrying a document's worth of stale full-resolution canvases into
@@ -594,6 +662,9 @@
         if (record.visible) this.requestPage(record.index);
       }
       this.redrawAll();
+      // The sharp crop waits on the whole-page raster it sits over — `pumpDetail`
+      // refuses to start while one is pending, and this is only the timer.
+      this.scheduleDetail();
     },
 
     /**
@@ -1010,6 +1081,276 @@
       }
     },
 
+    // -- the detail overlay ------------------------------------------------
+
+    /** The visible box, in the scroller's own coordinates. */
+    detailView() {
+      const viewer = this.els.viewer;
+      if (!viewer) return null;
+      const w = viewer.clientWidth || 0;
+      const h = viewer.clientHeight || 0;
+      if (w <= 0 || h <= 0) return null;
+      return { x: viewer.scrollLeft || 0, y: viewer.scrollTop || 0, w, h };
+    },
+
+    /**
+     * A page's box in the same coordinates.
+     *
+     * Off the cached measurements, not off a live rect: this is read once per
+     * page per scroll frame and `onScroll` must not measure the DOM. The cache
+     * is filled by `measurePages` and invalidated by everything that moves a
+     * page, so a null here means "re-measure", not "unknown".
+     */
+    pageBox(record) {
+      if (!record || !record.viewport) return null;
+      if (!this.pageTops || this.pageTops.length !== this.pages.length) this.measurePages();
+      const y = this.pageTops[record.index];
+      const x = this.pageLefts ? this.pageLefts[record.index] : 0;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      // Floored, because that is what `layout()` wrote onto the container: a
+      // tile measured against the unrounded viewport can overhang the page box
+      // by a fraction of a pixel on two sides.
+      return {
+        x, y,
+        w: Math.floor(record.viewport.width),
+        h: Math.floor(record.viewport.height)
+      };
+    },
+
+    /**
+     * Does this sheet want a sharp crop?
+     *
+     * Only if its own raster was clamped. An ordinary sheet is already at the
+     * device pixel ratio and a second canvas over it would be the same pixels
+     * again for the same memory — the overlay exists for the sheets `rasterPlan`
+     * had to compromise, and on every other document this returns false and
+     * nothing below ever runs.
+     */
+    wantsDetail(record) {
+      return !!record && record.visible && record.rendered && !record.detailOff
+        && !!record.rasterScale && record.rasterScale < this.dpr - 1e-9;
+    },
+
+    /**
+     * Drop a page's sharp crop and hand its backing store back.
+     *
+     * Zeroing both dimensions for the same reason `releasePage` does — a
+     * `clearRect` leaves the memory allocated, and a viewport-sized pair at the
+     * device pixel ratio is the largest single thing this app holds.
+     */
+    releaseDetail(record) {
+      if (!record || !record.detailCanvas) return;
+      if (record.detailTask) { try { record.detailTask.cancel(); } catch (err) { /* ignore */ } }
+      record.detailTask = null;
+      record.tile = null;
+      record.tileStale = false;
+      record.detailScale = 0;
+      for (const canvas of [record.detailCanvas, record.detailAnnot]) {
+        if (!canvas) continue;
+        canvas.hidden = true;
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+    },
+
+    /**
+     * Note tiles that no longer cover the view, and ask for the next pass.
+     *
+     * Deliberately does *not* release: the crop is positioned inside the page
+     * and therefore scrolls with it, so the part of it still on screen is
+     * still exactly right. Dropping it the moment the view moved would turn
+     * every scroll into a soft flash of a region that was already sharp. It is
+     * marked stale instead and replaced in place once the view settles.
+     */
+    refreshDetail() {
+      const view = this.detailView();
+      if (!view) return;
+      let wanted = false;
+      for (const record of this.pages) {
+        const has = !!record.tile;
+        if (!has && !this.wantsDetail(record)) continue;
+        const box = this.pageBox(record);
+        if (!box) continue;
+        if (!has) {
+          // A sheet that has none yet only counts if some of it is off screen —
+          // `detailTile` returns null when the base canvas already is the tile.
+          if (RP.views.detailTile(box, view)) wanted = true;
+          continue;
+        }
+        if (RP.views.tileCovers(record.tile, box, view)) continue;
+        record.tileStale = true;
+        wanted = true;
+      }
+      if (wanted) this.scheduleDetail();
+    },
+
+    /** Take the crop once the view stops moving. Same reasoning as
+        `scheduleRaster`, and a longer settle because this one is a bonus:
+        there is already a sheet on screen either way. */
+    scheduleDetail() {
+      if (this.detailTimer) clearTimeout(this.detailTimer);
+      this.detailTimer = setTimeout(() => {
+        this.detailTimer = 0;
+        this.pumpDetail();
+      }, DETAIL_SETTLE_MS);
+    },
+
+    /**
+     * Render the next sheet's crop. One at a time, behind every pending page.
+     *
+     * The ordering is the same one thumbnails sit at the bottom of: there is
+     * one pdf.js worker, and a sheet with no bitmap at all outranks a sheet
+     * that is merely soft. A page that turns out not to need a tile is skipped
+     * rather than returned on — in a facing spread the sheet next to it may
+     * still want one.
+     */
+    pumpDetail() {
+      if (this.detailBusy) return;
+      if (this.activeRenders || this.renderQueue.length) return;
+      const view = this.detailView();
+      if (!view) return;
+
+      for (const record of this.pages) {
+        if (record.tile && !record.tileStale) continue;
+        if (!this.wantsDetail(record)) continue;
+        const box = this.pageBox(record);
+        if (!box) continue;
+        const tile = RP.views.detailTile(box, view);
+        // The whole sheet is on screen, so the base canvas already is the tile.
+        // Not a failure and not a reason to stop looking at the next page.
+        if (!tile) continue;
+
+        const plan = RP.views.rasterPlan(tile.w, tile.h, this.dpr,
+          { maxPixels: RP.views.MAX_TILE_PIXELS });
+        /* Not worth the trip through the worker. The crop is capped too — a
+           viewport on a 4K pane is a 25 megapixel canvas at dpr 2 — so on a
+           sheet that is only slightly over the whole-page limit the two land in
+           the same place, and re-rendering to gain nothing is the sheet you are
+           reading queueing behind a copy of itself. */
+        if (plan.scale < (record.rasterScale || 0) * RP.views.MIN_TILE_GAIN) {
+          record.detailOff = true;
+          continue;
+        }
+
+        this.detailBusy = true;
+        const done = () => {
+          this.detailBusy = false;
+          this.retainCanvases();
+          // A spread has two sheets, and a continuous column at low zoom can
+          // have more.
+          this.pumpDetail();
+        };
+        this.renderDetail(record, tile, plan).then(done, done);
+        return;
+      }
+    },
+
+    /**
+     * The sharp crop itself.
+     *
+     * pdf.js renders a sub-region through `transform`, which it prepends to the
+     * viewport transform: scaling by the plan and translating by the crop
+     * origin puts the wanted region at the canvas origin, so the page is drawn
+     * only where the canvas is rather than drawn whole and cut down. Exactly
+     * the shape `RP.snapshot.render` uses, and for the same reason.
+     *
+     * **No `annotationCanvasMap`**, unlike `renderPage` — again as in
+     * `snapshot.js`. The map is how pdf.js hands back annotations that render
+     * onto a canvas of their own (Bluebeam stamps, some free text) for the live
+     * annotation layer to adopt. That layer has already adopted the ones from
+     * the base render and is positioned over both canvases; handing this pass a
+     * second map would divert those marks into canvases nothing reads and leave
+     * a stamped sheet with a hole where the stamp is inside the tile and the
+     * stamp outside it.
+     */
+    async renderDetail(record, tile, plan) {
+      const viewport = record.viewport;
+      const k = plan.scale;
+
+      /* The old crop goes now rather than on success: the canvas is about to be
+         resized, which clears it, so there is nothing left to keep. Hidden
+         rather than left blank, so what shows through for the length of this
+         render is the soft base — the same page, slightly less sharp — instead
+         of a white rectangle over the middle of the drawing. */
+      record.tile = null;
+      record.tileStale = false;
+      record.detailCanvas.hidden = true;
+      record.detailAnnot.hidden = true;
+
+      record.detailCanvas.width = plan.width;
+      record.detailCanvas.height = plan.height;
+      record.detailAnnot.width = plan.width;
+      record.detailAnnot.height = plan.height;
+      for (const canvas of [record.detailCanvas, record.detailAnnot]) {
+        canvas.style.left = tile.x + 'px';
+        canvas.style.top = tile.y + 'px';
+        canvas.style.width = tile.w + 'px';
+        canvas.style.height = tile.h + 'px';
+      }
+
+      const ctx = record.detailCanvas.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, plan.width, plan.height);
+      // Same probe as the base raster: a surface the browser would not back
+      // reads transparent while `canvas.width` reports what was assigned. Here
+      // it costs nothing to lose — the base is still on screen — so it is a
+      // silent stand-down rather than the notice `rasterRefused` puts up.
+      if (!this.canvasTookTheFill(ctx, record.detailCanvas)) {
+        record.detailOff = true;
+        this.releaseDetail(record);
+        return;
+      }
+
+      const transform = [k, 0, 0, k, -tile.x * k, -tile.y * k];
+      const task = record.pageProxy.render({ canvasContext: ctx, viewport, transform });
+      record.detailTask = task;
+
+      try {
+        await task.promise;
+        /* Viewport identity, the same test `buildLayers` makes: `layout()`
+           replaces the object outright, so a zoom that landed mid-render means
+           this crop is measured in CSS pixels that no longer exist. */
+        if (record.viewport !== viewport || !record.rendered) { this.releaseDetail(record); return; }
+        if (!this.canvasTookTheFill(ctx, record.detailCanvas)) {
+          record.detailOff = true;
+          this.releaseDetail(record);
+          return;
+        }
+        record.tile = tile;
+        record.detailScale = k;
+        record.detailCanvas.hidden = false;
+        record.detailAnnot.hidden = false;
+        this.redrawDetail(record);
+      } catch (err) {
+        // A cancelled crop is a zoom or a tab switch, not a fault. Anything
+        // else stands the overlay down for this zoom rather than retrying into
+        // the same failure.
+        if (!err || err.name !== 'RenderingCancelledException') record.detailOff = true;
+        this.releaseDetail(record);
+      } finally {
+        record.detailTask = null;
+      }
+    },
+
+    /**
+     * Repaint the markups inside a sharp crop.
+     *
+     * The crop is on top of the base pair, so markups painted only onto the
+     * base would be covered by it and the tile would show the selection state
+     * from whenever it was taken. Same annotations, same code, different
+     * density and an origin at the crop rather than at the sheet.
+     */
+    redrawDetail(record) {
+      if (!record || !record.tile || !record.detailAnnot || !record.detailAnnot.width) return;
+      const canvas = record.detailAnnot;
+      const ctx = canvas.getContext('2d');
+      const k = record.detailScale || this.dpr;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(k, 0, 0, k, -record.tile.x * k, -record.tile.y * k);
+      this.paintMarkups(ctx, record);
+    },
+
     /**
      * Drop a page's bitmaps and layers, keeping its box in the scroll column.
      *
@@ -1029,6 +1370,10 @@
       // for them again when it comes back. A build already in flight checks
       // `rendered` across its awaits and drops what it was doing.
       record.layersBuilt = false;
+      // The sharp crop is a crop *of* the bitmap being dropped. It is also the
+      // single largest allocation on the page, so a release that left it behind
+      // would hand back the smaller half of the memory.
+      this.releaseDetail(record);
       for (const canvas of [record.pdfCanvas, record.annotCanvas]) {
         canvas.width = 0;
         canvas.height = 0;
@@ -1046,21 +1391,39 @@
       record.annotCanvasMap = null;
     },
 
+    /** Backing store a page is holding, in pixels, counting both pairs. */
+    pixelsOf(record) {
+      let pixels = 0;
+      if (record.pdfCanvas && record.pdfCanvas.width) {
+        pixels += record.pdfCanvas.width * record.pdfCanvas.height * 2;
+      }
+      /* The crop counts against the same budget as the sheet it sits on — it
+         is the same kind of memory and, on a large-format drawing at a high
+         zoom, it is the larger of the two. Counting only the base is how the
+         budget quietly stopped being a budget the last time. */
+      if (record.detailCanvas && record.detailCanvas.width) {
+        pixels += record.detailCanvas.width * record.detailCanvas.height * 2;
+      }
+      return pixels;
+    },
+
     /** What the retention budget is currently holding. Reported by diag.js. */
     rasterStats() {
       let held = 0;
       let pixels = 0;
       let capped = 0;
       let failed = 0;
+      let detailed = 0;
       for (const record of this.pages) {
         // Counted whether or not the page currently holds a bitmap: a sheet
         // that was refused outright has no canvas and is exactly the one worth
         // reporting.
         if (record.renderFailed) failed += 1;
         if (record.rasterScale && record.rasterScale < this.dpr - 1e-9) capped += 1;
+        if (record.tile) detailed += 1;
+        pixels += this.pixelsOf(record);
         if (!record.pdfCanvas || !record.pdfCanvas.width) continue;
         held += 1;
-        pixels += record.pdfCanvas.width * record.pdfCanvas.height * 2;
       }
       return {
         pages: this.pages.length,
@@ -1070,6 +1433,12 @@
         // screen without this, which is why they are here.
         capped,
         failed,
+        /* How many of the capped ones the overlay is currently rescuing.
+           `capped` high with `detailed` at zero on a sheet that is plainly on
+           screen is the signature of the crop being refused or stood down, and
+           the difference between the two numbers is not visible from a
+           screenshot of a soft page. */
+        detailed,
         approxMB: Math.round(pixels * 4 / 1e6),
         budgetMB: Math.round(CANVAS_BUDGET_PX * 4 / 1e6),
         queued: this.renderQueue.length,
@@ -1084,6 +1453,16 @@
 
     /** Release rastered pages furthest from the viewport until under budget. */
     retainCanvases() {
+      /* The crop first, and unconditionally: it belongs to a viewport, so a
+         page that has scrolled out of the viewport has no use for one whatever
+         the budget says. Doing it here rather than only in `releasePage` is
+         what keeps the largest allocation in the app tied to the view instead
+         of to the eviction ordering — a sheet inside MIN_RETAINED_PAGES is
+         never released, and would otherwise carry a viewport-sized pair of
+         canvases for the rest of the session. */
+      for (const record of this.pages) {
+        if (record.tile && !record.visible) this.releaseDetail(record);
+      }
       const live = this.pages.filter((record) => record.rendered || record.renderTask);
       if (live.length <= MIN_RETAINED_PAGES) return;
       live.sort((a, b) =>
@@ -1092,8 +1471,9 @@
       let held = 0;
       for (let i = 0; i < live.length; i += 1) {
         const record = live[i];
-        // Two canvases per page, always the same size as each other.
-        held += record.pdfCanvas.width * record.pdfCanvas.height * 2;
+        // Two canvases per page, always the same size as each other — and the
+        // sharp crop's pair on top of them where there is one.
+        held += this.pixelsOf(record);
 
         /* The floor is a floor on *pages*, which on a large-format sheet used
            to mean the budget was not a budget at all: three pages that are
@@ -1215,6 +1595,11 @@
            behind it. With two render slots, two of those held up the sheet the
            user was actually waiting for. See `pumpLayers`. */
         this.requestLayers(index);
+        /* And the sharp crop, if this sheet turned out to be one of the large
+           ones. `plan.capped` is the whole test — this is the only place that
+           knows the raster was compromised, and the overlay exists for exactly
+           the sheets where it was. */
+        if (plan.capped) this.scheduleDetail();
       } catch (err) {
         if (!err || err.name !== 'RenderingCancelledException') console.error('Page render failed', err);
         record.container.classList.remove('rendering');
@@ -1322,7 +1707,26 @@
          the large-format sheets this is meant to rescue. */
       const scale = record.rasterScale || this.dpr;
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      this.paintMarkups(ctx, record);
+      /* The sharp crop sits on top of this canvas and carries its own copy of
+         everything just painted. Skipping it here would leave the markups
+         inside the tile showing whatever state they were in when the crop was
+         taken — a selection that will not clear, over the one part of the sheet
+         the user is looking closely at. */
+      this.redrawDetail(record);
+    },
 
+    /**
+     * Everything this app draws over a page, in page CSS-pixel space.
+     *
+     * Taken out of `redrawPage` because it is painted twice on a large sheet —
+     * once onto the whole-page markup canvas and once onto the sharp crop over
+     * it, at a different density and a different origin. The two must not be
+     * able to disagree about what a page has on it, which is the same reason
+     * `render.js` is shared with the exporter.
+     */
+    paintMarkups(ctx, record) {
+      const index = record.index;
       const store = this.store;
       /* Before the markups, because a number is part of the sheet rather than
          something drawn over it — and because a markup deliberately placed over
@@ -1385,6 +1789,12 @@
      */
     measurePages() {
       this.pageTops = this.pages.map((record) => this.topOf(record));
+      /* Filled in the same pass, and only here, so the two arrays cannot drift:
+         everything that moves a page nulls `pageTops`, and every reader of
+         either re-measures when it finds that null. Across as well as down
+         because the detail tile is a box, and because the second sheet of a
+         spread does not start at x = 0. */
+      this.pageLefts = this.pages.map((record) => this.leftOf(record));
     },
 
     /**
@@ -1455,6 +1865,13 @@
         this.highlightThumb();
         this.emit('page:changed', current);
       }
+
+      /* Scrolling is the other half of the detail overlay: the crop covers the
+         viewport, so moving the viewport is what makes it stale. Cheap enough
+         to sit here — it reads the cached page boxes and does no DOM
+         measurement of its own, and the render it leads to is behind
+         DETAIL_SETTLE_MS rather than on this frame. */
+      this.refreshDetail();
     },
 
     goToPage(index, opts) {

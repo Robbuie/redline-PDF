@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.14.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.15.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -400,6 +400,41 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   are identical on screen. `snapshot.js` has known all of this since it shipped
   (`MAX_PIXELS`); the page canvases simply never got it. `test/verify.js`
   covers the limits, the proportions, the probe and the notice.
+- **The sharp crop is an overlay, and the page canvas still covers the page.**
+  The cap above stops a large sheet blanking and pays for it in sharpness — an
+  ANSI E drawing at 400% rasters at about 0.44 device pixels per CSS pixel,
+  because the page is one canvas and the page will not fit in one. The
+  *viewport* always will, so a capped sheet gets a second pair of canvases over
+  the first covering only the visible crop, at the full dpr, through the same
+  pdf.js `transform` parameter `snapshot.js` renders regions with. The obvious
+  version of this replaces the page canvas with the tile, and that is the
+  expensive mistake: the canvas stops covering the page box, so `layout()`,
+  `redrawPage`, the retention sweep and every conversion in `render.js` need an
+  offset none of them has. As an overlay the offset lives in exactly two
+  transforms, both in `viewer.js`, and everything that goes wrong degrades to
+  0.14's behaviour. Six things hold it up. It is taken **on settle and never
+  per frame** — a crop per scroll frame is the zoom problem on the other axis,
+  each render cancelled by the next. `TILE_MARGIN` is **slack, not the
+  trigger**: `tileCovers` asks about the strictly visible part, because
+  re-cropping when the view leaves the margin re-crops every 120px of scroll,
+  and on the one worker that is the sheet you are reading queueing behind a
+  copy of itself. A scroll **marks the tile stale rather than releasing it** —
+  the crop is positioned inside the page and scrolls with it, so what is left
+  of it on screen is still right, and dropping it early trades a sharp region
+  for a soft one at the moment the user stopped to look. `wantsDetail` gates on
+  `rasterScale < dpr`, so **an ordinary sheet never allocates one** and none of
+  this runs on a letter-sized document. The crop counts against
+  `CANVAS_BUDGET_PX` like anything else (`pixelsOf`) and `retainCanvases`
+  drops it the moment its page leaves the viewport, **including for pages
+  inside `MIN_RETAINED_PAGES`**, which are never released and would otherwise
+  carry a viewport-sized pair for the rest of the session. And `redrawPage`
+  ends at `redrawDetail`, because the crop is on *top* of the markup canvas —
+  miss it and a selection inside the tile never clears. Passing an
+  `annotationCanvasMap` here is the one thing that looks like an omission and
+  is not: the live annotation layer has already adopted the base render's, and
+  a second map diverts those marks into canvases nothing reads. Same reasoning
+  as `snapshot.js`. `test/verify.js` covers the geometry, the gate, the
+  staleness rule, the sweep and the CSS.
 - **Page canvases are on a memory budget, and a released page is not a bug.**
   Nothing frees a canvas on its own, and an E-size sheet at fit-width is ~13
   megapixels per canvas with two per page, so a 77-sheet set scrolled end to end

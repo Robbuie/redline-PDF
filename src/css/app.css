@@ -962,6 +962,31 @@ body.presenting .viewer { background: #0b0d10; }
 .page canvas.pdf-canvas { position: relative; }
 .page canvas.annot-canvas { pointer-events: none; }
 
+/* The detail overlay — the sharp crop over a large sheet. See `renderDetail`
+   in viewer.js.
+
+   These two canvases cover part of the page rather than the whole of it, which
+   is the one thing that makes them different from every other canvas here:
+   `inset: 0` above would stretch a viewport-sized crop across the whole sheet.
+   `viewer.js` sets left/top/width/height inline from the tile, so the inset has
+   to be given back. This block must stay *after* the `.pdf-canvas` rule above —
+   the two have equal specificity, so order is what decides which position wins.
+
+   `hidden` needs saying out loud for the same reason: the author-level
+   `display: block` inherited from the group rule beats the UA stylesheet's
+   `[hidden] { display: none }`, and a crop that could not be hidden is one that
+   cannot be stood down while the next one renders.
+
+   The page half carries `.pdf-canvas` deliberately, so the paper display
+   filters below reach it; the markup half carries `.annot-canvas`, so they
+   never do. */
+.page canvas.detail {
+  position: absolute;
+  inset: auto;
+  pointer-events: none;
+}
+.page canvas.detail[hidden] { display: none; }
+
 /* Paper display modes.
    ---------------------------------------------------------------------------
    EVERY FILTER HERE IS ON `.pdf-canvas` AND `.thumb canvas` ALONE, AND THAT

@@ -697,6 +697,24 @@ it, or find it at `%APPDATA%\Redline PDF\redline-pdf.log`.
 A red banner across the top means startup hit a problem it could work around;
 the app stays usable and the banner says what broke.
 
+### Going back a version
+
+Every tagged release keeps its installer on the
+[releases page](https://github.com/Robbuie/redline-pdf/releases) — nothing is
+ever deleted — so rolling back is downloading the older `Setup` exe and running
+it over the top. Two things to know:
+
+- **Your drawings are safe either way.** The markup model in a saved PDF has not
+  changed since 0.14, so a drawing marked up on a newer build opens, edits and
+  re-saves on an older one. Settings and recents are shared between versions and
+  survive the swap.
+- **The app will offer to update you again** at the next launch. Take *Skip this
+  version* on the prompt, or turn the startup check off in Settings → Updates,
+  or it will keep asking.
+
+The portable exe on the same release is the other option: it never
+auto-updates, installs nothing, and reverting is deleting the file.
+
 **"PDF engine could not be loaded"** almost always means dependencies are missing
 or half-installed. Run `npm install` in the project folder and restart.
 
@@ -724,6 +742,13 @@ build, so `pdfjs-dist` can be upgraded without the app going dark.
   flags on an owner-password file are not enforced.
 - A page edit rebuilds the document in memory, which takes a moment on very large
   sheet sets — the status bar says when it is working.
+- On a large-format sheet the drawing is redrawn at full resolution a moment
+  after you stop scrolling or zooming, not while you are still moving. There is
+  a hard limit on how large a single bitmap the browser will hand over, and an
+  ANSI E sheet at 400% is several times past it, so what is on screen mid-scroll
+  is the whole sheet at whatever resolution did fit — slightly soft, and it
+  sharpens when you stop. Nothing about this reaches what is saved, printed or
+  copied out.
 - Crash recovery covers the markups, the page arrangement, the calibration and
   the page numbering — but **not** pages inserted from another PDF. Those pages
   cannot be rebuilt without the files they came from, and the app does not copy

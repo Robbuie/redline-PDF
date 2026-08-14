@@ -12,6 +12,30 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.15.0] — 2026-08-13
+
+### Changed
+
+- **Large-format sheets are now sharp at any zoom.** Zooming into an ANSI E
+  drawing used to get steadily softer the further in you went: the whole sheet
+  is drawn onto one bitmap, there is a hard limit on how big a bitmap the
+  browser will hand over, and past about 335% zoom that limit was doing the
+  choosing — an E sheet at 400% came out at under half the resolution of your
+  screen. It now draws the part of the sheet you are actually looking at at
+  full resolution, over the top of the whole-sheet version, so a schedule or a
+  panel detail reads at 400% the way it reads at 100%. The bigger the sheet and
+  the further in you are, the more difference it makes; on a long plot run out
+  of a DWF it applies barely above fit-width.
+- Scrolling stays smooth through it. The sharp part is taken a moment after you
+  stop moving, and until it arrives you get what you got before — a slightly
+  soft sheet, never a blank one. Nothing about this changes what saves, prints
+  or copies out of the drawing.
+- Ordinary sheets are untouched. A sheet the browser could already draw at full
+  resolution does not get a second copy of itself, so nothing here costs
+  anything on a letter- or A3-sized document.
+- Diagnostics (`Ctrl+Shift+D`) reports how many sheets are being rescued this
+  way, next to the existing count of sheets that had to be capped.
+
 ## [0.14.0] — 2026-08-13
 
 ### Added
