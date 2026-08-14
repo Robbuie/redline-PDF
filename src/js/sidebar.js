@@ -132,9 +132,19 @@
         return;
       }
 
+      /* Group sizes, counted once for the whole list rather than per row: the
+         badge has to say how many markups the row is tied to, and asking the
+         store per row is a walk of every annotation per annotation. */
+      const groupSizes = new Map();
+      for (const annot of RP.store.annotations) {
+        const g = RP.groupOf(annot);
+        if (g) groupSizes.set(g, (groupSizes.get(g) || 0) + 1);
+      }
+
       for (const annot of items) {
         const note = this.describe(annot);
         const status = RP.statusOf(annot);
+        const group = RP.groupOf(annot);
         const row = RP.el('button', {
           class: 'markup-row st-' + status + (RP.store.selection.has(annot.id) ? ' active' : ''),
           'data-id': annot.id,
@@ -149,6 +159,13 @@
             note ? RP.el('span', { class: 'mk-note', text: note }) : null
           ]),
           RP.el('span', { class: 'mk-meta' }, [
+            // Clicking any row of a group selects the whole group, which is
+            // surprising unless the row says so first.
+            group ? RP.el('span', {
+              class: 'mk-group',
+              text: 'group',
+              title: 'One of ' + (groupSizes.get(group) || 0) + ' grouped markups'
+            }) : null,
             RP.el('span', { text: 'p' + (annot.page + 1) }),
             // Open is the default and goes unmarked — badging every row of a
             // fresh review says nothing.
@@ -174,6 +191,7 @@
               hint: 'Ctrl+C',
               run: () => RP.edit.copy()
             },
+            ...RP.edit.groupMenuItems(),
             ...RP.edit.menuItems(annot.id)
           ]);
         });

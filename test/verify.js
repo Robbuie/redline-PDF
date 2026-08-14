@@ -1153,6 +1153,249 @@ function testArrange() {
   RP.store = saved;
 }
 
+/**
+ * Grouping.
+ *
+ * A group is one shared `group` string and nothing else, so almost every
+ * behaviour below is a consequence of the selection expanding rather than of a
+ * command: move, delete, status, style and copy all read the selection and none
+ * of them has heard of groups. What is checked here is therefore the expansion
+ * itself, the places that write into `store.selection` without going through it,
+ * and the two operations that duplicate markups — paste and duplicate-page —
+ * which have to hand the copy a group id of its own.
+ */
+function testGrouping() {
+  console.log('\nGrouping');
+
+  check('a missing group reads as none', RP.groupOf({ type: 'rect' }) === null);
+  check('an empty group string is no group', RP.groupOf({ group: '' }) === null);
+  check('a non-string group is no group', RP.groupOf({ group: 3 }) === null);
+
+  const store = RP.createStore();
+  const saved = RP.store;
+  RP.store = store;
+
+  store.load([
+    { page: 0, type: 'rect', x: 10, y: 100, w: 40, h: 20, color: '#f00', width: 2 },
+    { page: 0, type: 'rect', x: 100, y: 100, w: 40, h: 20, color: '#0f0', width: 2 },
+    { page: 0, type: 'rect', x: 200, y: 100, w: 40, h: 20, color: '#00f', width: 2 },
+    { page: 1, type: 'rect', x: 0, y: 0, w: 10, h: 10, color: '#fff', width: 1 }
+  ]);
+  const [a, b, c, other] = store.annotations;
+
+  // --- the command ----------------------------------------------------------
+  store.selection.add(a.id);
+  check('grouping needs two markups', RP.edit.group() === 0 && !RP.groupOf(a));
+
+  store.selection.add(other.id);
+  check('grouping across sheets is refused',
+    RP.edit.group() === 0 && !RP.groupOf(a) && !RP.groupOf(other));
+  check('the group menu is not offered across sheets',
+    RP.edit.groupMenuItems().length === 0);
+
+  store.selection.clear();
+  store.selection.add(a.id);
+  store.selection.add(b.id);
+  let depth = store.history.length;
+  check('grouping reports what it grouped', RP.edit.group() === 2);
+  check('grouping is one undo step', store.history.length === depth + 1);
+  check('a group is one shared id',
+    RP.groupOf(a) && RP.groupOf(a) === RP.groupOf(b), String(a.group));
+  check('grouping leaves the rest alone', !RP.groupOf(c));
+
+  // Already one whole group: nothing to do, and no dead history step for
+  // Ctrl+Z to walk back through.
+  depth = store.history.length;
+  check('regrouping the same set changes nothing', RP.edit.group() === 0);
+  check('a group that changed nothing leaves no history step',
+    store.history.length === depth, store.history.length - depth + ' checkpoints');
+
+  // --- selection expansion --------------------------------------------------
+  store.select(a.id);
+  check('selecting one member selects the group',
+    store.selection.size === 2 && store.selection.has(b.id));
+  store.select(c.id);
+  check('selecting a loose markup selects only it',
+    store.selection.size === 1 && store.selection.has(c.id));
+
+  /* Shift-click toggles a group as a unit, and the *clicked* markup decides
+     which way — reading each member's own state would let a group that somehow
+     disagreed invert into a different half of itself. */
+  store.selection.clear();
+  store.toggleSelect(a.id);
+  check('shift-clicking a member takes the whole group', store.selection.size === 2);
+  store.toggleSelect(b.id);
+  check('shift-clicking it again drops the whole group', store.selection.size === 0);
+
+  /* The marquee and Ctrl+A write into the selection without going through
+     `select`, which is exactly how a group gets half-selected and then dragged
+     apart. Both go through `addToSelection`. */
+  store.selection.clear();
+  store.addToSelection([a.id]);
+  check('adding one member adds the group',
+    store.selection.size === 2 && store.selection.has(b.id));
+
+  // --- moving and arranging -------------------------------------------------
+  store.selection.clear();
+  store.select(a.id);
+  for (const annot of store.selected()) RP.render.translate(annot, 5, -7);
+  check('a group moves as one thing',
+    a.x === 15 && b.x === 105 && a.y === 93 && b.y === 93, a.x + ',' + b.x);
+  for (const annot of store.selected()) RP.render.translate(annot, -5, 7);
+
+  // --- ungroup --------------------------------------------------------------
+  store.selection.clear();
+  check('ungrouping nothing is refused', RP.edit.ungroup() === 0);
+  store.select(a.id);
+  check('ungrouping frees every member', RP.edit.ungroup() === 2);
+  check('ungrouped markups carry no group', !RP.groupOf(a) && !RP.groupOf(b));
+  check('the group field is deleted, not blanked',
+    !('group' in a), JSON.stringify(Object.keys(a)));
+
+  // --- orphans --------------------------------------------------------------
+  /* A group of one is not a group: it would draw a frame around a single
+     markup, offer Ungroup on something that looks ungrouped, and ride into the
+     saved file for ever. Deleting part of a group is how you make one. */
+  store.selection.clear();
+  store.selection.add(a.id);
+  store.selection.add(b.id);
+  RP.edit.group();
+  store.remove([b.id]);
+  check('deleting all but one of a group ungroups the survivor', !RP.groupOf(a));
+  check('a group of one is dropped on load',
+    (() => {
+      const s = RP.createStore();
+      s.load([{ page: 0, type: 'rect', x: 0, y: 0, w: 1, h: 1, group: 'g1' }]);
+      return !RP.groupOf(s.annotations[0]);
+    })());
+
+  // --- the clipboard --------------------------------------------------------
+  // `b` was deleted by the orphan check above, so the group here is a + c.
+  store.selection.clear();
+  store.selection.add(a.id);
+  store.selection.add(c.id);
+  RP.edit.group();
+  const groupId = a.group;
+  store.select(a.id);
+  const keptRp = global.window.rp;
+  global.window.rp = { clipboard: { writeText: async () => {} } };
+  RP.edit.copy();
+  global.window.rp = keptRp;
+  check('the buffer keeps the grouping', RP.edit.buffer.annots.every((x) => x.group === groupId));
+
+  RP.edit.paste(0, [400, 400]);
+  const pasted = store.selected();
+  check('a paste is still one group',
+    pasted.length === 2 && RP.groupOf(pasted[0]) &&
+    RP.groupOf(pasted[0]) === RP.groupOf(pasted[1]));
+  /* Re-keyed, not carried across. A copy sharing the source's group id would
+     join the original's group, so dragging the copy would drag the markups it
+     was copied from — possibly on another sheet, or in another drawing. */
+  check('a pasted group is its own group', RP.groupOf(pasted[0]) !== groupId,
+    RP.groupOf(pasted[0]) + ' vs ' + groupId);
+  check('the source group is untouched', RP.groupOf(a) === groupId);
+
+  // One member copied on its own arrives loose — that is how a group of one
+  // would otherwise be made, and `store.load` would only have to undo it.
+  store.selection.clear();
+  store.selection.add(a.id);
+  global.window.rp = { clipboard: { writeText: async () => {} } };
+  RP.edit.copy();
+  global.window.rp = keptRp;
+  RP.edit.paste(0, [500, 500]);
+  check('half a group pastes as loose markups',
+    store.selected().every((x) => !RP.groupOf(x)));
+
+  // --- duplicating a page ---------------------------------------------------
+  /* `remapAnnotations` copies markups onto a duplicated sheet. Carrying the
+     group id would make one group span two pages, which nothing else in the
+     app can produce and a group drag would then act on invisibly. */
+  const dupSrc = [
+    { id: 'm1', page: 0, type: 'rect', x: 0, y: 0, w: 5, h: 5, group: 'gA' },
+    { id: 'm2', page: 0, type: 'rect', x: 9, y: 0, w: 5, h: 5, group: 'gA' }
+  ];
+  const duped = RP.pages.remapAnnotations(dupSrc, [0, 1], [{ from: 0, to: 1 }]);
+  const onOne = duped.filter((x) => x.page === 1);
+  check('a duplicated page keeps its markups grouped',
+    onOne.length === 2 && RP.groupOf(onOne[0]) === RP.groupOf(onOne[1]));
+  check('a duplicated page gets a group of its own',
+    RP.groupOf(onOne[0]) !== 'gA', String(onOne[0].group));
+
+  // --- the frame and the group resize --------------------------------------
+  /* The frame is built from `selectionRect`, so a callout is framed by its box
+     and not by the reach of its leader — six callouts pointing outward would
+     otherwise give the group a frame several times what was drawn. */
+  const framed = [
+    { type: 'rect', x: 0, y: 0, w: 10, h: 10 },
+    { type: 'callout', x: 40, y: 20, w: 20, h: 10, tipX: -500, tipY: -500, text: 'x' }
+  ];
+  const box = RP.render.groupBox(framed);
+  check('the group box ignores a callout leader',
+    box.x === 0 && box.y === 0 && box.w === 60 && box.h === 30, JSON.stringify(box));
+  check('a group has eight handles and no vertex or tip handles',
+    RP.render.groupHandles(box, stubViewport()).length === 8);
+
+  /* `fitToBox` cannot take the group's boxes directly — for a rect or a
+     callout it assigns `next` wholesale, so every boxed member would come out
+     filling the whole frame. Each member's own box is mapped through the group
+     transform first. */
+  const members = [
+    { type: 'rect', x: 0, y: 0, w: 10, h: 10 },
+    { type: 'rect', x: 30, y: 0, w: 10, h: 10 }
+  ];
+  const origs = members.map((m) => JSON.parse(JSON.stringify(m)));
+  const prev = RP.render.groupBox(origs);          // 0,0 40x10
+  RP.render.fitGroup(members, origs, prev, { x: 0, y: 0, w: 80, h: 20 });
+  check('a group resize scales every member',
+    members[0].w === 20 && members[1].w === 20 && members[0].h === 20,
+    JSON.stringify(members));
+  check('a group resize keeps the members apart',
+    members[1].x === 60, String(members[1].x));
+  check('no member is stretched to the whole frame',
+    members[0].w < 80, String(members[0].w));
+
+  // A note is a fixed-size pin, so a group resize moves it without giving it a
+  // width and a height that `bbox` would then contradict.
+  const pin = { type: 'note', x: 20, y: 20 };
+  const pinOrig = JSON.parse(JSON.stringify(pin));
+  RP.render.fitGroup([pin], [pinOrig], { x: 0, y: 0, w: 40, h: 40 }, { x: 0, y: 0, w: 80, h: 80 });
+  check('a group resize moves a note without sizing it',
+    pin.x === 40 && pin.w === undefined, JSON.stringify(pin));
+
+  // A callout's tip moves with a group resize — unlike a single resize, where
+  // it stays pinned to whatever it points at.
+  const call = { type: 'callout', x: 0, y: 0, w: 10, h: 10, tipX: 20, tipY: 0, text: '' };
+  const callOrig = JSON.parse(JSON.stringify(call));
+  RP.render.fitGroup([call], [callOrig], { x: 0, y: 0, w: 10, h: 10 }, { x: 0, y: 0, w: 20, h: 10 });
+  check('a group resize takes the callout leader with it',
+    call.tipX === 40, String(call.tipX));
+
+  // --- persistence ----------------------------------------------------------
+  const model = store.serialize();
+  check('the embedded model is at version 5', model.version === 5, String(model.version));
+  check('the model carries the group field',
+    model.annotations.some((x) => RP.groupOf(x)),
+    JSON.stringify(model.annotations.map((x) => x.group || null)));
+  const reopened = RP.createStore();
+  reopened.load(model.annotations);
+  const backGroups = new Set(reopened.annotations.map((x) => RP.groupOf(x)).filter(Boolean));
+  check('groups survive a round trip through the model', backGroups.size >= 1,
+    backGroups.size + ' group(s)');
+
+  RP.store = saved;
+}
+
+/** A viewport that does nothing but scale, for the pure geometry checks. */
+function stubViewport() {
+  return {
+    scale: 1,
+    width: 612,
+    height: 792,
+    convertToViewportPoint: (x, y) => [x, 792 - y],
+    convertToPdfPoint: (x, y) => [x, 792 - y]
+  };
+}
+
 function testMarkupStatus() {
   console.log('\nMarkup status');
 
@@ -1209,7 +1452,7 @@ function testMarkupStatus() {
     JSON.stringify(counts));
 
   const payload = store.serialize();
-  check('the embedded model declares version 4', payload.version === 4, 'version ' + payload.version);
+  check('the embedded model declares version 5', payload.version === 5, 'version ' + payload.version);
   check('status is part of the embedded model',
     payload.annotations.every((a) => typeof a.status === 'string'));
   check('the numbering spec is a document-level field, not a per-markup one',
@@ -4674,6 +4917,7 @@ async function pageLabel(bytes, index) {
     testTakeoff();
     testMarkupStatus();
     testArrange();
+    testGrouping();
     testHighlightGeometry();
     testTextSelection();
     testToolArming();

@@ -1,5 +1,25 @@
 # Roadmap
 
+## Done — v0.14
+
+- **Group markups** — a set that moves, styles, copies and deletes as one
+  thing, with a single frame and eight handles that scale everything inside it.
+  The model change turned out to be one field: `annot.group` is a string, and
+  markups sharing it are a group. A container annotation owning a list of
+  children would have needed keeping in step with delete, status, page remap,
+  extract, the exporter and the markup list, and would have round-tripped
+  through an older build as an unrecognised markup
+- The work was not the grouping but the **selection**: every route into
+  `store.selection` has to expand a group or it can be pulled apart by
+  accident, and the marquee, `Ctrl+A` and paste all wrote into the Set
+  directly. Three doors now — `select`, `toggleSelect`, `addToSelection`
+- Single-sheet by construction, so everything that duplicates a markup re-keys
+  the group: a pasted copy and a duplicated page each get one of their own, or
+  dragging the copy would move markups on a sheet that is not on screen
+- `RP.render.fitGroup` is the group resize. `fitToBox` could not be handed the
+  group's boxes directly — for a boxed type it assigns `next` wholesale, so
+  every member would have filled the frame
+
 ## Done — v0.13
 
 - **Themes** — five presets (dark, light, warm paper, blueprint, high
@@ -268,10 +288,13 @@ stored as embedded images so they export cleanly.
 **Markup depth**
 - Continuous/chained dimensions (deliberately out of scope for 25 — ship the
   shapes first)
-- **Group** markups, so a set moves and styles as one thing rather than as a
-  selection that has to be re-made (align, distribute and copy/paste landed in
-  0.11; grouping is the part that needs a model change)
-- Markup layers with show/hide, so trade markups can be toggled independently
+- Markup layers with show/hide, so trade markups can be toggled independently.
+  Grouping (0.14) put a per-markup string on the model and the machinery to
+  keep it consistent through paste, page ops and delete; a layer is the same
+  shape of field with a visibility list beside it, and the interesting part is
+  what a hidden markup means to hit-testing, the markup list, the exporter and
+  a print
+- Nested groups, if they ever turn out to be wanted. 0.14 is deliberately flat
 
 **Review workflow**
 - Import/export a markup-only file (`.rpmk`) to send comments without the drawing

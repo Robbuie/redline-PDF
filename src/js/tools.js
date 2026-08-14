@@ -565,6 +565,7 @@
         case 'create': this.updateDraft(drag, pdf, event); break;
         case 'move': this.updateMove(drag, pdf); break;
         case 'resize': this.updateResize(drag, local, pdf); break;
+        case 'groupresize': this.updateGroupResize(drag, local); break;
         case 'marquee': break;
         case 'textmarquee': break;
         case 'zoomrect': break;
@@ -584,7 +585,7 @@
       else if (drag.mode === 'textmarquee') this.finishTextMarquee(drag);
       else if (drag.mode === 'zoomrect') this.finishZoomRect(drag);
       else if (drag.mode === 'snapshot') this.finishSnapshot(drag);
-      else if (drag.mode === 'move' || drag.mode === 'resize') {
+      else if (drag.mode === 'move' || drag.mode === 'resize' || drag.mode === 'groupresize') {
         if ((drag.movedPx || 0) < CLICK_TOL && drag.mode === 'move') {
           // A plain click on an already-selected markup: keep the selection.
         }
@@ -595,6 +596,16 @@
         if (drag.mode === 'resize' && drag.annot && drag.annot.type === 'callout') {
           const fit = RP.render.fitCallout(drag.annot);
           if (fit.h > drag.annot.h) Object.assign(drag.annot, fit);
+        }
+        // Every callout in a resized group needs the same treatment, for the
+        // same reason: the box it was given is the one the group transform
+        // produced, not one its own text was measured for.
+        if (drag.mode === 'groupresize') {
+          for (const annot of drag.members || []) {
+            if (annot.type !== 'callout') continue;
+            const fit = RP.render.fitCallout(annot);
+            if (fit.h > annot.h) Object.assign(annot, fit);
+          }
         }
         RP.store.markDirty();
         RP.bus.emit('annots:changed', { reason: 'edit' });
@@ -608,7 +619,8 @@
     cancelDrag() {
       if (!this.drag) return;
       const record = this.drag.record;
-      if (this.drag.mode === 'move' || this.drag.mode === 'resize') RP.store.undo();
+      const mode = this.drag.mode;
+      if (mode === 'move' || mode === 'resize' || mode === 'groupresize') RP.store.undo();
       this.drag = null;
       RP.viewer.redrawPage(record.index);
     },
@@ -620,7 +632,33 @@
     beginSelectInteraction(record, event, pdf, local) {
       const store = RP.store;
 
-      // 1. resize handle of an already-selected markup?
+      /* 1. a handle on a selected group's frame?
+         Ahead of the per-markup handles, because a group's members do not draw
+         theirs — the frame is the only chrome on screen, so it has to be the
+         only thing that answers to a press on it. */
+      for (const group of store.selectedGroups(record.index)) {
+        const box = RP.render.groupBox(group.members);
+        for (const handle of RP.render.groupHandles(box, record.viewport)) {
+          if (Math.abs(handle.x - local.x) <= HANDLE_TOL && Math.abs(handle.y - local.y) <= HANDLE_TOL) {
+            store.checkpoint();
+            this.drag = {
+              mode: 'groupresize',
+              record,
+              members: group.members,
+              origs: group.members.map((a) => JSON.parse(JSON.stringify(a))),
+              handle: handle.id,
+              prevPdf: box,
+              prevView: RP.render.vpRect(record.viewport, box),
+              startLocal: local,
+              startPdf: pdf,
+              movedPx: 0
+            };
+            return;
+          }
+        }
+      }
+
+      // 1b. resize handle of an already-selected markup?
       for (const annot of store.selected()) {
         if (annot.page !== record.index) continue;
         for (const handle of RP.render.handlesFor(annot, record.viewport)) {
@@ -726,32 +764,75 @@
       if (drag.handle === 'p2') { annot.x2 = pdf[0]; annot.y2 = pdf[1]; return; }
       if (drag.handle === 'tip') { annot.tipX = pdf[0]; annot.tipY = pdf[1]; return; }
 
-      const prev = drag.prevView;
+      const view = this.resizeView(drag.prevView, drag.handle, local);
+      RP.render.fitToBox(annot, drag.orig, drag.prevPdf, this.viewToPdfBox(viewport, view));
+    },
+
+    /**
+     * Where the dragged handle puts the box, in *view* pixels.
+     *
+     * Shared by the single-markup resize and the group one so the two cannot
+     * disagree about what a corner handle does. The 4px floor is what stops a
+     * box being dragged inside out.
+     */
+    resizeView(prev, handleId, local) {
       let { x, y, w, h } = prev;
       const right = x + w;
       const bottom = y + h;
-      const id = drag.handle;
+      if (handleId.includes('w')) { x = Math.min(local.x, right - 4); w = right - x; }
+      if (handleId.includes('e')) { w = Math.max(4, local.x - x); }
+      if (handleId.includes('n')) { y = Math.min(local.y, bottom - 4); h = bottom - y; }
+      if (handleId.includes('s')) { h = Math.max(4, local.y - y); }
+      return { x, y, w, h };
+    },
 
-      if (id.includes('w')) { x = Math.min(local.x, right - 4); w = right - x; }
-      if (id.includes('e')) { w = Math.max(4, local.x - x); }
-      if (id.includes('n')) { y = Math.min(local.y, bottom - 4); h = bottom - y; }
-      if (id.includes('s')) { h = Math.max(4, local.y - y); }
-
+    /**
+     * A view-space rectangle as an axis-aligned PDF-space box.
+     *
+     * All four corners are converted rather than two, because the viewport
+     * carries the page's rotation: on a sheet plotted at /Rotate 90 the
+     * top-left of the box on screen is not the corner with the smallest
+     * coordinates in user space.
+     */
+    viewToPdfBox(viewport, r) {
       const corners = [
-        viewport.convertToPdfPoint(x, y),
-        viewport.convertToPdfPoint(x + w, y),
-        viewport.convertToPdfPoint(x + w, y + h),
-        viewport.convertToPdfPoint(x, y + h)
+        viewport.convertToPdfPoint(r.x, r.y),
+        viewport.convertToPdfPoint(r.x + r.w, r.y),
+        viewport.convertToPdfPoint(r.x + r.w, r.y + r.h),
+        viewport.convertToPdfPoint(r.x, r.y + r.h)
       ];
       const xs = corners.map((c) => c[0]);
       const ys = corners.map((c) => c[1]);
-      const next = {
+      return {
         x: Math.min.apply(null, xs),
         y: Math.min.apply(null, ys),
         w: Math.max.apply(null, xs) - Math.min.apply(null, xs),
         h: Math.max.apply(null, ys) - Math.min.apply(null, ys)
       };
-      RP.render.fitToBox(annot, drag.orig, drag.prevPdf, next);
+    },
+
+    /**
+     * Resize a whole group from one of its frame's handles.
+     *
+     * The frame is drawn `GROUP_PAD` outside the members, so the pad is added
+     * before the pointer maths and taken off afterwards. Doing it any other way
+     * shows: keep the pad and the group scales by the frame's factor rather
+     * than its own, which is visibly wrong on a small group; drop it and the
+     * box snaps inward by the pad the moment a handle is grabbed.
+     */
+    updateGroupResize(drag, local) {
+      const pad = RP.render.GROUP_PAD;
+      const framed = {
+        x: drag.prevView.x - pad, y: drag.prevView.y - pad,
+        w: drag.prevView.w + pad * 2, h: drag.prevView.h + pad * 2
+      };
+      const view = this.resizeView(framed, drag.handle, local);
+      const inner = {
+        x: view.x + pad, y: view.y + pad,
+        w: Math.max(1, view.w - pad * 2), h: Math.max(1, view.h - pad * 2)
+      };
+      RP.render.fitGroup(drag.members, drag.origs, drag.prevPdf,
+        this.viewToPdfBox(drag.record.viewport, inner));
     },
 
     finishMarquee(drag, event) {
@@ -759,9 +840,14 @@
       const rect = RP.geom.normRect(drag.startPdf[0], drag.startPdf[1], drag.pdf[0], drag.pdf[1]);
       const store = RP.store;
       if (!drag.additive) store.selection.clear();
-      for (const annot of store.forPage(drag.record.index)) {
-        if (RP.geom.rectsIntersect(rect, RP.render.bbox(annot))) store.selection.add(annot.id);
-      }
+      const swept = store.forPage(drag.record.index)
+        .filter((annot) => RP.geom.rectsIntersect(rect, RP.render.bbox(annot)))
+        .map((annot) => annot.id);
+      /* Through `addToSelection` rather than into the set directly, so a
+         marquee that clips one member of a group takes the whole group. Adding
+         the id alone would leave a partial selection that the next drag would
+         pull out of its own group. */
+      store.addToSelection(swept);
       RP.bus.emit('selection:changed');
       void event;
     },
@@ -1702,6 +1788,10 @@
           danger: true,
           run: () => RP.app.deleteSelection()
         } : null,
+        /* Group and Ungroup carry their own conditions and their own leading
+           separator, and come before Arrange because "these are one thing" is
+           the coarser decision — you group a set and *then* line it up. */
+        ...RP.edit.groupMenuItems(),
         /* Arranging needs at least two markups on one sheet, so `menuItems`
            returns nothing at all below that rather than a section of dead
            rows. It carries its own leading separator for the same reason. */

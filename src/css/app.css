@@ -674,6 +674,14 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 }
 .mk-status.closed { color: var(--good); }
 .mk-status.rejected { color: var(--warn); }
+/* The group badge sits above the page number in the same column. Derived from
+   --accent-rgb like every other tint, so it follows the accent picker. */
+.mk-meta .mk-group {
+  display: block; margin-bottom: 3px;
+  font-size: 9.5px; font-weight: 600;
+  letter-spacing: .4px; text-transform: uppercase;
+  color: rgba(var(--accent-rgb), .95);
+}
 .markup-row.st-closed .mk-type, .markup-row.st-rejected .mk-type { color: var(--txt-2); }
 .markup-row.st-rejected .mk-type { text-decoration: line-through; }
 .markup-row.st-closed .mk-dot, .markup-row.st-rejected .mk-dot { opacity: .45; }

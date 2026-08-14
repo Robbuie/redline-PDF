@@ -1289,6 +1289,14 @@
             RP.edit.paste(at ? at.page : null, at ? at.pdf : null);
             return;
           }
+          /* Group is Ctrl+Shift+G, not the Ctrl+G that every drawing tool
+             uses, because Ctrl+G has meant "go to page" here since 0.4 and is
+             in the cheat sheet, the README and people's hands. A shipped
+             navigation key is not worth reclaiming for a new command, and the
+             cost is one modifier. Ungroup is Ctrl+Shift+U for the same reason:
+             the conventional Ctrl+Shift+G is the group key here. */
+          if (key === 'g' && event.shiftKey) { event.preventDefault(); RP.edit.group(); return; }
+          if (key === 'u' && event.shiftKey) { event.preventDefault(); RP.edit.ungroup(); return; }
           if (key === 'g') { event.preventDefault(); this.focusPageInput(); return; }
           if (key === 'n' && event.shiftKey) { event.preventDefault(); this.cyclePaperMode(); return; }
           if (key === '0') { event.preventDefault(); RP.viewer.fitMode = null; RP.viewer.setZoom(1); return; }
@@ -1299,7 +1307,10 @@
           if (key === '-') { event.preventDefault(); RP.viewer.setZoom(RP.viewer.zoom / 1.2); return; }
           if (key === 'a' && !typing) {
             event.preventDefault();
-            for (const annot of RP.store.forPage(RP.viewer.currentPage)) RP.store.selection.add(annot.id);
+            // Through `addToSelection` like the marquee: a group whose members
+            // are all on this page is already whole, but one that reached off
+            // it would otherwise be half-selected by this key alone.
+            RP.store.addToSelection(RP.store.forPage(RP.viewer.currentPage).map((a) => a.id));
             RP.bus.emit('selection:changed');
             return;
           }
@@ -1693,7 +1704,15 @@
           .filter((key) => counts[key])
           .map((key) => counts[key] + ' ' + RP.STATUS_LABELS[key].toLowerCase())
           .join(', ');
-        node.textContent = selected.length + ' markups selected — ' + tally;
+        // Whether this is a group matters more than the tally does: it is what
+        // says a drag will move all of it, and it is not otherwise stated
+        // anywhere the eye is already looking.
+        const groups = RP.store.selectedGroups();
+        const whole = groups.reduce((n, g) => n + g.members.length, 0);
+        const what = groups.length && whole === selected.length
+          ? (groups.length === 1 ? 'Group of ' + selected.length : groups.length + ' groups, ' + selected.length + ' markups')
+          : selected.length + ' markups selected';
+        node.textContent = what + ' — ' + tally;
         node.title = '';
         return;
       }

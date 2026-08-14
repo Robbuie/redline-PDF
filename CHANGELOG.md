@@ -12,6 +12,43 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.14.0] — 2026-08-13
+
+### Added
+
+- **Group markups.** Select two or more on a sheet and press `Ctrl+Shift+G` —
+  or pick *Group* from the right-click menu — and they become one thing.
+  Clicking any of them selects all of them, and from there they move, recolour,
+  copy, paste and delete together. It is for the sets you build once and then
+  keep putting places: a detail bubble with its leader and its label, a
+  legend, a block of initials and a date. `Ctrl+Shift+U` breaks a group up
+  again.
+- **A group resizes as one.** It gets a single frame with eight handles rather
+  than a set of handles per markup; drag one and everything inside scales with
+  it, keeping the arrangement it was given. A callout's leader comes with it,
+  and a sticky note moves without changing size — a pin is a pin at any scale.
+- Grouped markups are badged in the Markups panel, and the status bar says
+  *Group of 6* rather than *6 markups selected*, so nothing selects more than
+  you expected without saying so first.
+
+### Changed
+
+- A marquee that clips one markup of a group now takes the whole group, as does
+  `Ctrl+A` and a click in the markup list. A group you could pull apart by
+  accident would not be worth having.
+
+### Notes
+
+- A group lives on one sheet. Grouping a selection that spans sheets is refused
+  rather than attempted — a group is dragged as a unit, and half of one on a
+  sheet you cannot see would move every time you nudged the half you could.
+- Copying a group and pasting it gives you a **separate** group, so the copy and
+  the original never move together. Copying only part of one gives you loose
+  markups, and duplicating a sheet gives the copy's markups a group of their
+  own.
+- Grouping is stored in the drawing and survives saving, re-opening and a
+  round trip through an older build of Redline PDF.
+
 ## [0.13.2] — 2026-08-13
 
 ### Changed

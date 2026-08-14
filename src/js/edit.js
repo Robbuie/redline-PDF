@@ -371,6 +371,110 @@
       return changed;
     },
 
+    // -----------------------------------------------------------------------
+    // Grouping
+    // -----------------------------------------------------------------------
+
+    /**
+     * Make the selection one group.
+     *
+     * Single sheet only, through the same `targets` gate as arranging and for
+     * the same reason: a group moves and resizes as one, and those are per-page
+     * coordinates. A group reaching onto a sheet you cannot see would drag
+     * markups there every time you nudged the half you could.
+     *
+     * A selection that already contains groups absorbs them into the new one
+     * rather than nesting — see the note in `store.js`. That is why this cannot
+     * short-circuit on "they are already grouped" without also checking that
+     * the group has nothing else in it: three markups of a group of five are a
+     * different group from the five.
+     */
+    group() {
+      const list = this.targets(2);
+      if (!list) return 0;
+      const store = RP.store;
+      const existing = new Set(list.map((a) => RP.groupOf(a)));
+      if (existing.size === 1 && !existing.has(null) &&
+          store.groupMembers(list[0].group).length === list.length) {
+        RP.status('Those markups are already one group');
+        return 0;
+      }
+      const id = RP.uid('grp');
+      store.checkpoint();
+      for (const annot of list) {
+        annot.group = id;
+        annot.modified = Date.now();
+      }
+      this.finish(list, list.length, 'Grouped');
+      return list.length;
+    },
+
+    /**
+     * Break every group in the selection back into loose markups.
+     *
+     * Selection always expands to whole groups, so this cannot half-ungroup
+     * one. It counts the markups it freed rather than the groups it dissolved,
+     * because that is the number the status line's "n markups" phrasing means
+     * everywhere else in this file.
+     */
+    ungroup() {
+      const store = RP.store;
+      const list = store.selected().filter((a) => RP.groupOf(a));
+      if (!list.length) {
+        RP.status('None of the selected markups are grouped', 'warn');
+        return 0;
+      }
+      store.checkpoint();
+      for (const annot of list) {
+        delete annot.group;
+        annot.modified = Date.now();
+      }
+      this.finish(list, list.length, 'Ungrouped');
+      return list.length;
+    },
+
+    /** True when `group()` would do something. */
+    canGroup() {
+      const store = RP.store;
+      if (store.selection.size < 2) return false;
+      const list = store.selected();
+      if (new Set(list.map((a) => a.page)).size > 1) return false;
+      const groups = new Set(list.map((a) => RP.groupOf(a)));
+      if (groups.size !== 1 || groups.has(null)) return true;
+      return store.groupMembers(list[0].group).length !== list.length;
+    },
+
+    canUngroup() {
+      return RP.store.selected().some((a) => RP.groupOf(a));
+    },
+
+    /**
+     * The Group / Ungroup rows, for the drawing's menu and the markup list's.
+     *
+     * Its own section rather than part of `menuItems`, because the two have
+     * different conditions: arranging needs two markups on one sheet, and
+     * Ungroup is offered on a group however it came to be selected. Returns
+     * nothing at all when neither applies, so a lone markup's menu does not
+     * grow a pair of dead rows.
+     */
+    groupMenuItems() {
+      const can = this.canGroup();
+      const canUn = this.canUngroup();
+      if (!can && !canUn) return [];
+      const rows = [{ separator: true }];
+      if (can) {
+        rows.push({
+          label: 'Group ' + RP.store.selection.size + ' markups',
+          hint: 'Ctrl+Shift+G',
+          run: () => this.group()
+        });
+      }
+      if (canUn) {
+        rows.push({ label: 'Ungroup', hint: 'Ctrl+Shift+U', run: () => this.ungroup() });
+      }
+      return rows;
+    },
+
     /**
      * Commit a bulk mutation: one dirty flag, one repaint, one message.
      *
@@ -476,6 +580,31 @@
       const target = page === undefined || page === null ? RP.viewer.currentPage : page;
       const clones = this.buffer.annots.map((a) => JSON.parse(JSON.stringify(a)));
       const { dx, dy } = this.pasteOffset(clones.map((a) => this.boxOf(a)), at);
+
+      /* Groups are re-keyed on the way out, the way identity is stripped on the
+         way in. A pasted copy carrying the source's group id would join the
+         original's group — so dragging the copy would drag the markups it was
+         copied from, on another sheet or in another drawing, and the two would
+         never come apart again. A copy is its own group.
+
+         Re-keyed rather than dropped, because the grouping *within* the copy is
+         the thing worth keeping: a stamp made of six markups pastes as one
+         thing, which is the case the whole feature exists for. */
+      const counts = new Map();
+      for (const clone of clones) {
+        const old = RP.groupOf(clone);
+        if (old) counts.set(old, (counts.get(old) || 0) + 1);
+      }
+      const regroup = new Map();
+      for (const clone of clones) {
+        const old = RP.groupOf(clone);
+        if (!old) continue;
+        // One member of a group copied on its own arrives as a loose markup,
+        // not as a group of one — copying part of a group is how you get one.
+        if (counts.get(old) < 2) { delete clone.group; continue; }
+        if (!regroup.has(old)) regroup.set(old, RP.uid('grp'));
+        clone.group = regroup.get(old);
+      }
 
       for (const clone of clones) {
         RP.render.translate(clone, dx, dy);

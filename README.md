@@ -502,6 +502,22 @@ drag; and the copy stays on the clipboard, so the next stamp needs no re-copy.
 Pasting into anything outside Redline PDF still gives you the markups' readings
 as text, one per line, for an email or an RFI.
 
+**Group markups.** Select two or more on a sheet and press **`Ctrl+Shift+G`**,
+or pick *Group* from the right-click menu. From then on they behave as one
+thing: clicking any of them selects all of them, they move together, they take a
+colour or a line weight together, and they copy, paste and delete together. The
+group gets a single frame with eight handles — drag one and everything inside
+scales with it, keeping its arrangement. `Ctrl+Shift+U` breaks it up again.
+
+A group lives on one sheet, which is what lets it be dragged safely; grouping a
+selection that spans sheets is refused rather than attempted. Grouping a
+selection that already contains groups makes one new group of the lot rather
+than nesting them. Copying a group and pasting it gives you a *separate* group,
+so the copy and the original never move together — and copying only part of one
+gives you loose markups. Delete all but one member and the survivor stops being
+a group of one. Grouping is one `Ctrl+Z`, and it is stored in the drawing, so it
+survives saving and re-opening.
+
 **Arrange several markups.** Select two or more on a sheet and right-click:
 
 | | |

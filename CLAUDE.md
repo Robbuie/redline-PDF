@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.13.2. See `README.md` for user-facing behaviour,
+PDF. Current version 0.14.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -795,6 +795,57 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   drawing the user cannot see, which is the worst outcome available. The markup
   list can select across pages, so this is reachable; `RP.edit.menuItems`
   returns nothing at all there rather than offering rows that fail.
+- **A group is one shared field, and every route into the selection has to
+  expand it.** `annot.group` is a string; markups carrying the same one are a
+  group and there is nothing else to it. A container annotation owning a list
+  of children would have to be kept in step with delete, status, page remap,
+  extract, the exporter and the markup list — six places a child can be
+  orphaned from a parent that still names it — and would round-trip through an
+  older build as an unrecognised markup, taking the grouping with it. A shared
+  field cannot be inconsistent because there is nothing for it to be
+  inconsistent *with*, and a build that has never heard of groups carries it
+  through untouched. `store.serialize()` is at version 5 for it. The model is
+  flat on purpose: grouping a selection that contains groups absorbs them
+  rather than nesting, because nesting turns "select this" into a question
+  about which level you meant. What the whole thing rests on is
+  `store.expandGroups`, and the failure mode is a route into `store.selection`
+  that skips it — the marquee, `Ctrl+A` and `edit.paste` all wrote into the
+  Set directly, and a half-selected group is one drag away from being pulled
+  apart. `select`, `toggleSelect` and `addToSelection` are the three doors;
+  nothing else may `selection.add` an id it did not just create.
+  `test/verify.js` covers all of them.
+- **A group is single-sheet, and everything that duplicates a markup re-keys
+  it.** Coordinates are per page and a group moves as a unit, so `edit.group`
+  refuses a selection spanning sheets through the same `targets` gate as
+  arranging. That invariant is what `edit.paste` and `pages.remapAnnotations`
+  are protecting: a pasted copy or a duplicated page carrying the source's
+  group id would put two sheets' markups in one group, and dragging the copy
+  would then move markups on a sheet that is not on screen. Both re-key rather
+  than drop, because the grouping *within* the copy is the case the feature
+  exists for. Copying part of a group, or deleting all but one member, leaves
+  a group of one — which is not a group, draws a frame around a single markup
+  and rides into the saved file for ever, so `store.dropOrphanGroups` runs on
+  `remove`, on `load` and after a page op.
+- **A group resize cannot hand `fitToBox` the group's own boxes.** For the
+  point-based types it maps coordinates and would be right, but for a rect, a
+  cover, a cloud or a callout it assigns `next` wholesale — so every boxed
+  member would come out filling the entire frame. `RP.render.fitGroup` maps
+  each member's own box through the group transform first and then calls
+  `fitToBox` with boxes that mean what it expects. Two cases needed adding
+  either way: a callout's tip *moves* here, unlike a single resize where it
+  stays pinned to what it points at, and `fitToBox` grew a `note` case because
+  a pin is a fixed size and the default branch would give it a `w` and an `h`
+  that `bbox` then contradicts. The frame is drawn `GROUP_PAD` outside its
+  members, so `updateGroupResize` adds the pad before the pointer maths and
+  takes it off after — keep it and the group scales by the frame's factor
+  rather than its own, drop it and the box snaps inward the moment a handle is
+  grabbed.
+- **Group is `Ctrl+Shift+G`, not `Ctrl+G`.** Every drawing tool uses `Ctrl+G`,
+  but it has meant "go to page" here since 0.4 and is in the cheat sheet, the
+  README and people's hands. Reclaiming a shipped navigation key for a new
+  command is not a trade worth making; the cost is one modifier. Ungroup is
+  `Ctrl+Shift+U` as a consequence, since the conventional `Ctrl+Shift+G` is
+  the group key here.
 - **The markup clipboard is internal *because* `Ctrl+C` already meant something
   else.** Copying markups has written their readings to the Windows clipboard,
   one per line, since 0.4 — that is the paste into an email or an RFI. Pasting

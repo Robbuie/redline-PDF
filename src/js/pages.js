@@ -201,14 +201,26 @@
   function remapAnnotations(annotations, map, clones) {
     const copies = [];
     for (const clone of clones || []) {
+      /* Groups are re-keyed per duplicated page, one map per clone. A copy
+         carrying the original's group id would put the two sheets' markups in
+         one group — and a group is single-sheet by construction, so dragging
+         the copy would move markups on the page it was duplicated from, which
+         is not on screen. Same reasoning as the paste in `edit.js`. */
+      const regroup = new Map();
       for (const annot of annotations) {
         if (annot.page !== clone.from) continue;
-        copies.push(Object.assign({}, annot, {
+        const copy = Object.assign({}, annot, {
           id: RP.uid('mk'),
           page: clone.to,
           created: Date.now(),
           modified: Date.now()
-        }));
+        });
+        const old = RP.groupOf(annot);
+        if (old) {
+          if (!regroup.has(old)) regroup.set(old, RP.uid('grp'));
+          copy.group = regroup.get(old);
+        }
+        copies.push(copy);
       }
     }
     const kept = annotations.filter((annot) => map[annot.page] >= 0);
@@ -522,6 +534,10 @@
       store.checkpoint();
       store.pageOrder = result.order;
       store.annotations = remapAnnotations(store.annotations, result.map, result.clones);
+      // Deleting a sheet can take all but one member of a group with it — only
+      // possible for a group that already reached across pages, which nothing
+      // here makes, but a file from another build could carry one.
+      store.dropOrphanGroups();
       store.selection.clear();
       if (options.select) this.selectRange(options.select(result));
       await this.reload(bytes, { focus: options.focus ? options.focus(result) : undefined });

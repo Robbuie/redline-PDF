@@ -1329,14 +1329,25 @@
          the number should cover it, the way it will on paper. This pane's store
          again, not `RP.store`: only one of two split drawings may be numbered. */
       RP.render.drawPageNumber(ctx, record.viewport, store, index);
+      /* A selected group gets one frame with one set of handles, so its
+         members' own chrome is suppressed — eight handles per markup times six
+         markups is not a thing anybody can aim at, and it would say the group
+         can be resized member by member, which it deliberately cannot. */
+      const groups = store.selectedGroups(index);
+      const framed = new Set();
+      for (const group of groups) for (const annot of group.members) framed.add(annot.id);
       for (const annot of store.forPage(index)) {
         RP.render.drawAnnotation(ctx, annot, record.viewport, {
-          selected: store.selection.has(annot.id),
+          selected: store.selection.has(annot.id) && !framed.has(annot.id),
           // This pane's store, not `RP.store`: a measurement is labelled
           // through its own document's calibration, and in a split the two
           // drawings do not share one.
           store
         });
+      }
+      // After the markups, or a member drawn later would paint over its frame.
+      for (const group of groups) {
+        RP.render.drawGroupSelection(ctx, RP.render.groupBox(group.members), record.viewport);
       }
       if (this.isActive()) {
         if (RP.search && RP.search.drawHits) RP.search.drawHits(ctx, record);

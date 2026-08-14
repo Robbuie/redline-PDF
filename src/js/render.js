@@ -910,6 +910,75 @@
   }
 
   // -------------------------------------------------------------------------
+  // Groups
+  // -------------------------------------------------------------------------
+
+  /**
+   * The box around a group, in PDF space.
+   *
+   * Built from `selectionRect`, not `bbox`, so it agrees with the chrome a
+   * single markup would have drawn: a callout is framed by its box and not by
+   * the reach of its leader, and six callouts pointing outward would otherwise
+   * give the group a frame several times the size of anything the user drew.
+   */
+  function groupBox(annots) {
+    const boxes = (annots || []).map((a) => selectionRect(a)).filter(Boolean);
+    return RP.geom.unionRect(boxes);
+  }
+
+  /* The frame is inset from its members by this much (CSS pixels) so it reads
+     as a box *around* the set rather than as another markup drawn on top of
+     the outermost one. Deliberately wider than the 3px a single selection
+     uses — the two have to be told apart at a glance. */
+  const GROUP_PAD = 7;
+
+  /**
+   * The eight handles on a group's frame.
+   *
+   * Corners and edge midpoints only: no per-member handles, and no `tip` even
+   * when the group contains a callout. A group is resized as a rectangle and
+   * every member is mapped into it, so there is nothing a member-level handle
+   * could mean that would not be a different command.
+   */
+  function groupHandles(box, viewport) {
+    if (!box) return [];
+    const r = vpRect(viewport, box);
+    const x = r.x - GROUP_PAD;
+    const y = r.y - GROUP_PAD;
+    const w = r.w + GROUP_PAD * 2;
+    const h = r.h + GROUP_PAD * 2;
+    return [
+      ['nw', x, y], ['n', x + w / 2, y], ['ne', x + w, y],
+      ['e', x + w, y + h / 2], ['se', x + w, y + h],
+      ['s', x + w / 2, y + h], ['sw', x, y + h], ['w', x, y + h / 2]
+    ].map(([id, hx, hy]) => ({ id, x: hx, y: hy }));
+  }
+
+  /**
+   * The frame itself. A solid line rather than the dashed one a single
+   * selection gets, because the two states have to be distinguishable while
+   * the drawing under them is arbitrary.
+   */
+  function drawGroupSelection(ctx, box, viewport) {
+    if (!box) return;
+    const r = vpRect(viewport, box);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#2f8fff';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.strokeRect(r.x - GROUP_PAD, r.y - GROUP_PAD, r.w + GROUP_PAD * 2, r.h + GROUP_PAD * 2);
+    ctx.fillStyle = '#ffffff';
+    for (const handle of groupHandles(box, viewport)) {
+      ctx.beginPath();
+      ctx.rect(handle.x - HANDLE / 2, handle.y - HANDLE / 2, HANDLE, HANDLE);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // -------------------------------------------------------------------------
   // Hit testing (PDF space, tolerance in PDF units)
   // -------------------------------------------------------------------------
 
@@ -1044,11 +1113,58 @@
         annot.y = next.y + next.h;
         annot.fontSize = Math.max(5, (orig.fontSize || 12) * ((sx + sy) / 2));
         break;
+      /* A sticky note is a pin of a fixed size, not a box: only its anchor
+         moves. Falling through to the default would give it a `w` and an `h`
+         that nothing reads and that `bbox` — which returns the fixed 16pt
+         square — would then contradict. Unreachable from a single selection,
+         which gives a note no handles at all, and reachable from a group
+         resize, which gives every member the same treatment. */
+      case 'note':
+        annot.x = mapX(orig.x || 0);
+        annot.y = mapY(orig.y || 0);
+        break;
       default:
         annot.x = next.x; annot.y = next.y;
         annot.w = Math.max(1, next.w); annot.h = Math.max(1, next.h);
         break;
     }
+  }
+
+  /**
+   * Resize a whole group: map every member from the group's old box into its
+   * new one.
+   *
+   * `fitToBox` cannot be handed the *group's* boxes directly. For the
+   * point-based types it maps coordinates and would be right, but for a rect,
+   * a cloud, a cover or a callout it assigns `next` wholesale — so every boxed
+   * member would come out filling the entire group frame. Each member's own
+   * box is therefore mapped through the group transform first, and `fitToBox`
+   * is called per member with boxes that mean what it expects them to mean.
+   *
+   * A callout's tip *does* move here, unlike a single resize where it stays
+   * pinned to whatever it points at: the whole group is being scaled, and a
+   * leader left behind would be pointing at a part of the drawing the group no
+   * longer covers.
+   *
+   * `origs` is a parallel array of pre-drag copies, because this reads geometry
+   * it is also writing — the same reason the single-markup resize keeps one.
+   */
+  function fitGroup(members, origs, prev, next) {
+    const sx = prev.w > 0.01 ? next.w / prev.w : 1;
+    const sy = prev.h > 0.01 ? next.h / prev.h : 1;
+    const mapX = (x) => next.x + (x - prev.x) * sx;
+    const mapY = (y) => next.y + (y - prev.y) * sy;
+    (members || []).forEach((annot, i) => {
+      const orig = (origs || [])[i];
+      if (!orig) return;
+      const was = selectionRect(orig);
+      const now = { x: mapX(was.x), y: mapY(was.y), w: was.w * sx, h: was.h * sy };
+      fitToBox(annot, orig, was, now);
+      if (annot.type === 'callout') {
+        annot.tipX = mapX(orig.tipX);
+        annot.tipY = mapY(orig.tipY);
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1192,9 +1308,14 @@
     drawAnnotation,
     drawSelection,
     handlesFor,
+    GROUP_PAD,
+    groupBox,
+    groupHandles,
+    drawGroupSelection,
     hitTest,
     translate,
-    fitToBox
+    fitToBox,
+    fitGroup
   };
 
 })(window.RP);
