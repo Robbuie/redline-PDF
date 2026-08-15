@@ -533,14 +533,110 @@ function showWindow() {
 // Printing
 // ---------------------------------------------------------------------------
 
+// How long to wait for the preview to become printable. The document load is
+// the slow part on a large sheet set; the plugin frame appears shortly after.
+const PREVIEW_LOAD_MS = 15000;   // document finishing loading
+const PREVIEW_PLUGIN_MS = 4000;  // the PDF frame appearing after that
+const PREVIEW_PAINT_MS = 250;    // one settle for the first paint
+
 /**
- * Hand the OS print dialog a webContents whose *top-level document is the PDF*.
- * That is the only way Chromium prints the vector content rather than a raster
- * of a page that happens to contain a PDF, which is why the preview window
- * loads the bytes directly instead of wrapping them in an <embed>.
+ * How many frames the preview holds below its main frame.
+ *
+ * Chromium does not make a PDF the top-level document even when the URL is one:
+ * it loads the PDF viewer and puts the PDF itself in a child frame. Counting
+ * that child is how we know the viewer has actually got the document, rather
+ * than being an empty shell that would print as a picture of itself.
  */
-function printPreviewWindow(win) {
-  if (!win || win.isDestroyed()) return Promise.resolve({ printed: false, reason: 'preview closed' });
+function previewSubframes(win) {
+  try {
+    const main = win.webContents.mainFrame;
+    if (!main) return 0;
+    const all = main.framesInSubtree || [];
+    return Math.max(0, all.length - 1);
+  } catch (err) {
+    return 0;
+  }
+}
+
+function previewFrameReport(win) {
+  try {
+    const main = win.webContents.mainFrame;
+    const all = (main && main.framesInSubtree) || [];
+    return 'loading=' + win.webContents.isLoading() +
+      ' frames=' + all.map((frame) => {
+        try { return frame.url || '(no url)'; } catch (err) { return '(gone)'; }
+      }).join(' | ');
+  } catch (err) {
+    return 'frames unreadable: ' + err.message;
+  }
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Resolve once the preview is showing the PDF rather than an empty viewer.
+ *
+ * This is the whole reason a print can come out blank or as a shrunken picture
+ * of the preview window. `ready-to-show` fires for the *viewer*, which is an
+ * ordinary web page, and the PDF arrives in a child frame some time after
+ * that — so a print issued on a timer races the document. What Chromium prints
+ * in that window is the viewer page itself: an empty sheet if nothing has
+ * painted, and a scaled raster of the viewport — page edges, toolbar,
+ * thumbnails and all — if it has. Both look like the app printed the wrong
+ * thing, and on a plotter both cost paper.
+ *
+ * Times out rather than waiting forever: not every Chromium build exposes the
+ * PDF as a child frame, and a preview that never prints would be worse than one
+ * that prints a little early.
+ */
+async function previewReady(win) {
+  const deadline = Date.now() + PREVIEW_LOAD_MS;
+  while (win && !win.isDestroyed() && win.webContents.isLoading()) {
+    if (Date.now() > deadline) return { ready: false, reason: 'still loading' };
+    await wait(60);
+  }
+  if (!win || win.isDestroyed()) return { ready: false, reason: 'preview closed' };
+
+  const pluginDeadline = Date.now() + PREVIEW_PLUGIN_MS;
+  while (!previewSubframes(win)) {
+    if (Date.now() > pluginDeadline) {
+      // Not fatal — print anyway, but say so, because this is the state the
+      // bad output comes out of and the log is the only way to see it.
+      logMain('warn', 'print preview: no PDF frame after load — ' + previewFrameReport(win));
+      return { ready: false, reason: 'no pdf frame' };
+    }
+    await wait(60);
+    if (!win || win.isDestroyed()) return { ready: false, reason: 'preview closed' };
+  }
+  await wait(PREVIEW_PAINT_MS);
+  return { ready: !!win && !win.isDestroyed(), reason: null };
+}
+
+/**
+ * Hand the OS print dialog a webContents that is showing the PDF.
+ *
+ * The window loads the bytes directly rather than wrapping them in an <embed>
+ * because Chromium prints a raster of the host page in that case. That still
+ * holds — but "the URL is a PDF" is not the same as "the PDF is on screen",
+ * which is what `previewReady` is for. `requireReady` refuses to open the
+ * dialog at all when the preview is not there yet; the automatic dialog uses
+ * it, the manual Ctrl+P does not, since by then the user has seen the page.
+ */
+async function printPreviewWindow(win, options) {
+  const opts = options || {};
+  if (!win || win.isDestroyed()) return { printed: false, reason: 'preview closed' };
+
+  const state = await previewReady(win);
+  if (!win || win.isDestroyed()) return { printed: false, reason: 'preview closed' };
+  if (!state.ready) {
+    logMain('warn', 'print preview not ready (' + state.reason + '): ' + previewFrameReport(win));
+    if (opts.requireReady) return { printed: false, reason: state.reason };
+  }
+
+  // What the window held when the job went out. A print that comes out wrong
+  // cannot be inspected after the fact, so this is the only record of it.
+  logMain('info', 'print dialog: ' + previewFrameReport(win));
+
   return new Promise((resolve) => {
     try {
       win.webContents.print({ silent: false, printBackground: true }, (printed, reason) => {
@@ -623,11 +719,13 @@ function openPrintPreview(bytes, name, options) {
     clear();
   });
 
-  // The PDF viewer rewrites document.title to the filename; put ours back.
+  // The PDF viewer rewrites document.title to the filename; put ours back. The
+  // hint is a field rather than a literal because the automatic dialog may have
+  // stood down, and that message has to survive the viewer retitling the page.
+  let hint = 'Ctrl+P to print, Esc to close';
   const retitle = () => {
     if (printWindow && !printWindow.isDestroyed()) {
-      printWindow.setTitle('Print preview — ' + (name || 'document.pdf') +
-        '   ·   Ctrl+P to print, Esc to close');
+      printWindow.setTitle('Print preview — ' + (name || 'document.pdf') + '   ·   ' + hint);
     }
   };
   printWindow.on('page-title-updated', (event) => { event.preventDefault(); retitle(); });
@@ -645,9 +743,19 @@ function openPrintPreview(bytes, name, options) {
     printWindow.show();
     printWindow.focus();
     // Jumping straight to the OS dialog is what people expect from Ctrl+P;
-    // the preview stays behind it so they can check before committing.
+    // the preview stays behind it so they can check before committing. It waits
+    // for the PDF to actually be in the window, though — `ready-to-show` is the
+    // *viewer* being ready, and printing before the document lands is what sent
+    // blank sheets and pictures of the preview to the plotter.
     if (opts.autoDialog !== false) {
-      setTimeout(() => printPreviewWindow(printWindow), 250);
+      const target = printWindow;
+      printPreviewWindow(target, { requireReady: true }).then((result) => {
+        if (result && !result.printed && result.reason && result.reason !== 'cancelled' &&
+            target === printWindow && target && !target.isDestroyed()) {
+          hint = 'the drawing is still arriving — press Ctrl+P once it shows';
+          retitle();
+        }
+      });
     }
   });
 

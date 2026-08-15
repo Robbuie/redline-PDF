@@ -3564,6 +3564,29 @@ async function testPrinting() {
   check('markups-off starts from bytes with no stamps left in them',
     (await RP.exporter.readEmbeddedMarkup(stripped)) === null &&
     strippedDoc.getPageCount() === 2);
+
+  /* The preview window is the other half of printing, and the half that cannot
+     be tested by reading bytes. Chromium does not make a PDF the top-level
+     document even when the URL is one — it loads its viewer and puts the PDF in
+     a child frame — so a print issued before that frame lands prints the viewer
+     instead: a blank sheet if nothing has painted, a shrunken picture of the
+     window if it has. `ready-to-show` is the viewer, not the drawing, so the
+     automatic dialog must wait on the frame rather than on a timer. */
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  check('the automatic print dialog is not fired off a bare timer',
+    !/setTimeout\(\s*\(\)\s*=>\s*printPreviewWindow/.test(mainSrc));
+  check('printing waits for the preview to be showing the PDF',
+    /await previewReady\(win\)/.test(mainSrc) &&
+    /framesInSubtree/.test(mainSrc));
+  check('the automatic dialog stands down rather than printing early',
+    /printPreviewWindow\(target,\s*\{\s*requireReady:\s*true\s*\}\)/.test(mainSrc) &&
+    /opts\.requireReady/.test(mainSrc));
+  check('a print that went out wrong leaves something in the log',
+    /logMain\('info',\s*'print dialog: '/.test(mainSrc));
+  /* Bounded, or a viewer that never exposes a child frame would be a preview
+     that never prints — worse than one that prints a little early. */
+  check('the wait for the PDF frame is bounded',
+    /PREVIEW_PLUGIN_MS/.test(mainSrc) && /PREVIEW_LOAD_MS/.test(mainSrc));
 }
 
 /* ---------------------------------------------------------------------------

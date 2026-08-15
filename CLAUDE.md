@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.16.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.16.1. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -366,6 +366,29 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   prints a raster of the host page in that case. Print is therefore issued via
   `printWindow.webContents.print({silent: false})` and the window's chrome is a
   native `Menu`, not markup.
+- **"The URL is a PDF" is not "the PDF is on screen", and printing the gap
+  between them is what put blank sheets and pictures of the preview window on
+  the plotter.** Chromium does not make a PDF the top-level document even when
+  the URL is one: it loads its own viewer — an ordinary web page — and puts the
+  PDF itself in a *child frame*. So `ready-to-show` is the viewer being ready
+  and says nothing about the drawing, and the 250ms timer the automatic dialog
+  used to run on was racing a document that on a large sheet set had not
+  arrived. What `webContents.print()` prints in that window is the viewer page:
+  an empty sheet when nothing has painted, and a scaled raster of the viewport
+  — page edges, toolbar, thumbnails and all — when it has. Both read as the app
+  printing the wrong drawing rather than as a race, which is what made this
+  expensive; it is also intermittent by construction, so a small file prints
+  correctly all day. `previewReady` therefore waits for the load to finish and
+  then for a frame to appear below the main one, and the automatic dialog
+  passes `requireReady` so that it stands down rather than printing early —
+  paper on a plotter costs money, and a wrong print cannot be inspected
+  afterwards, which is why every dialog now logs what the window held. The wait
+  is **bounded** (`PREVIEW_LOAD_MS`, `PREVIEW_PLUGIN_MS`): not every Chromium
+  build has to expose the PDF as a child frame, and a preview that never prints
+  would be worse than one that prints a little early, so a timeout falls back
+  to the old behaviour rather than to nothing. Manual `Ctrl+P` does not require
+  readiness — by then the user has seen the page. `test/verify.js` covers all
+  of it.
 - **Print copies use `{embed: false}`** so they never carry the `RedlineMarkup`
   catalog entry. A print is a dead end, not a save, and embedding the model in
   one would put a re-editable file into circulation that nobody saved.

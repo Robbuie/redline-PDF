@@ -12,6 +12,24 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.16.1] — 2026-08-14
+
+### Fixed
+
+- **Printing sometimes sent a blank sheet, or a shrunken picture of the print
+  preview window, to the printer.** The preview opens and the print dialog
+  follows a moment later — but on a large drawing the sheet had not always
+  arrived in the preview by then, and what went to the printer was the empty
+  preview *window* rather than the drawing: a blank page, or the whole window
+  scaled down onto one sheet with two pages side by side and the viewer's own
+  thumbnails printed along with them. The dialog now waits until the drawing is
+  actually in the preview. If it is taking an unusual amount of time the dialog
+  stands down rather than printing something wrong, and the preview's title bar
+  says to press `Ctrl+P` once the drawing shows.
+- The state of the preview is written to the log file each time the print
+  dialog opens, so a print that still comes out wrong can be diagnosed from
+  `%APPDATA%/Redline PDF/redline-pdf.log` rather than from memory.
+
 ## [0.16.0] — 2026-08-13
 
 ### Added
