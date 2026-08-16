@@ -12,6 +12,33 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.17.0] — 2026-08-15
+
+### Added
+
+- **Straighten pages** — for a set that came in with sheets upside down or on
+  their side. In the **Pages** panel under ⋯, or on the right-click menu over
+  any sheet. It reads the text on each page, works out which way that page
+  actually reads, and lists what it found — *"Page 4 is upside down. Pages 7–9
+  are sideways."* — before turning anything. Nothing happens until you confirm,
+  and `Ctrl+Z` undoes the lot. With pages selected in the panel it works on the
+  selection; otherwise on the whole document.
+  - It reads the drawing's text layer, so a **scanned sheet with no text is
+    reported as one it could not read and is left alone** rather than guessed
+    at. So is a page where the text does not clearly agree on a direction.
+  - A landscape sheet plotted the ordinary way is already the right way up and
+    is left alone — being stored portrait-plus-rotation is not the same thing
+    as being sideways.
+- **Rotate the sheet you are looking at**, without going to the Pages panel and
+  finding it first. `Ctrl+]` and `Ctrl+[` turn the current page right and left;
+  right-clicking a sheet offers *Rotate page right*, *Rotate page left* and
+  *Turn page over*. These turn the **page**, so the rotation is in the saved
+  file — the toolbar's ↻ still turns your view only.
+- **Turn page over** in the Pages panel's right-click menu, for the
+  upside-down case that used to take two clicks of *Rotate right*.
+
+---
+
 ## [0.16.1] — 2026-08-14
 
 ### Fixed

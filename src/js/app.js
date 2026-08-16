@@ -1298,6 +1298,17 @@
           if (key === 'g' && event.shiftKey) { event.preventDefault(); RP.edit.group(); return; }
           if (key === 'u' && event.shiftKey) { event.preventDefault(); RP.edit.ungroup(); return; }
           if (key === 'g') { event.preventDefault(); this.focusPageInput(); return; }
+          /* Turn the *page*, not the view — the fix for a sheet that came in
+             sideways, from wherever you happen to be reading it. Behind the
+             dialog guard like the navigation keys: rotating a sheet you
+             cannot see is movement the user did not ask for. */
+          if ((key === '[' || key === ']') && !typing) {
+            event.preventDefault();
+            if (this.navigationBlocked()) return;
+            const turn = key === ']' ? 90 : -90;
+            RP.pages.run(() => RP.pages.rotatePages([RP.viewer.currentPage], turn));
+            return;
+          }
           if (key === 'n' && event.shiftKey) { event.preventDefault(); this.cyclePaperMode(); return; }
           if (key === '0') { event.preventDefault(); RP.viewer.fitMode = null; RP.viewer.setZoom(1); return; }
           if (key === '1') { event.preventDefault(); RP.viewer.fitWidth(); return; }

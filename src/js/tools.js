@@ -1825,6 +1825,33 @@
           run: () => this.createNote(record, pdf)
         },
         { separator: true },
+        /* Rotating the sheet you are looking at, without going through the
+           Pages panel to find and select it first. These turn the *page*, so
+           the rotation is in the saved file — unlike the toolbar's rotate
+           button, which only turns the view. Named pages rather than the
+           selection: the press landed on this sheet, and the Pages panel may
+           well have a different one picked. Wrapped in `RP.pages.run` because
+           these do not go through `RP.pages.openMenu`, which is where the
+           busy guard usually comes from. */
+        {
+          label: 'Rotate page right',
+          hint: 'Ctrl+]',
+          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 90))
+        },
+        {
+          label: 'Rotate page left',
+          hint: 'Ctrl+[',
+          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], -90))
+        },
+        {
+          label: 'Turn page over',
+          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 180))
+        },
+        {
+          label: 'Straighten pages…',
+          run: () => RP.pages.run(() => RP.pages.straightenPages())
+        },
+        { separator: true },
         {
           label: 'Print…',
           hint: 'Ctrl+P',

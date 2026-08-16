@@ -295,6 +295,103 @@ async function testPageManagement() {
   check('rotating twice more comes back to zero',
     ops.rotate(ops.rotate(rot.order, [0], 90).order, [0], 90).order[0].rot === 90);
 
+  // --- each page turned by its own amount -----------------------------------
+  // Straightening a set needs this: one sheet is upside down and the next is
+  // on its side, so one shared delta would fix one and break the other.
+  const turned = ops.turn(order, new Map([[0, 180], [2, 90]]));
+  check('turn gives each page its own delta and leaves the rest alone',
+    turned.order.map((item) => item.rot).join(',') === '180,0,90,0',
+    turned.order.map((item) => item.rot).join(','));
+  check('turn accepts a plain object as well as a Map',
+    ops.turn(order, { 1: 270 }).order.map((item) => item.rot).join(',') === '0,270,0,0');
+  check('turn adds to a rotation already on the descriptor',
+    ops.turn(turned.order, new Map([[0, 180]])).order[0].rot === 0);
+
+  // --- which way up a page reads --------------------------------------------
+  /* `getTextContent` reports a run's matrix in unrotated user space, so the
+     first two cells are its reading direction there. `/Rotate` is applied
+     after the content stream, so what the reader sees is that direction
+     turned clockwise by the page rotation. */
+  const runsAt = (heading, text, copies) => {
+    const rad = heading * Math.PI / 180;
+    const out = [];
+    for (let i = 0; i < (copies === undefined ? 1 : copies); i += 1) {
+      out.push({
+        str: text,
+        transform: [10 * Math.cos(rad), 10 * Math.sin(rad), -10 * Math.sin(rad), 10 * Math.cos(rad), 0, 0]
+      });
+    }
+    return out;
+  };
+  const orientationOf = RP.pages.orientationOf;
+  const bodyText = 'PANEL SCHEDULE FEEDER CONDUIT';
+
+  const upright = orientationOf(runsAt(0, bodyText, 4), 0);
+  check('an upright page needs no correction',
+    upright && upright.displayed === 0 && upright.delta === 0);
+
+  const over = orientationOf(runsAt(180, bodyText, 4), 0);
+  check('an upside-down page asks for 180°',
+    over && over.displayed === 180 && over.delta === 180, over && String(over.delta));
+
+  const onSide = orientationOf(runsAt(90, bodyText, 4), 0);
+  check('a page whose text runs up the sheet asks for 90°',
+    onSide && onSide.displayed === 270 && onSide.delta === 90, onSide && String(onSide.delta));
+
+  /* The one that matters most: a landscape sheet plotted the ordinary way is
+     stored portrait with /Rotate 90 and its text laid along +y in user space.
+     It displays perfectly and must not be "straightened" — reading the user
+     space heading alone and ignoring /Rotate would turn every plotted sheet
+     in the set. */
+  const plotted = orientationOf(runsAt(90, bodyText, 4), 90);
+  check('a correctly plotted /Rotate 90 landscape sheet is left alone',
+    plotted && plotted.displayed === 0 && plotted.delta === 0,
+    plotted && String(plotted.delta));
+  const plottedOver = orientationOf(runsAt(270, bodyText, 4), 90);
+  check('an upside-down landscape sheet is still caught',
+    plottedOver && plottedOver.delta === 180, plottedOver && String(plottedOver.delta));
+
+  // The correction has to actually cancel, at every angle and every rotation.
+  const cancels = [];
+  for (const heading of [0, 90, 180, 270]) {
+    for (const rotation of [0, 90, 180, 270]) {
+      const read = orientationOf(runsAt(heading, bodyText, 4), rotation);
+      const after = read && orientationOf(runsAt(heading, bodyText, 4), rotation + read.delta);
+      if (!after || after.displayed !== 0) cancels.push(heading + '/' + rotation);
+    }
+  }
+  check('the correction leaves the page upright at every angle',
+    !cancels.length, cancels.join(' '));
+
+  check('a page with too little text says so rather than guessing',
+    orientationOf(runsAt(180, 'A1', 1), 0) === null);
+  check('a page with no text layer at all says so',
+    orientationOf([], 0) === null && orientationOf(null, 0) === null);
+  check('an even split between two headings is refused',
+    orientationOf(runsAt(0, bodyText, 3).concat(runsAt(90, bodyText, 3)), 0) === null);
+  check('a clear majority still decides, mixed text and all',
+    (orientationOf(runsAt(180, bodyText, 5).concat(runsAt(90, bodyText, 1)), 0) || {}).delta === 180);
+  /* Weighted by characters, not by run: a title block is a few long runs and a
+     schedule is hundreds of short ones, and one vote each would let the
+     schedule outvote the drawing it annotates. */
+  check('runs are weighted by how much text they carry',
+    (orientationOf(runsAt(0, 'A', 12).concat(runsAt(180, bodyText, 2)), 0) || {}).delta === 180);
+  check('text laid on the diagonal counts against confidence, not for a quarter',
+    orientationOf(runsAt(40, bodyText, 4), 0) === null);
+  check('a run of pure whitespace is ignored entirely',
+    orientationOf(runsAt(0, '     ', 20).concat(runsAt(180, bodyText, 2)), 0).delta === 180);
+
+  // --- page numbers as a reader would write them ----------------------------
+  const describePages = RP.pages.describePages;
+  check('one page reads as one number', describePages([3]) === '4');
+  check('two pages read as a pair, not a range', describePages([3, 4]) === '4 and 5');
+  check('three or more in a row collapse to a range',
+    describePages([2, 3, 4]) === '3–5');
+  check('runs and singletons mix, sorted and de-duplicated',
+    describePages([11, 6, 7, 8, 3, 3]) === '4, 7–9 and 12',
+    describePages([11, 6, 7, 8, 3, 3]));
+  check('no pages reads as nothing', describePages([]) === '');
+
   const ins = ops.insert(order, 2, ops.blank(612, 792));
   check('a blank page pushes the pages after it along',
     ins.order.length === 5 && ins.order[2].blank.w === 612 &&
@@ -350,6 +447,50 @@ async function testPageManagement() {
       first.items.map((i) => i.str).join('').trim());
     check('pdf.js reads the rebuilt rotation off page 2',
       (await parsed.getPage(2)).rotate === 90);
+
+    /* The orientation checks above feed `orientationOf` matrices this file
+       made up. This one builds real pages, reads them back through pdf.js and
+       asks the same question of what pdf.js actually emits — which is the half
+       that cannot be reasoned about, since the sign and the space of
+       `item.transform` are pdf.js's business and have changed across majors. */
+    const oriented = await PDFLib.PDFDocument.create();
+    const orientFont = await oriented.embedFont(PDFLib.StandardFonts.Helvetica);
+    const orientCases = [
+      // label, page /Rotate, the angle the text was plotted at, the correction
+      ['an upright portrait sheet', 0, 0, 0],
+      ['an upside-down portrait sheet', 0, 180, 180],
+      ['a portrait sheet lying on its side', 0, 90, 90],
+      ['a portrait sheet on its other side', 0, 270, 270],
+      // The one that matters: this is how every landscape drawing is plotted.
+      ['a landscape sheet plotted the ordinary way', 90, 90, 0],
+      ['a landscape sheet plotted upside down', 90, 270, 180],
+      ['a landscape sheet at /Rotate 270', 270, 270, 0]
+    ];
+    for (const [, rotate, plotted] of orientCases) {
+      const sheet = oriented.addPage([612, 792]);
+      sheet.setRotation(PDFLib.degrees(rotate));
+      for (let i = 0; i < 6; i += 1) {
+        sheet.drawText('PANEL SCHEDULE FEEDER CONDUIT RISER', {
+          x: 200, y: 200 + i * 20, size: 10, font: orientFont, rotate: PDFLib.degrees(plotted)
+        });
+      }
+    }
+    const orientDoc = await pdfjs.getDocument({
+      data: new Uint8Array(await oriented.save()), useWorkerFetch: false, isEvalSupported: false
+    }).promise;
+    const orientBad = [];
+    for (let i = 0; i < orientCases.length; i += 1) {
+      const [label, , , want] = orientCases[i];
+      const sheet = await orientDoc.getPage(i + 1);
+      const read = RP.pages.orientationOf((await sheet.getTextContent()).items, sheet.rotate || 0);
+      const got = read ? read.delta : null;
+      check('orientation off a real PDF: ' + label,
+        got === want, 'wants ' + want + '°, got ' + got + '°');
+      const after = read && RP.pages.orientationOf(
+        (await sheet.getTextContent()).items, (sheet.rotate + read.delta) % 360);
+      if (!after || after.displayed !== 0) orientBad.push(label);
+    }
+    check('and the correction leaves each of them upright', !orientBad.length, orientBad.join('; '));
   }
 
   // --- a page edit on an already-saved file must not double-stamp ------------
@@ -3920,6 +4061,34 @@ function testChrome() {
     /RP\.menu\.isOpen\(\)/.test(app));
   check('the navigation guard wraps the page keys too',
     app.indexOf('if (!this.navigationBlocked())') < app.indexOf("event.key === 'PageDown'"));
+
+  // --- rotating the sheet you are looking at --------------------------------
+  /* These turn the *page*, so the rotation is in the saved file — the toolbar
+     button next to them turns only the view. Both go through `rotatePages`
+     rather than `rotateSelected`: the key means the sheet on screen, and the
+     Pages panel may well have a different one picked. */
+  check('Ctrl+[ and Ctrl+] rotate the current page',
+    /key === '\['[\s\S]{0,400}RP\.pages\.rotatePages\(\[RP\.viewer\.currentPage\]/.test(app) &&
+    /const turn = key === '\]' \? 90 : -90/.test(app));
+  check('page rotation is refused behind a dialog like the navigation keys',
+    /key === '\[' \|\| key === '\]'[\s\S]{0,200}navigationBlocked\(\)/.test(app));
+  check('page rotation goes through the page busy guard',
+    /RP\.pages\.run\(\(\) => RP\.pages\.rotatePages/.test(app) &&
+    /RP\.pages\.run\(\(\) => RP\.pages\.rotatePages/.test(tools));
+  check('the viewer context menu offers rotate, turn over and straighten',
+    /label: 'Rotate page right'/.test(tools) && /label: 'Rotate page left'/.test(tools) &&
+    /label: 'Turn page over'/.test(tools) && /label: 'Straighten pages…'/.test(tools));
+  const pagesSrc = fs.readFileSync(path.join(ROOT, 'src', 'js', 'pages.js'), 'utf8');
+  check('straightening is offered from the Pages panel too',
+    /Straighten pages…/.test(pagesSrc) && /straightenPages\(/.test(pagesSrc));
+  /* Applied on confirmation, never silently: it rewrites the drawing, and a
+     page turned that was already right is work the user then has to undo. */
+  check('straightening asks before it turns anything',
+    /straightenPages\(indices\)[\s\S]{0,4000}window\.rp\.dialog\.message\([\s\S]{0,400}buttons: \['Straighten', 'Cancel'\]/.test(pagesSrc));
+  /* The scan is a long await and the user can switch tabs across it. Same
+     reasoning as `App.save` capturing its store before the first await. */
+  check('a tab switch during the scan abandons it rather than turning the wrong drawing',
+    /RP\.status\('Reading page orientation[\s\S]{0,1200}if \(RP\.store !== store\)/.test(pagesSrc));
   check('the text layer is reachable under the select tool',
     /body\[data-tool="select"\]\s+\.page\s+\.ink-layer\s*\{[^}]*pointer-events:\s*none/.test(css));
   // Without this the browser paints a text selection behind every marquee.

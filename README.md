@@ -384,7 +384,9 @@ The **Pages** panel is now a page manager, not just a set of thumbnails.
 | Reorder | Drag the thumbnails — a line shows where they will land |
 | Insert a blank page | Toolbar ⊕, dropped in after the selection at the same sheet size |
 | Duplicate | Toolbar ⧉ — the copy brings that page's markups with it |
-| Rotate | Toolbar ↺ / ↻, in 90° steps, applied to the page itself |
+| Rotate | Toolbar ↺ / ↻, in 90° steps, applied to the page itself — or `Ctrl+[` / `Ctrl+]` for the sheet on screen |
+| Turn over | Right-click a page → **Turn page over**, for one that came in upside down |
+| Straighten | Toolbar ⋯ → **Straighten pages…** — finds the sheets that are sideways or upside down and turns them back |
 | Extract | Toolbar ⇱ — writes the selected pages out as their own PDF, markups included and still editable |
 | Delete | Toolbar 🗑 or `Del` while the panel has focus |
 | Insert from another PDF | Toolbar ⋯ — choose a file, a page range and where it goes |
@@ -409,7 +411,31 @@ memory for as long as this drawing is open, which is what lets `Ctrl+Z` and
 
 Rotating a page turns the page itself, so the rotation is in the saved file and any
 viewer shows it. That is different from the toolbar's rotate button, which only
-turns your view.
+turns your view. Right-clicking a sheet in the main view rotates that sheet without
+a trip to the panel, and `Ctrl+]` / `Ctrl+[` do the same for the page on screen.
+
+**Straighten pages…** (toolbar ⋯, or the right-click menu over a sheet) is for a
+set that arrived with pages on their side or upside down. It reads the text on
+each page to work out which way that page actually reads, then tells you what it
+found before turning anything:
+
+> Straighten 4 pages?
+> Page 4 is upside down. Pages 7–9 are sideways.
+> 2 pages have no text this could read, and were left alone.
+> Markups turn with their sheets. Ctrl+Z undoes this.
+
+Two things it deliberately does not do. It does not guess from the picture, so a
+**scanned sheet with no text layer is reported as one it could not read** rather
+than turned on a hunch — the cost of straightening a page that was already right
+is a drawing you now have to fix by hand. And it leaves a page alone when its text
+does not clearly agree on a direction, which is the usual case for a sheet that is
+mostly vertical dimension strings. A landscape drawing plotted the ordinary way —
+stored portrait with a rotation on it — displays correctly and is left alone; that
+is not the same thing as being sideways.
+
+With pages selected in the panel it works on the selection, otherwise on the whole
+document. On a long sheet set the scan takes a moment per page; the status bar
+counts it out.
 
 ---
 
@@ -522,14 +548,16 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 | | | | `F11` | Presentation mode |
 | | | | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste markups |
 | | | | `Ctrl+Shift+N` | Cycle paper display |
-| `Ctrl+Tab` | Next tab | | `?` | Show every shortcut |
-| `Alt+1`…`Alt+9` | Jump to a tab | | `Ctrl+Shift+D` | Diagnostics |
+| `Ctrl+Tab` | Next tab | | `Ctrl+]` / `Ctrl+[` | Rotate this **page** right / left |
+| `Alt+1`…`Alt+9` | Jump to a tab | | `?` | Show every shortcut |
+| | | | `Ctrl+Shift+D` | Diagnostics |
 
 Press **`?`** at any time for the full list, grouped by what you are trying to do.
 
 **Right-click anywhere on a drawing** for copy text, copy an area or the page as
-an image, markup properties, copy/cut/paste markups, delete, "add note here" and
-print. Right-click a page thumbnail for the page operations.
+an image, markup properties, copy/cut/paste markups, delete, "add note here",
+rotating or straightening the sheet, and print. Right-click a page thumbnail for
+the page operations.
 
 **Copy and paste markups.** `Ctrl+C` copies whatever markups are selected,
 `Ctrl+X` cuts them, and `Ctrl+V` drops them **under the pointer** — so stamping

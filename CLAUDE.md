@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.16.1. See `README.md` for user-facing behaviour,
+PDF. Current version 0.17.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -247,6 +247,41 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   with `rotate: degrees(frame.angle)` for the same reason every other run is;
   `test/verify.js` reads it back through pdf.js at all four angles and checks it
   is upright *and* in the same displayed corner.
+- **Which way up a page reads is `/Rotate` *minus* the text heading, and
+  dropping either half straightens the whole sheet set.** `getTextContent`
+  reports each run's matrix in *unrotated* user space, so `atan2(t[1], t[0])`
+  is the direction it reads before rotation; `/Rotate` is applied after the
+  content stream, so what the reader sees is that heading turned clockwise by
+  it. Hence `displayed = (rotation - heading) mod 360` in
+  `RP.pages.orientationOf`, and the correction is what cancels it. The obvious
+  version reads the heading alone and calls a run laid along +y "sideways" —
+  which is exactly how an ordinary landscape drawing is plotted, portrait
+  MediaBox plus `/Rotate 90`, so every correctly plotted sheet in the set would
+  be turned. `test/verify.js` walks all sixteen heading/rotation pairs and
+  checks the correction cancels, with that case called out by name. Three more
+  decisions hold it up. Runs are weighted by **characters, not counted one
+  apiece** — a title block is a handful of long runs and a schedule is hundreds
+  of short ones. "Could not tell" and "already upright" are **different
+  answers**: below `MIN_ORIENT_CHARS` of text, or below `MIN_ORIENT_SHARE`
+  agreement, it returns `null` and the caller reports the page as unread rather
+  than as fine, because a drawing that is mostly vertical dimension strings is
+  not evidence of anything. And nothing is inferred from the raster: a scan is
+  reported, not guessed at, since the cost of turning a sheet that was already
+  right is a drawing the user now has to fix by hand. `straightenPages` asks
+  before it turns anything and re-checks `RP.store` after the scan, which is a
+  long await the user can switch tabs across — same reasoning as `App.save`.
+- **`ops.turn` is the only thing that adds to a descriptor's `rot`.** Straighten
+  needs a different delta per page — one sheet upside down, the next on its
+  side — and `ops.rotate` is that same op with one delta shared across the
+  picked pages, so it delegates rather than repeating the arithmetic.
+- **The rotate keys and the viewer's rotate rows name pages, not the
+  selection.** `RP.pages.rotatePages(indices, delta)` exists beside
+  `rotateSelected` because `Ctrl+]` means the sheet on screen and a right-click
+  means the sheet under the pointer, and the Pages panel may well have a
+  different one picked — rotating a page the user cannot see is the worst
+  outcome available here. Anything calling them from outside
+  `RP.pages.openMenu` has to wrap the call in `RP.pages.run` itself; that is
+  where the busy guard lives.
 - **A split's ranges are groups; a print's range is one list.** They share a
   grammar on purpose — two range syntaxes in one app is one too many — so
   `RP.pages.parseGroups` calls `RP.print.parseCustom` once *per comma-separated

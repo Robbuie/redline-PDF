@@ -113,16 +113,143 @@
       return finish(next, order.length);
     },
 
-    rotate(order, indices, delta) {
-      const wanted = new Set(indices);
+    /**
+     * Rotate each page by a delta of its own — `deltas` is a Map (or a plain
+     * object) of page index -> degrees.
+     *
+     * Straightening a set needs this rather than `rotate`: one sheet is upside
+     * down, the next is on its side, and turning them all by the same amount
+     * would fix one and break the other. `rotate` is the same op with one
+     * delta shared across the picked pages, and goes through here so there is
+     * only ever one place that adds to a descriptor's `rot`.
+     */
+    turn(order, deltas) {
+      const map = deltas instanceof Map
+        ? deltas
+        : new Map(Object.keys(deltas || {}).map((key) => [Number(key), deltas[key]]));
       const next = entriesOf(order).map((entry) => {
-        if (!wanted.has(entry.from)) return entry;
+        const delta = map.get(entry.from);
+        if (!delta) return entry;
         const item = Object.assign({}, entry.item, { rot: normaliseRot((entry.item.rot || 0) + delta) });
         return { item: item, from: entry.from, clonedFrom: -1 };
       });
       return finish(next, order.length);
+    },
+
+    rotate(order, indices, delta) {
+      const deltas = new Map();
+      for (const index of indices) deltas.set(index, delta);
+      return ops.turn(order, deltas);
     }
   };
+
+  // -------------------------------------------------------------------------
+  // Orientation — pure, so `test/verify.js` can exercise it headless
+  // -------------------------------------------------------------------------
+
+  /* Below this many readable characters a page is reported as "could not
+     tell" rather than straightened on the strength of a sheet number. */
+  const MIN_ORIENT_CHARS = 24;
+  /* And below this share of them agreeing. Drawings carry a genuine mix —
+     dimension strings run up the sheet on a plan that is the right way up —
+     so the question is never "is any text turned" but "which way does most of
+     it read". */
+  const MIN_ORIENT_SHARE = 0.6;
+  /* Text laid at an angle belongs to no quarter turn. It still counts against
+     the total, so a sheet annotated on the diagonal reports low confidence
+     rather than a confident answer drawn from whatever else is on it. */
+  const SKEW_TOLERANCE = 15;
+
+  /** The smallest absolute angle between two headings, in degrees. */
+  function angleGap(a, b) {
+    return Math.abs((((a - b) % 360) + 540) % 360 - 180);
+  }
+
+  /**
+   * Which way up a page reads, from the runs in its text layer.
+   *
+   * `getTextContent` reports each run's matrix in *unrotated* user space, so
+   * `atan2(t[1], t[0])` is the direction the run reads before `/Rotate` is
+   * applied — and `/Rotate` is applied after the content stream, so what the
+   * reader actually sees is that heading turned clockwise by the page
+   * rotation. Hence `displayed = (rotation - heading) mod 360`: zero is
+   * upright, 180 is upside down, 90 and 270 are the two sideways cases. The
+   * correction is the delta that cancels it, which is what `ops.turn` wants.
+   *
+   * Runs are weighted by how many characters they carry, not counted one
+   * apiece: a title block is a handful of long runs and a schedule is hundreds
+   * of short ones, and one run per vote would let the schedule outvote the
+   * drawing it annotates.
+   *
+   * Returns `null` when there is not enough text to say, or when no quarter
+   * turn carries a clear majority — "could not tell" and "already upright" are
+   * different answers and the caller reports them differently.
+   */
+  function orientationOf(items, pageRotate, opts) {
+    const options = opts || {};
+    const minChars = options.minChars === undefined ? MIN_ORIENT_CHARS : options.minChars;
+    const minShare = options.minShare === undefined ? MIN_ORIENT_SHARE : options.minShare;
+    const rotation = normaliseRot(pageRotate || 0);
+    const weights = { 0: 0, 90: 0, 180: 0, 270: 0 };
+    let total = 0;
+
+    for (const item of (items || [])) {
+      const t = item && item.transform;
+      if (!t || t.length < 4) continue;
+      const chars = String(item.str === undefined ? '' : item.str).replace(/\s+/g, '').length;
+      if (!chars) continue;
+      const dx = Number(t[0]);
+      const dy = Number(t[1]);
+      if (!isFinite(dx) || !isFinite(dy) || (dx === 0 && dy === 0)) continue;
+      total += chars;
+      const heading = Math.atan2(dy, dx) * 180 / Math.PI;
+      const snapped = normaliseRot(heading);
+      if (angleGap(heading, snapped) > SKEW_TOLERANCE) continue;
+      weights[((rotation - snapped) % 360 + 360) % 360] += chars;
+    }
+
+    if (total < minChars) return null;
+    // Ties fall to the lower quarter, which favours 0 — leaving a page alone
+    // is the safe answer when the sheet cannot make its mind up.
+    let displayed = 0;
+    for (const quarter of [90, 180, 270]) {
+      if (weights[quarter] > weights[displayed]) displayed = quarter;
+    }
+    const share = weights[displayed] / total;
+    if (!weights[displayed] || share < minShare) return null;
+    return {
+      delta: (360 - displayed) % 360,
+      displayed: displayed,
+      confidence: share,
+      chars: total
+    };
+  }
+
+  /**
+   * One-based page numbers as a reader would write them: "4", "4 and 6",
+   * "4, 7–9 and 12". Runs of three or more collapse; a run of two does not,
+   * because "7–8" is longer to read than "7 and 8" and no shorter to print.
+   */
+  function describePages(indices) {
+    const sorted = Array.from(new Set(indices || [])).sort((a, b) => a - b);
+    if (!sorted.length) return '';
+    const parts = [];
+    let start = sorted[0];
+    let previous = sorted[0];
+    const flush = () => {
+      if (previous - start >= 2) parts.push((start + 1) + '–' + (previous + 1));
+      else for (let i = start; i <= previous; i += 1) parts.push(String(i + 1));
+    };
+    for (let i = 1; i < sorted.length; i += 1) {
+      if (sorted[i] === previous + 1) { previous = sorted[i]; continue; }
+      flush();
+      start = sorted[i];
+      previous = sorted[i];
+    }
+    flush();
+    if (parts.length === 1) return parts[0];
+    return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+  }
 
   /**
    * Split a comma-separated list of ranges into one index list *per group*.
@@ -443,9 +570,19 @@
 
     /** The whole-document operations, which do not fit six icons in a column. */
     openDocumentMenu(anchor) {
-      const many = this.selected().length > 1;
+      const picked = this.selected();
+      const many = picked.length > 1;
       const numbered = !!RP.store.numbering;
       RP.menu.openUnder(anchor, [
+        {
+          /* Scoped to the selection when there is one, because that is what
+             every other row in this menu means — but the whole document
+             otherwise, since "some sheets came in sideways" is a thing you
+             notice about a set rather than about a page. */
+          label: many ? 'Straighten selected pages…' : 'Straighten pages…',
+          run: () => this.run(() => this.straightenPages(many ? picked : null))
+        },
+        { separator: true },
         { label: 'Insert pages from another PDF…', run: () => this.run(() => this.mergeFrom()) },
         { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.run(() => this.extractSelected()) },
         { label: 'Split into separate PDFs…', run: () => this.run(() => this.splitDocument()) },
@@ -634,8 +771,22 @@
     },
 
     rotateSelected(delta) {
-      const picked = this.target();
+      return this.rotatePages(this.target(), delta);
+    },
+
+    /**
+     * Rotate named pages, rather than whatever is selected.
+     *
+     * The viewer's context menu and the rotate shortcuts both mean *this*
+     * sheet — the one under the pointer, or the one on screen — which is not
+     * necessarily what the Pages panel has selected, and silently rotating a
+     * page the user is not looking at is the worst outcome available here.
+     */
+    rotatePages(indices, delta) {
+      const count = RP.store.numPages;
+      const picked = (indices || []).filter((index) => index >= 0 && index < count);
       if (!picked.length) return false;
+      const turned = normaliseRot(delta);
       return this.apply(
         (order) => ops.rotate(order, picked, delta),
         {
@@ -643,7 +794,113 @@
           select: () => picked,
           focus: () => picked[0],
           toast: () => picked.length + (picked.length === 1 ? ' page' : ' pages') +
-            ' rotated ' + (delta > 0 ? 'clockwise' : 'anticlockwise')
+            (turned === 180 ? ' turned over'
+              : ' rotated ' + (turned === 90 ? 'clockwise' : 'anticlockwise'))
+        }
+      );
+    },
+
+    /**
+     * Find the pages that came in sideways or upside down and turn them back.
+     *
+     * On demand rather than on open, and confirmed rather than applied: this
+     * changes the drawing, and a scan of a whole sheet set is a trip through
+     * the one pdf.js worker for every page in it. Nothing is guessed from the
+     * raster — a page with no text layer is reported as one this could not
+     * read, not straightened on a hunch, because the cost of turning a sheet
+     * that was already right is a drawing that now needs fixing by hand.
+     */
+    async straightenPages(indices) {
+      const store = RP.store;
+      if (!store.doc) return false;
+      const scope = (indices && indices.length)
+        ? Array.from(new Set(indices)).sort((a, b) => a - b)
+        : Array.from({ length: store.numPages }, (unused, i) => i);
+      if (!scope.length) return false;
+
+      const deltas = new Map();
+      const unreadable = [];
+      const unsure = [];
+      for (let n = 0; n < scope.length; n += 1) {
+        const index = scope[n];
+        RP.status('Reading page orientation… ' + (n + 1) + ' of ' + scope.length);
+        /* The viewer already caches `textContent` for any page whose layers
+           have been built, and pdf.js caches the page proxy either way, so on
+           a set the user has been through this is mostly free. */
+        const record = RP.viewer.store === store ? RP.viewer.pages[index] : null;
+        const proxy = (record && record.pageProxy) || await store.doc.getPage(index + 1);
+        let content = record && record.textContent;
+        if (!content) {
+          try { content = await proxy.getTextContent(); } catch (err) { content = { items: [] }; }
+          if (record) record.textContent = content;
+        }
+        const read = orientationOf(content.items, proxy.rotate || 0);
+        if (!read) {
+          ((content.items || []).length ? unsure : unreadable).push(index);
+          continue;
+        }
+        if (read.delta) deltas.set(index, read.delta);
+      }
+      RP.status('');
+
+      /* The scan is a long await and the user can switch tabs across it, which
+         would leave `apply` turning pages on a drawing that was never
+         measured. Same reasoning as `App.save` capturing its store. */
+      if (RP.store !== store) {
+        return this.refuse('You switched drawings while that was reading — nothing was rotated');
+      }
+
+      const skipped = unreadable.length + unsure.length;
+      const skippedNote = !skipped ? ''
+        : skipped + (skipped === 1 ? ' page has' : ' pages have') +
+          ' no text this could read, and ' + (skipped === 1 ? 'was' : 'were') + ' left alone.';
+
+      if (!deltas.size) {
+        RP.toast(
+          (skipped === scope.length
+            ? 'Nothing to go on — ' + skippedNote.charAt(0).toLowerCase() + skippedNote.slice(1)
+            : 'Every page this could read is already the right way up.' +
+              (skippedNote ? ' ' + skippedNote : '')),
+          skipped === scope.length ? 'warn' : 'good',
+          7000
+        );
+        return false;
+      }
+
+      const over = [];
+      const sideways = [];
+      for (const [index, delta] of deltas) (delta === 180 ? over : sideways).push(index);
+      const lines = [];
+      if (over.length) {
+        lines.push((over.length === 1 ? 'Page ' : 'Pages ') + describePages(over) +
+          (over.length === 1 ? ' is' : ' are') + ' upside down.');
+      }
+      if (sideways.length) {
+        lines.push((sideways.length === 1 ? 'Page ' : 'Pages ') + describePages(sideways) +
+          (sideways.length === 1 ? ' is' : ' are') + ' sideways.');
+      }
+      if (skippedNote) lines.push(skippedNote);
+      lines.push('Markups turn with their sheets. Ctrl+Z undoes this.');
+
+      const answer = await window.rp.dialog.message({
+        type: 'question',
+        message: 'Straighten ' + deltas.size + (deltas.size === 1 ? ' page?' : ' pages?'),
+        detail: lines.join('\n'),
+        buttons: ['Straighten', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1
+      });
+      if (answer.response !== 0) return false;
+      if (RP.store !== store) return false;
+
+      const touched = Array.from(deltas.keys()).sort((a, b) => a - b);
+      return this.apply(
+        (order) => ops.turn(order, deltas),
+        {
+          status: 'Straightening…',
+          select: () => touched,
+          focus: () => touched[0],
+          toast: () => touched.length + (touched.length === 1 ? ' page' : ' pages') + ' straightened'
         }
       );
     },
@@ -1143,6 +1400,11 @@
         { label: many ? 'Duplicate pages' : 'Duplicate page', run: () => this.duplicateSelected() },
         { label: 'Rotate left', run: () => this.rotateSelected(-ROT_STEP) },
         { label: 'Rotate right', run: () => this.rotateSelected(ROT_STEP) },
+        { label: many ? 'Turn pages over' : 'Turn page over', run: () => this.rotateSelected(180) },
+        {
+          label: many ? 'Straighten these pages…' : 'Straighten this page…',
+          run: () => this.straightenPages(this.selected())
+        },
         { separator: true },
         { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.extractSelected() },
         { label: 'Split into separate PDFs…', run: () => this.splitDocument() },
@@ -1209,5 +1471,7 @@
   RP.pages.chunkGroups = chunkGroups;
   RP.pages.breakGroups = breakGroups;
   RP.pages.rebaseNumbering = rebaseNumbering;
+  RP.pages.orientationOf = orientationOf;
+  RP.pages.describePages = describePages;
 
 })(window.RP);

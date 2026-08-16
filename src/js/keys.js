@@ -79,6 +79,15 @@
       ]
     },
     {
+      title: 'Pages',
+      keys: [
+        ['Ctrl+]', 'Rotate this page right — the page itself, so it saves'],
+        ['Ctrl+[', 'Rotate this page left'],
+        ['Right-click a sheet', 'Rotate, turn over, or straighten the whole set'],
+        ['Toolbar ↻', 'Rotate the view only — the file is untouched']
+      ]
+    },
+    {
       title: 'Markups',
       keys: [
         ['Ctrl+C', 'Copy the selected markups — or the selected text'],
