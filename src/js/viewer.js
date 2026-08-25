@@ -1937,10 +1937,20 @@
       this.updateNavBox();
     },
 
+    /**
+     * Cut or glide? `RP.scrollBehaviour` is the rule and the reasoning; this
+     * only supplies the pane's scroller, so that a caller here does not have
+     * to reach for `this.els.viewer` to answer a question about the scroll it
+     * is already making. `scroller` overrides it for the thumbnail strip,
+     * which is a second column of drawings with the same problem in miniature.
+     */
+    scrollBehaviour(to, scroller) {
+      return RP.scrollBehaviour(scroller || this.els.viewer, to);
+    },
+
     goToPage(index, opts) {
       const record = this.pages[RP.clamp(index, 0, this.pages.length - 1)];
       if (!record) return;
-      const behavior = opts && opts.instant ? 'auto' : 'smooth';
 
       /* Paged: the row is swapped rather than scrolled to. There is no column
          to travel down, so a smooth scroll has nothing to animate and the
@@ -1955,6 +1965,7 @@
       }
 
       const top = RP.clamp(this.topOf(record) - PAGE_LEAD, 0, this.maxScrollTop());
+      const behavior = (opts && opts.instant) ? 'auto' : this.scrollBehaviour({ top });
       this.els.viewer.scrollTo({ top, behavior });
       this.currentPage = RP.views.rowStartOf(record.index, this.viewMode);
       this.highlightThumb();
@@ -2064,10 +2075,14 @@
       const viewer = this.els.viewer;
       const targetTop = this.topOf(record) + view.y - viewer.clientHeight / 2 + view.h / 2;
       const targetLeft = this.leftOf(record) + view.x - viewer.clientWidth / 2 + view.w / 2;
-      viewer.scrollTo({
+      const to = {
         top: RP.clamp(targetTop, 0, this.maxScrollTop()),
-        left: Math.max(0, targetLeft),
-        behavior: (opts && opts.instant) ? 'auto' : 'smooth'
+        left: Math.max(0, targetLeft)
+      };
+      viewer.scrollTo({
+        top: to.top,
+        left: to.left,
+        behavior: (opts && opts.instant) ? 'auto' : this.scrollBehaviour(to)
       });
       this.currentPage = RP.views.rowStartOf(pageIndex, this.viewMode);
       this.highlightThumb();
@@ -2200,7 +2215,10 @@
         const host = this.els.thumbs;
         const top = current.thumbButton.offsetTop;
         if (top < host.scrollTop || top > host.scrollTop + host.clientHeight - 60) {
-          host.scrollTo({ top: top - host.clientHeight / 2, behavior: 'smooth' });
+          // The strip is a column of drawings too, just a narrower one, and
+          // jumping from sheet 3 to sheet 40 flies the same 37 past you here.
+          const to = { top: top - host.clientHeight / 2 };
+          host.scrollTo({ top: to.top, behavior: this.scrollBehaviour(to, host) });
         }
       }
     },
@@ -2328,10 +2346,14 @@
       if (!page || !view) { this.goToPage(pageIndex); return; }
 
       const to = RP.views.scrollToFraction(page, view, fx, fy);
-      this.els.viewer.scrollTo({
+      const target = {
         top: RP.clamp(to.top, 0, this.maxScrollTop()),
-        left: Math.max(0, to.left),
-        behavior: (opts && opts.instant) ? 'auto' : 'smooth'
+        left: Math.max(0, to.left)
+      };
+      this.els.viewer.scrollTo({
+        top: target.top,
+        left: target.left,
+        behavior: (opts && opts.instant) ? 'auto' : this.scrollBehaviour(target)
       });
       this.currentPage = RP.views.rowStartOf(pageIndex, this.viewMode);
       this.highlightThumb();

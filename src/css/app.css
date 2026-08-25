@@ -1879,10 +1879,14 @@ body.panning .viewer * { cursor: grabbing !important; }
    are declared inline on the rules above and this has to beat them without
    listing every selector, which is the version that goes stale.
 
-   Note what is deliberately NOT here: nothing in the *viewer* animates in the
-   first place. Scrolling, zooming and page turns are immediate by design —
-   see the zoom-streaming note in CLAUDE.md — so a user on reduced motion is
-   not getting a different drawing experience, only quieter chrome.
+   Note what this block does NOT reach: a scripted `scrollTo` that names its
+   own `behavior`. The `scroll-behavior` property below is only the fallback
+   for a scroll that does not, so an explicit `behavior: 'smooth'` outranks it
+   and a page navigation would go on animating for a user who has asked the OS
+   to stop animating things. That half is answered in JS instead —
+   `RP.reducedMotion()` and `RP.scrollBehaviour()` in `util.js`. The rule is
+   kept here as well because it is right for anything that scrolls without
+   asking.
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -856,11 +856,14 @@
         setTimeout(() => ring.remove(), 2600);
 
         const stage = RP.$('#cmpStage');
-        stage.scrollTo({
+        // Jumping from a region on sheet 2 to one on sheet 30 is the same
+        // flight through everything in between as it is in the viewer, so it
+        // goes through the same rule — see `RP.scrollBehaviour`.
+        const to = {
           top: Math.max(0, pane.offsetTop + region.y * scale - stage.clientHeight / 2),
-          left: Math.max(0, pane.offsetLeft + region.x * scale - stage.clientWidth / 2),
-          behavior: 'smooth'
-        });
+          left: Math.max(0, pane.offsetLeft + region.x * scale - stage.clientWidth / 2)
+        };
+        stage.scrollTo({ top: to.top, left: to.left, behavior: RP.scrollBehaviour(stage, to) });
       }
 
       this.activeRegion = { page, regionIndex };

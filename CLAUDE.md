@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.17.0. See `README.md` for user-facing behaviour,
+PDF. Current version 0.17.2. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -660,6 +660,33 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   `Home`/`End` and the arrows all sit behind it: a dialog is modal to the user
   whether or not it is modal to the document, and paging a sheet set behind one
   is movement they cannot see.
+- **Navigating to a page is a cut, not a pan, and `behavior: 'smooth'` is not
+  a nicety here.** It is a browser animation over the *whole* distance, and
+  the distance is a column of drawings: a jump from sheet 3 to sheet 40 flies
+  the intervening thirty-seven through the viewport, most of them not yet
+  rastered so they strobe between white and ink on the way past. That is a
+  motion-sickness trigger rather than a polish detail, and it reads to the
+  user as the app being wrong with *them*; it is also slower, since the sheet
+  asked for is not on screen until the animation ends and the animation is
+  longer the further it went. An unconditional cut over-corrects, though —
+  the glide on a one-page hop is what says which way you went. So the choice
+  is made on **travel** and made in one place, `RP.scrollBehaviour` in
+  `util.js`: within `GLIDE_SCREENS` of what is in the scroller it glides,
+  beyond it it cuts. Screens rather than pages, because a screen and a half is
+  the same amount of movement on an E-size sheet at 25% and a letter page at
+  200% while "two pages" is not. Every scripted scroll goes through it —
+  `goToPage`, `revealRect`, `revealFraction`, the thumbnail strip in
+  `highlightThumb`, and the compare stage — and a new one that hardcodes
+  `'smooth'` puts the flight back on whichever route it is on. **The
+  `prefers-reduced-motion` block in `app.css` does not cover any of this**:
+  the CSS `scroll-behavior` property is only the fallback for a scroll that
+  names no behaviour, and an explicit one in `scrollTo` outranks it — which is
+  why the setting was being ignored for exactly the movement that most needed
+  it, and why `RP.reducedMotion()` is asked in JS. It is deliberately not
+  cached: a `MediaQueryList` taken at load time is DOM access at load time,
+  which `test/verify.js` runs the renderer without, and the setting can change
+  while the app is open. `test/verify.js` covers the threshold, the screens
+  unit, both axes and the override.
 - **`onScroll` must not measure the DOM.** Page tops are cached in
   `viewer.pageTops` by `measurePages()` and invalidated by `layout()`; the
   handler binary-searches them. Reading `getBoundingClientRect()` per page there

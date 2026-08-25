@@ -75,6 +75,73 @@ window.RP = window.RP || {};
   /** Lets a long loop breathe so the UI keeps painting. */
   RP.nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 
+  /**
+   * Does the user want the interface to move at all?
+   *
+   * Windows' "Show animations" switch and every other platform's equivalent
+   * arrive here as `prefers-reduced-motion`, and it is not a preference about
+   * taste: for a reader prone to motion sickness or migraine, a column of
+   * drawings sliding past is the thing that ends the session. Anything about
+   * to animate rather than assign asks first.
+   *
+   * Deliberately not cached. A `MediaQueryList` taken at load time is DOM
+   * access at load time, which `test/verify.js` runs the renderer without —
+   * and the setting can be changed while the app is open, which a cached
+   * answer would go on ignoring for the rest of the session. Nothing calls
+   * this per frame; the callers are navigations.
+   */
+  RP.reducedMotion = function () {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (err) {
+      return false;
+    }
+  };
+
+  /* Navigating somewhere is a *cut*, not a pan.
+
+     `behavior: 'smooth'` is a browser animation over the whole distance, and
+     in this app the distance is a column of drawings: clicking sheet 40 while
+     looking at sheet 3 does not jump there, it flies the intervening 37
+     sheets through the viewport in a few hundred milliseconds. Every one of
+     them is a large, high-contrast field of line work streaming in one
+     direction, most of them not yet rastered so they strobe between white and
+     ink as they pass — which is a textbook trigger for motion sickness, and
+     reads to the user as the app being wrong with *them* rather than with
+     itself. It is also slower in the only sense that matters: the sheet you
+     asked for is not on screen until the animation ends, and the animation is
+     longer the further you went.
+
+     An unconditional cut is not the answer either — stepping to the sheet next
+     door is where the movement earns its place, because seeing the paper slide
+     up is what tells you which way you went and that you moved by one.
+
+     So the behaviour is chosen by *travel*, not by call site: within
+     `GLIDE_SCREENS` of what is currently in the scroller the scroll glides,
+     beyond it the view cuts. The threshold is in screens rather than pages
+     because that is the quantity the eye cares about — a screen and a half of
+     an E-size sheet at 25% and of a letter page at 200% are the same amount of
+     movement, while "two pages" is not.
+
+     Note that the `prefers-reduced-motion` block in `app.css` does **not**
+     cover this and never did: the CSS `scroll-behavior` property is what a
+     scroll with no explicit behaviour falls back to, and an explicit
+     `behavior: 'smooth'` in a `scrollTo` call outranks it. Honouring the
+     setting for a scripted scroll means asking here. */
+  RP.GLIDE_SCREENS = 1.5;
+
+  RP.scrollBehaviour = function (el, to) {
+    if (!el) return 'auto';
+    if (RP.reducedMotion()) return 'auto';
+    const fromTop = el.scrollTop || 0;
+    const fromLeft = el.scrollLeft || 0;
+    const dy = Math.abs((to && to.top !== undefined ? to.top : fromTop) - fromTop);
+    const dx = Math.abs((to && to.left !== undefined ? to.left : fromLeft) - fromLeft);
+    if (dy > (el.clientHeight || 0) * RP.GLIDE_SCREENS) return 'auto';
+    if (dx > (el.clientWidth || 0) * RP.GLIDE_SCREENS) return 'auto';
+    return 'smooth';
+  };
+
   RP.escapeHtml = function (str) {
     return String(str === null || str === undefined ? '' : str)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

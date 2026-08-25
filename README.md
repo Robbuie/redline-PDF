@@ -637,6 +637,15 @@ drawing continuously and the other a spread at a time. The arrow keys work in
 every layout: `←` and `→` turn the sheet, `↑` and `↓` read up and down it and
 turn over once they reach the edge of the paper.
 
+**Going to a sheet goes there.** Clicking a thumbnail, typing a page number,
+pressing `Home` or `End` and jumping to a search hit or a markup all cut
+straight to the sheet rather than scrolling the whole way — on a long set,
+watching thirty sheets fly past on the way to the one you asked for is
+unpleasant to look at and slower to arrive. Moving a sheet or two still slides,
+because that is what tells you which way you went. If you have turned
+animations off in Windows (Settings → Accessibility → Visual effects), nothing
+slides at all.
+
 **Presentation mode** (`F11`, or the last row of the layout menu) goes
 fullscreen with one sheet fitted to the screen and every toolbar, panel and the
 status bar out of the way. `Esc` or `F11` restores the layout, zoom and panels

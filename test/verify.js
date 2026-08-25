@@ -2257,6 +2257,105 @@ function testMarqueeZoom() {
       viewer.pageIndexAt(scroller.scrollTop) === 7,
       'ended on page ' + (viewer.pageIndexAt(scroller.scrollTop) + 1));
   }
+
+  /* Navigation cuts; only a short hop glides.
+
+     `behavior: 'smooth'` animates over the whole distance, so a jump of
+     thirty sheets flies all thirty through the viewport — motion sickness for
+     the reader and a wait for the sheet they asked for. A cut for everything
+     would be over-correcting: the glide is what tells you which way you went
+     when you moved by one. So the choice is made on travel, and it is made in
+     `RP.scrollBehaviour` rather than per call site, because two copies of this
+     rule would drift and only one of them would be the one you are looking
+     at. See the note above it in `util.js`. */
+  {
+    const PAGE_H_PX = 500;
+    const GAP = 18;
+    const PAD = 22;
+    const topFor = (i) => PAD + i * (PAGE_H_PX + GAP);
+
+    let last = null;
+    const scroller = {
+      clientWidth: 1000, clientHeight: 800, scrollTop: 0, scrollLeft: 0,
+      scrollHeight: topFor(40) + 60,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 800 }),
+      scrollTo: (opts) => {
+        last = opts;
+        if (opts.top !== undefined) scroller.scrollTop = opts.top;
+        if (opts.left !== undefined) scroller.scrollLeft = opts.left;
+      }
+    };
+    const viewer = RP.createViewer({ querySelector: () => null }, RP.store);
+    viewer.els = { viewer: scroller };
+    viewer.highlightThumb = function () {};
+    viewer.isActive = function () { return true; };
+    viewer.confirmLanding = function () {};   // the timer half, covered above
+    viewer.pages = [];
+    for (let i = 0; i < 40; i += 1) {
+      viewer.pages.push({
+        index: i,
+        container: {
+          offsetTop: topFor(i),
+          offsetLeft: 0,
+          getBoundingClientRect: () => ({ top: topFor(i) - scroller.scrollTop, left: 0 })
+        }
+      });
+    }
+
+    viewer.goToPage(0, { instant: true });
+    viewer.goToPage(1);
+    check('a hop to the sheet next door still glides',
+      last.behavior === 'smooth', String(last.behavior));
+
+    viewer.goToPage(0, { instant: true });
+    viewer.goToPage(30);
+    check('a jump across the set cuts rather than flying every sheet past you',
+      last.behavior === 'auto', String(last.behavior));
+
+    viewer.goToPage(30, { instant: true });
+    check('an explicit instant navigation is still instant',
+      last.behavior === 'auto', String(last.behavior));
+
+    /* The threshold is in screens, not pages: the same two-page hop is a long
+       way at 200% and nothing at all when the pane is tall. */
+    scroller.clientHeight = 200;
+    viewer.goToPage(0, { instant: true });
+    viewer.goToPage(1);
+    check('the same hop cuts once it is more than a screen and a half',
+      last.behavior === 'auto', String(last.behavior));
+    scroller.clientHeight = 800;
+
+    /* And someone who has told the OS to stop animating things has already
+       answered this. The CSS `prefers-reduced-motion` block cannot do it:
+       `scroll-behavior` is only the fallback for a scroll that names no
+       behaviour of its own, and every one of these names one. */
+    const keptMatchMedia = global.matchMedia;
+    global.matchMedia = () => ({ matches: true });
+    try {
+      viewer.goToPage(0, { instant: true });
+      viewer.goToPage(1);
+      check('reduced motion cuts even the hop that would otherwise glide',
+        last.behavior === 'auto', String(last.behavior));
+    } finally {
+      if (keptMatchMedia === undefined) delete global.matchMedia;
+      else global.matchMedia = keptMatchMedia;
+    }
+    check('and the preference is re-read rather than cached for the session',
+      RP.reducedMotion() === false);
+
+    /* Sideways counts too — a wide sheet at high zoom travels further across
+       than down, and a search hit on the far side of a title block is the
+       same flight. */
+    const wide = { clientWidth: 1000, clientHeight: 800, scrollTop: 0, scrollLeft: 0 };
+    check('a long sideways travel cuts',
+      RP.scrollBehaviour(wide, { left: 4000 }) === 'auto');
+    check('a short sideways travel glides',
+      RP.scrollBehaviour(wide, { left: 400 }) === 'smooth');
+    check('a scroll going nowhere has nothing to animate and says so cheaply',
+      RP.scrollBehaviour(wide, null) === 'smooth');
+    check('no scroller, no animation',
+      RP.scrollBehaviour(null, { top: 10 }) === 'auto');
+  }
 }
 
 /* ---------------------------------------------------------------------------

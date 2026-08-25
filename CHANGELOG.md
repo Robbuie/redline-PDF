@@ -12,6 +12,30 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.17.2] — 2026-08-25
+
+### Changed
+
+- **Going to a page now goes there, instead of scrolling the whole way.**
+  Clicking a thumbnail, typing a page number, pressing Home or End, or jumping
+  to a search hit or a markup used to animate down the column — so asking for
+  sheet 40 from sheet 3 flew the thirty-seven sheets in between through the
+  window first. On a long set that is a lot of high-contrast line work moving
+  fast, which is unpleasant to watch and can be enough to bring on a headache.
+  The view now cuts straight to the sheet you asked for.
+  - **Short hops still glide**, because seeing the paper slide up is what tells
+    you which way you went and that you moved by one. The line is a screen and
+    a half of travel: less than that and it moves, more and it cuts.
+  - **The thumbnail strip and the compare panel** follow the same rule, for the
+    same reason.
+- **Windows' "Show animations in Windows" switch is now honoured for
+  navigation.** Turn it off — Settings → Accessibility → Visual effects — and
+  nothing in the app slides at all, page navigation included. The rest of the
+  interface already respected it; page navigation was the one thing that
+  ignored it.
+
+---
+
 ## [0.17.1] — 2026-08-25
 
 ### Fixed
