@@ -83,7 +83,7 @@ global.document = {
 const globalEval = eval; // indirect eval => runs in global scope
 for (const file of ['util.js', 'appearance.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
   'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'clip.js',
-  'tools.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
+  'tools.js', 'search.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -4391,6 +4391,100 @@ function testHighlightGeometry() {
  * reached back for the live selection would work in testing and fail on the
  * first real click.
  */
+/**
+ * Where a search hit is drawn.
+ *
+ * Both halves of the answer are pure and both used to be wrong in the same
+ * visible way — a box half on the word and half on the one after it. The page
+ * text is runs concatenated, and a run is neither a word nor a line, so two
+ * labels at opposite ends of a title block used to read as one word at the
+ * join. And the position within a run was the character index as a fraction of
+ * the run's total width, in the run's own axes ignored entirely.
+ */
+function testSearchGeometry() {
+  console.log('\nSearch geometry');
+  const search = RP.search;
+
+  /** One run the shape `getTextContent` reports it in. */
+  function run(str, x, y, width, opts) {
+    const o = opts || {};
+    const size = o.size || 10;
+    const angle = (o.angle || 0) * Math.PI / 180;
+    return {
+      str,
+      width,
+      height: size,
+      hasEOL: !!o.eol,
+      fontName: 'g_d0_f1',
+      transform: [size * Math.cos(angle), size * Math.sin(angle),
+        -size * Math.sin(angle), size * Math.cos(angle), x, y]
+    };
+  }
+  const page = (items) => search.pageEntry(0, { items, styles: {} });
+
+  // --- joining runs into page text ------------------------------------------
+  const word = page([run('PAN', 40, 700, 18), run('EL', 58, 700, 12)]);
+  check('one word split across two runs stays one word', word.text === 'PANEL', word.text);
+
+  const labels = page([run('PANEL', 40, 700, 30), run('SCHEDULE', 120, 700, 50)]);
+  check('two labels a visible gap apart are joined by one space',
+    labels.text === 'PANEL SCHEDULE', labels.text);
+  // The bug this exists for: with the runs concatenated raw, "ELSCH" is a word
+  // on the page and a search for it lands half on one label and half on the next.
+  check('so the join between them is not itself a word',
+    labels.text.indexOf('PANELSCHEDULE') === -1);
+
+  const wrapped = page([run('SEE', 40, 700, 20, { eol: true }), run('NOTE', 60, 700, 26)]);
+  check('a line break reads as a space even with no gap', wrapped.text === 'SEE NOTE', wrapped.text);
+
+  const marked = page([{ type: 'beginMarkedContent' }, run('A', 40, 700, 8),
+    { type: 'endMarkedContent' }, run('B', 60, 700, 8)]);
+  // The ordinal is the bridge to `record.textDivs`: pdf.js skips the same
+  // markers when it builds the layer, so the two lists stay aligned.
+  check('marked-content markers take no text-layer ordinal',
+    marked.items.map((i) => i.div).join(',') === '0,1');
+
+  // pdf.js reports a gap it recognises as a run of one space whose *width is
+  // the gap* — 207pt of it between these two on a real sheet. It is a word
+  // boundary, not something to draw a bar over.
+  const gapped = page([run('PANEL', 60, 700, 33), run(' ', 93, 700, 207), run('SCHEDULE', 300, 700, 54)]);
+  check('a gap run is a space and not a second one', gapped.text === 'PANEL SCHEDULE', gapped.text);
+  const bars = search.rectFor(gapped, 0, gapped.text.length);
+  check('and nothing is drawn across the blank paper between the two',
+    bars.length === 2 && bars.every((b) => b.w < 60), JSON.stringify(bars));
+
+  const spans = search.spansFor(labels, 0, labels.text.length);
+  check('a match spanning two runs is addressed run by run, in run offsets',
+    spans.length === 2 && spans[0].from === 0 && spans[0].to === 5 &&
+    spans[1].from === 0 && spans[1].to === 8);
+
+  // --- where inside a run --------------------------------------------------
+  const long = page([run('ABCDEFGHIJ', 100, 500, 100)]);
+  const tail = search.rectFor(long, 5, 10)[0];
+  check('a match inside a run is placed along the run, not at its start',
+    Math.abs(tail.x - 150) < 0.5 && Math.abs(tail.w - 50) < 0.5, JSON.stringify(tail));
+  check('and it sits on the baseline, one font height tall',
+    Math.abs(tail.y - 500) < 0.5 && Math.abs(tail.h - 10) < 0.5, JSON.stringify(tail));
+
+  const sideways = page([run('RISER', 300, 200, 40, { angle: 90 })]);
+  const box = search.rectFor(sideways, 0, 5)[0];
+  check('a run plotted sideways gets a sideways box',
+    box.h > box.w && Math.abs(box.h - 40) < 0.5 && Math.abs(box.w - 10) < 0.5, JSON.stringify(box));
+  check('beside the baseline it reads along, not lying under it',
+    Math.abs(box.x - 290) < 0.5 && Math.abs(box.y - 200) < 0.5, JSON.stringify(box));
+
+  // --- the query -----------------------------------------------------------
+  check('a query typed with a space matches a run join or a line break',
+    search.pattern('PANEL SCHEDULE').test('the PANEL SCHEDULE') &&
+    search.pattern('PANEL SCHEDULE').test('the PANEL\nSCHEDULE'));
+  check('a query is otherwise literal',
+    search.pattern('E-101').test('E-101') && !search.pattern('E-101').test('EX101'));
+  check('an empty query is not a pattern', search.pattern('   ') === null);
+  check('whole-word holds the tag apart from the schedule it is in',
+    search.pattern('L1', { wholeWord: true }).test('PANEL L1 FEEDER') &&
+    !search.pattern('L1', { wholeWord: true }).test('PANELL1'));
+}
+
 function testTextSelection() {
   console.log('\nText selection');
   const band = RP.tools.band;
@@ -5600,6 +5694,7 @@ async function pageLabel(bytes, index) {
     testGrouping();
     testHighlightGeometry();
     testTextSelection();
+    testSearchGeometry();
     testToolArming();
     testCalloutText();
     testCompareMaths();

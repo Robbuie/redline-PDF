@@ -12,6 +12,35 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.17.1] — 2026-08-25
+
+### Fixed
+
+- **Find now highlights the word it found.** The bar could sit slightly off the
+  word, cover half of it, or straddle the end of one word and the start of the
+  next — worst on long lines and on schedules. Two things caused it and both
+  are gone:
+  - The box was placed by counting characters across the run's width, which is
+    only right in a typewriter face. It is now measured, and taken from the
+    drawing's own text layer once the sheet is on screen, so it lands on the
+    glyphs rather than near them.
+  - **Text plotted sideways** — riser labels, column tags, anything set
+    vertically — was boxed as if it ran across the sheet. It is now boxed the
+    way it reads.
+- **Two labels side by side are no longer read as one word.** A drawing
+  exported from CAD hands over each label separately with nothing between them,
+  so *PANEL* beside *SCHEDULE* read as `PANELSCHEDULE`: a search could match
+  across the join and highlight the tail of one and the head of the next. A gap
+  you can see on the sheet is now a space.
+
+### Changed
+
+- **A space you type in the find box matches a space, a gap or a line break.**
+  Searching *PANEL SCHEDULE* finds it whether the drawing sets the two words
+  together, apart, or on two lines.
+
+---
+
 ## [0.17.0] — 2026-08-15
 
 ### Added

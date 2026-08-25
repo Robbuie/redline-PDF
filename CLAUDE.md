@@ -542,6 +542,35 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   `layersBuilt` guard it reports a sheet full of schedules as an unsearchable
   scan. `test/verify.js` covers the ordering, the skip, the guard and the
   stall.
+- **A search hit is measured twice, and `getTextContent` runs are not words.**
+  A hit's rects start as an approximation off the run matrices and are replaced
+  by exact ones the moment the page has a text layer — `Search.resolvePage`,
+  once per page per search, driven from `drawHits`, `goTo` and the
+  `textlayer:ready` bus event. Both halves matter and both were wrong in the
+  same visible way: a highlight half on the word and half on the one after it.
+  A **run is neither a word nor a line** — a plotter emits "PANEL SCHEDULE" as
+  one run and "E-101" as three, and two labels at opposite ends of a title
+  block are two adjacent runs with nothing between them — so concatenating them
+  raw invents `PANELSCHEDULE` at the join and a query matches it. `pageEntry`
+  therefore inserts one space where a run starts `GAP_AS_SPACE` of a font
+  height or more past where the last one ended, or after a `hasEOL`, and
+  `Search.pattern` compiles a query's own whitespace to `\s+` so any of the
+  three matches any other. **Never insert anything else into that string**: the
+  offsets in `items[].start/end` are offsets into it, and one stray character
+  moves every rect on the page. Within a run, the old
+  `charIndex / str.length x width` is only true in a monospaced face, and it
+  ignored the matrix, so sideways text got a flat box lying on its baseline;
+  `rectFor` now measures the substring and works in the run's own axes. The
+  bridge to the exact path is `items[].div`, the run's ordinal **among the runs
+  that carry a string** — which is the index pdf.js gives the matching span in
+  `record.textDivs`, because both sides skip marked-content markers and both
+  keep the empty runs pdf.js creates a div for but never appends. A run that is
+  *only* whitespace is pdf.js reporting a gap it recognised, and its advance
+  width is the whole gap — 200pt of it across a title block — so `spansFor`
+  drops it rather than drawing a bar over blank paper. Anything that
+  changes which runs the index keeps has to keep that correspondence, or every
+  highlight lands on the wrong run. `test/verify.js` covers the joining, the
+  ordinals, the run offsets, the sideways box and the query.
 - **Rasterisation is queued, not fired off the observer.** pdf.js has one
   worker, so `requestPage` puts indices in `renderQueue` and `pumpRenders` runs
   at most `MAX_PAGE_RENDERS` at a time, nearest the viewport first. Thumbnails
