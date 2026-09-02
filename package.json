@@ -1,7 +1,7 @@
 {
   "name": "redline-pdf",
   "productName": "Redline PDF",
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Fast PDF markup tool for electrical drawings - highlight, redline, measure, and compare revisions.",
   "main": "main.js",
   "author": "Robbuie",
@@ -17,10 +17,10 @@
   "dependencies": {
     "electron-updater": "^6.8.9",
     "pdf-lib": "1.17.1",
-    "pdfjs-dist": "^6.2.108"
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
-    "electron": "^43.2.0",
+    "electron": "^43.5.1",
     "electron-builder": "^26.15.3"
   },
   "build": {

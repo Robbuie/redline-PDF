@@ -3882,7 +3882,7 @@ function testNativeAnnotations() {
   const annots = fs.readFileSync(path.join(ROOT, 'src', 'js', 'annots.js'), 'utf8');
 
   check('the external-link IPC exists on all three required sides',
-    /ipcMain\.handle\(\s*'shell:open-external'/.test(main) &&
+    /(?:ipcMain\.)?handle\(\s*'shell:open-external'/.test(main) &&
     /call\(\s*'shell:open-external'/.test(preload) &&
     /window\.rp\.links\.openExternal/.test(annots));
   check('the main process confirms before it opens anything',
@@ -3890,6 +3890,79 @@ function testNativeAnnotations() {
   check('only http, https and mailto are ever handed to the OS',
     /EXTERNAL_SCHEMES[\s\S]{0,120}'https:'/.test(main) &&
     /EXTERNAL_SCHEMES\.has\(url\.protocol/.test(main));
+
+  // --- the hardening, asserted ---------------------------------------------
+  //
+  // Every one of these is a single line somewhere in main.js that nothing in
+  // the app reads back, so nothing would notice if a refactor dropped it. They
+  // are the difference between "a hostile PDF gets to draw wrong" and "a
+  // hostile PDF gets the user's files", and that is worth a test each.
+  const htmlShell = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+  const loader = fs.readFileSync(path.join(ROOT, 'src', 'js', 'pdfjs-loader.js'), 'utf8');
+
+  check('the renderer runs sandboxed with no Node and an isolated context',
+    /sandbox:\s*true/.test(main) &&
+    /contextIsolation:\s*true/.test(main) &&
+    /nodeIntegration:\s*false/.test(main) &&
+    !/sandbox:\s*false/.test(main));
+  check('the renderer cannot navigate off the app shell',
+    /will-navigate/.test(main) && /will-redirect/.test(main) &&
+    /function isAppUrl/.test(main));
+  check('window.open and <webview> are both refused',
+    /setWindowOpenHandler[\s\S]{0,160}action: 'deny'/.test(main) &&
+    /will-attach-webview[\s\S]{0,160}preventDefault/.test(main));
+  check('every IPC handler checks that the sender is our own window',
+    /function isTrustedSender/.test(main) &&
+    /function handle\(channel, listener\)[\s\S]{0,400}isTrustedSender/.test(main) &&
+    // Only the wrapper itself may reach ipcMain.handle directly.
+    (main.match(/ipcMain\.handle\(/g) || []).length === 1);
+  check('a trusted sender is the top frame of the main window on the app URL',
+    /event\.sender !== mainWindow\.webContents/.test(main) &&
+    /frame !== event\.sender\.mainFrame/.test(main) &&
+    /isAppUrl\(frame\.url\)/.test(main));
+  check('camera, microphone and the rest are answered no without asking',
+    /setPermissionRequestHandler[\s\S]{0,200}callback\(false\)/.test(main) &&
+    /setPermissionCheckHandler[\s\S]{0,200}return false/.test(main));
+  check('file paths coming over the bridge must be absolute',
+    /function absolutePath/.test(main) &&
+    /path\.isAbsolute/.test(main) &&
+    (main.match(/absolutePath\(/g) || []).length >= 4);
+  check('only known keys are ever written to settings.json',
+    /const SETTINGS_KEYS = new Set\(Object\.keys\(DEFAULT_SETTINGS\)\)/.test(main) &&
+    /function sanitiseSettings/.test(main) &&
+    /__proto__/.test(main) &&
+    !/Object\.assign\(settings, patch \|\| \{\}\)/.test(main));
+  check('the app:// handler serves one host and nothing outside the app tree',
+    /url\.host !== 'redline'/.test(main) &&
+    /!target\.startsWith\(root \+ path\.sep\)/.test(main));
+  // The <meta> content and the directive list in main.js, as policies rather
+  // than as file text — the prose around both mentions 'unsafe-eval' by name.
+  const metaCsp = (htmlShell.match(/Content-Security-Policy"\s*\n?\s*content="([^"]+)"/) || [])[1] || '';
+  const headerCsp = ((main.match(/const CSP_DIRECTIVES = \[([\s\S]*?)\];/) || [])[1] || '')
+    .match(/"([^"]+)"/g) || [];
+  const headerParts = headerCsp.map((q) => q.slice(1, -1));
+
+  check('the CSP allows neither eval nor inline script',
+    !!metaCsp && !!headerParts.length &&
+    !/unsafe-eval/.test(metaCsp) && !headerParts.some((d) => /unsafe-eval/.test(d)) &&
+    /(^|;\s*)script-src 'self'(;|$)/.test(metaCsp) &&
+    headerParts.includes("script-src 'self'") &&
+    /base-uri 'none'/.test(metaCsp) && /object-src 'none'/.test(metaCsp));
+  check('the served CSP header and the <meta> in the shell say the same thing',
+    (() => {
+      const want = metaCsp.replace(/;\s*$/, '').split(';').map((d) => d.trim()).filter(Boolean);
+      if (!want.length || !headerParts.length) return false;
+      return want.length === headerParts.length && want.every((d, i) => d === headerParts[i]);
+    })());
+  /* Chromium ignores `frame-ancestors` in a <meta> and logs it as an error on
+     every single load, which is how it got noticed. It belongs to the served
+     header alone — and has to actually be on it, or nothing is refusing to
+     frame the app. */
+  check('frame-ancestors is on the header only, never in the <meta>',
+    !/frame-ancestors/.test(metaCsp) &&
+    /CSP_DIRECTIVES\.concat\(\["frame-ancestors 'none'"\]\)/.test(main));
+  check('pdf.js is told never to compile anything out of a file',
+    /isEvalSupported:\s*false/.test(loader));
   check('the renderer never opens a URL itself',
     !/window\.open\(/.test(annots) && !/link\.href\s*=\s*url/.test(annots));
 
@@ -4123,7 +4196,7 @@ function testChrome() {
   // --- clipboard ------------------------------------------------------------
   const clip = fs.readFileSync(path.join(ROOT, 'src', 'js', 'clip.js'), 'utf8');
   check('the clipboard IPC exists on all three required sides',
-    /ipcMain\.handle\(\s*'clipboard:write-text'/.test(main) &&
+    /(?:ipcMain\.)?handle\(\s*'clipboard:write-text'/.test(main) &&
     /call\(\s*'clipboard:write-text'/.test(preload) &&
     /window\.rp\.clipboard\.writeText/.test(clip));
   // Ctrl+C serves two clipboards. Markups have to be tried first: a marquee
@@ -4225,8 +4298,8 @@ function testChrome() {
 
   // --- recents --------------------------------------------------------------
   check('the recents pin/remove IPC exists on both sides',
-    /ipcMain\.handle\(\s*'recents:pin'/.test(main) &&
-    /ipcMain\.handle\(\s*'recents:remove'/.test(main) &&
+    /(?:ipcMain\.)?handle\(\s*'recents:pin'/.test(main) &&
+    /(?:ipcMain\.)?handle\(\s*'recents:remove'/.test(main) &&
     /call\(\s*'recents:pin'/.test(preload) && /call\(\s*'recents:remove'/.test(preload));
   check('pinned entries are exempt from the ageing cap',
     /function trimRecents[\s\S]{0,300}entry\.pinned/.test(main));
@@ -4983,7 +5056,7 @@ function testSnapshotGeometry() {
   const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
 
   check('the image clipboard IPC exists on all three required sides',
-    /ipcMain\.handle\(\s*'clipboard:write-image'/.test(main) &&
+    /(?:ipcMain\.)?handle\(\s*'clipboard:write-image'/.test(main) &&
     /call\(\s*'clipboard:write-image'/.test(preload) &&
     /window\.rp\.clipboard\.writeImage/.test(snapshot));
   check('the image goes onto the clipboard as a bitmap, not as text',

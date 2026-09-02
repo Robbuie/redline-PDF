@@ -12,6 +12,47 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.17.3] — 2026-09-02
+
+### Security
+
+A drawing is a file somebody else made, and this app opens it without asking
+anything about where it came from. None of the below fixes a break-in anyone
+has had — it is the app being built so that a bad drawing has fewer places to
+go if one ever turns up.
+
+- **The window that renders drawings now runs sandboxed.** It has no operating
+  system privileges of its own, so a flaw in the PDF engine reached through a
+  crafted drawing lands somewhere that can do nothing rather than somewhere
+  that can run programs as you.
+- **The app can no longer be navigated away from itself.** There was never a
+  reason for it to leave its own page, but nothing stopped it — and the bridge
+  that reads and writes your files is attached to the window, not to the page,
+  so it would have gone along. It is now refused and logged.
+- **Every request across that bridge is checked for where it came from**, and
+  answered only for the real Redline PDF window.
+- **File paths coming across the bridge must be complete paths.** Anything
+  relative is refused rather than resolved against wherever the app happens to
+  be running from.
+- **PDF.js is no longer allowed to turn any part of a file into code.** The
+  content rules for the app window were tightened to match: nothing can compile
+  a string, and script that is not one of the app's own files cannot run at
+  all. This is the class of bug that PDF viewers have historically been caught
+  by.
+- **Camera, microphone, location and notifications are refused outright**
+  instead of putting a prompt in front of you on behalf of a file you opened.
+- **The spell checker no longer reaches out to Google's CDN** for a dictionary
+  the first time you type in a sticky note. Windows' own spell checker needs no
+  download, and the update check is once again the only thing that leaves your
+  machine.
+- **Only the settings the app actually has are written to `settings.json`.** A
+  malformed or tampered settings file can no longer put anything else in there.
+- **Electron updated to 43.5.1**, which carries three rounds of Chromium
+  security fixes since the version that shipped in 0.17.2, and **PDF.js to
+  6.3.289**.
+
+---
+
 ## [0.17.2] — 2026-08-25
 
 ### Changed

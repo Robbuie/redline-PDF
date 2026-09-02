@@ -2,7 +2,7 @@
 
 const {
   app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, protocol, net, screen,
-  clipboard
+  clipboard, session
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -24,6 +24,19 @@ protocol.registerSchemesAsPrivileged([{
   scheme: APP_SCHEME,
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 }]);
+
+/* The only two URLs this app is ever allowed to be: the shell over app://,
+   and the same file over file:// for the `did-fail-load` fallback below.
+   Everything that decides "is this us" — navigation, IPC senders — asks here,
+   so there is one answer rather than three that can drift apart. */
+const RENDERER_FILE_URL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).toString();
+
+function isAppUrl(url) {
+  const raw = String(url || '');
+  if (!raw) return false;
+  if (raw === APP_ORIGIN || raw.startsWith(APP_ORIGIN + '/')) return true;
+  return raw.split('#')[0].split('?')[0] === RENDERER_FILE_URL;
+}
 
 let mainWindow = null;
 let tray = null;
@@ -80,6 +93,29 @@ const DEFAULT_SETTINGS = {
   compare: { tolerance: 2, autoAlign: true, inkThreshold: 200 }
 };
 
+/**
+ * The settings file holds exactly the keys `DEFAULT_SETTINGS` names, and
+ * nothing that arrives from the renderer or off disk adds to that.
+ *
+ * Two reasons. `Object.assign` walks its source with [[Set]], so a key called
+ * `__proto__` is not stored — it re-points the prototype of the settings
+ * object, which is a thing a JSON file on disk should not be able to do. And
+ * an unrecognised key is either a bug or someone poking at the bridge; either
+ * way it has no business being persisted and read back on the next launch.
+ */
+const SETTINGS_KEYS = new Set(Object.keys(DEFAULT_SETTINGS));
+
+function sanitiseSettings(patch) {
+  const clean = {};
+  if (!patch || typeof patch !== 'object') return clean;
+  for (const key of Object.keys(patch)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    if (!SETTINGS_KEYS.has(key)) continue;
+    clean[key] = patch[key];
+  }
+  return clean;
+}
+
 const MIN_WIN_WIDTH = 940;
 const MIN_WIN_HEIGHT = 600;
 
@@ -90,7 +126,7 @@ function settingsPath() {
 function loadSettings() {
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf8');
-    const stored = JSON.parse(raw);
+    const stored = sanitiseSettings(JSON.parse(raw));
     settings = Object.assign({}, DEFAULT_SETTINGS, stored);
     settings.compare = Object.assign({}, DEFAULT_SETTINGS.compare, settings.compare || {});
     settings.window = Object.assign({}, DEFAULT_SETTINGS.window, settings.window || {});
@@ -300,7 +336,18 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      /* On. The renderer is a PDF viewer, and a PDF is the most untrusted
+         thing this app touches — a Chromium bug reached through one lands in
+         a process with no OS privileges of its own rather than in a process
+         that can spawn anything the user can. Nothing in src/js/ uses a Node
+         API, and preload.js only requires 'electron', which a sandboxed
+         preload is still allowed to do, so this costs the app nothing. */
+      sandbox: true,
+      nodeIntegrationInSubFrames: false,
+      webviewTag: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
       spellcheck: true
     }
   }));
@@ -417,6 +464,26 @@ function createWindow() {
     logMain('warn', 'blocked window.open from the renderer: ' + url);
     return { action: 'deny' };
   });
+
+  /* And the same for an actual navigation, which `setWindowOpenHandler` does
+     not cover. This is the one that matters: preload.js is attached to the
+     webContents, not to a page, so a renderer talked into setting
+     `location.href` would carry `window.rp` — file read, file write, the lot —
+     to whatever origin it landed on. There is no legitimate navigation in this
+     app at all: the shell is loaded once and everything after that is DOM. */
+  /* These three have not kept one signature across Electron versions: some
+     emit (event, url), the newer ones a single object carrying `url`. Reading
+     it off whichever argument has it means an upgrade cannot quietly turn the
+     guard into a no-op that still looks registered. */
+  const blockNavigation = (event, url) => {
+    const target = url || (event && event.url) || '';
+    if (isAppUrl(target)) return;
+    event.preventDefault();
+    logMain('warn', 'blocked renderer navigation to ' + target);
+  };
+  mainWindow.webContents.on('will-navigate', blockNavigation);
+  mainWindow.webContents.on('will-frame-navigate', blockNavigation);
+  mainWindow.webContents.on('will-redirect', blockNavigation);
 }
 
 function loadRenderer() {
@@ -426,6 +493,35 @@ function loadRenderer() {
     mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   });
 }
+
+/* The <meta> in src/index.html carries `CSP_DIRECTIVES` verbatim — see the note there.
+
+   No 'unsafe-eval': pdf.js is asked for `isEvalSupported: false` (see
+   src/js/pdfjs-loader.js), so nothing in the renderer compiles a string any
+   more, and a PDF that talks pdf.js into generating code has nothing to run
+   it with. No 'unsafe-inline' for scripts either — every script in the shell
+   is a src= tag, so an injected <script> or attribute handler is inert.
+   `base-uri` and `form-action` have no default-src fallback, so they are
+   spelled out; both are the difference between an injected tag being noise
+   and being an exfiltration route. */
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
+  "connect-src 'self' blob: data:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'"
+];
+
+/* `frame-ancestors` is only honoured as a header — Chromium ignores it in a
+   <meta> and says so in the console on every load — so it lives here and
+   nowhere else. Everything above it is the same list the <meta> carries. */
+const CSP = CSP_DIRECTIVES.concat(["frame-ancestors 'none'"]).join('; ');
 
 /**
  * MIME types matter here: a module script served as octet-stream is rejected
@@ -460,6 +556,10 @@ function registerAppProtocol() {
       let target;
       try {
         const url = new URL(request.url);
+        // The scheme is `standard`, so the host is part of the origin. Pinning
+        // it means app://something-else/ cannot become a second origin inside
+        // the app that `'self'` in the CSP would not cover.
+        if (url.host !== 'redline') return new Response('Forbidden', { status: 403 });
         rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
         target = path.resolve(__dirname, rel);
       } catch (err) {
@@ -489,13 +589,20 @@ function registerAppProtocol() {
         return new Response('Forbidden', { status: 403 });
       }
 
-      const type = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream';
+      const ext = path.extname(target).toLowerCase();
+      const type = MIME[ext] || 'application/octet-stream';
       try {
         const data = await fsp.readFile(target);
-        return new Response(data, {
-          status: 200,
-          headers: { 'content-type': type, 'cache-control': 'no-cache' }
-        });
+        const headers = { 'content-type': type, 'cache-control': 'no-cache' };
+        /* A real header rather than only the <meta> in index.html. The meta
+           form is ignored for `frame-ancestors`, and it does not exist at all
+           until the parser reaches it — a header is in force before the first
+           byte of the document is parsed. The two are kept in step on purpose;
+           index.html carries the same policy for the file:// fallback, which
+           has no header to attach one to. */
+        if (ext === '.html') headers['content-security-policy'] = CSP;
+        headers['x-content-type-options'] = 'nosniff';
+        return new Response(data, { status: 200, headers });
       } catch (err) {
         logMain('error', `app:// miss ${request.url} -> ${target} (${err.code || err.message})`);
         try {
@@ -856,11 +963,48 @@ if (!gotLock) {
     deliverOpenPath(filePath);
   });
 
+  /* Anything that ever gets a webContents — the shell, the print preview, a
+     window some future change adds — is refused a navigation off the app and a
+     <webview>. Registering it here rather than per window means a window added
+     later cannot quietly opt out of it. */
+  app.on('web-contents-created', (event, contents) => {
+    contents.on('will-attach-webview', (webviewEvent) => {
+      logMain('warn', 'blocked a <webview> from being attached');
+      webviewEvent.preventDefault();
+    });
+    contents.setWindowOpenHandler(({ url }) => {
+      logMain('warn', 'blocked window.open to ' + url);
+      return { action: 'deny' };
+    });
+  });
+
   app.whenReady().then(() => {
     loadSettings();
     fs.mkdirSync(recoveryDir(), { recursive: true });
     logMain('info', `starting Redline PDF ${app.getVersion()} — Electron ${process.versions.electron}, Chromium ${process.versions.chrome}`);
     registerAppProtocol();
+
+    /* A drawing tool needs none of these. Chromium asks before granting them,
+       but the prompt is a decision the user should never be put in front of on
+       behalf of a file they opened, so the answer is settled here and is
+       always no. `setPermissionCheckHandler` covers the synchronous half —
+       a page can otherwise see a permission as "granted" without ever asking. */
+    const ses = session.defaultSession;
+    ses.setPermissionRequestHandler((contents, permission, callback) => {
+      logMain('warn', 'denied permission request: ' + permission);
+      callback(false);
+    });
+    ses.setPermissionCheckHandler((contents, permission) => {
+      logMain('warn', 'denied permission check: ' + permission);
+      return false;
+    });
+    /* The app is offline by design and says so in its own settings screen.
+       Chromium would otherwise fetch a Hunspell dictionary from Google's CDN
+       the first time someone types in a sticky note, which is a request
+       leaving the machine that nobody asked for. Windows' own spellchecker
+       still works — it needs no download. */
+    try { ses.setSpellCheckerDictionaryDownloadURL('https://0.0.0.0/'); } catch (err) { /* older Electron */ }
+
     createWindow();
     if (settings.stayResident) setupTray();
     pendingOpenPath = pdfFromArgv(process.argv);
@@ -872,7 +1016,7 @@ if (!gotLock) {
         logMain,
         getWindow: () => mainWindow,
         getSettings: () => settings,
-        patchSettings: (patch) => { settings = Object.assign(settings, patch || {}); saveSettings(); },
+        patchSettings: (patch) => { settings = Object.assign(settings, sanitiseSettings(patch)); saveSettings(); },
         // The same route the tray's Quit takes, so the renderer's unsaved-tab
         // guard still runs and a cancel still cancels.
         requestQuit: () => { quitting = true; app.quit(); }
@@ -906,12 +1050,66 @@ if (!gotLock) {
 function ok(data) { return { ok: true, data }; }
 function fail(err) { return { ok: false, error: String(err && err.message ? err.message : err) }; }
 
+/**
+ * Is this call really from our own window?
+ *
+ * `ipcMain.handle` answers whoever asks, and what it is answering with here is
+ * "read any file", "write any file" and "put this on the clipboard". The
+ * navigation guard in `createWindow` is what should make a hostile sender
+ * impossible; this is the second lock on the same door, so that one mistake in
+ * the renderer is not also a mistake in the main process. Only the top frame
+ * of the one window, only on the app's own URL.
+ */
+function isTrustedSender(event) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (event.sender !== mainWindow.webContents) return false;
+    const frame = event.senderFrame;
+    if (!frame || frame !== event.sender.mainFrame) return false;
+    return isAppUrl(frame.url);
+  } catch (err) {
+    // A frame that has already gone is not a frame we answer.
+    return false;
+  }
+}
+
+/** `ipcMain.handle` with the sender check in front of it. */
+function handle(channel, listener) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      let where = 'unknown frame';
+      try { where = String(event.senderFrame && event.senderFrame.url); } catch (err) { /* gone */ }
+      logMain('warn', 'refused IPC "' + channel + '" from ' + where);
+      return fail(new Error('That request did not come from the Redline PDF window.'));
+    }
+    return listener(event, ...args);
+  });
+}
+
+/**
+ * A path the renderer is allowed to name.
+ *
+ * Every path that reaches these handlers came from a native dialog, a drop, or
+ * the recents list, so it is always already absolute — which makes anything
+ * relative a sign that something built a path out of a string it should not
+ * have. Refusing it here keeps a "..\..\" from ever being resolved against
+ * whatever the process happens to have as a working directory, and NUL is
+ * rejected because it truncates the name inside the OS call.
+ */
+function absolutePath(value) {
+  const raw = String(value === null || value === undefined ? '' : value);
+  if (!raw) throw new Error('No file path was given');
+  if (raw.indexOf('\0') !== -1) throw new Error('That file path is not usable');
+  if (!path.isAbsolute(raw)) throw new Error('Only full file paths can be used: ' + raw);
+  return path.normalize(raw);
+}
+
 /** Settings as the renderer wants them: recents already in display order. */
 function settingsForRenderer() {
   return Object.assign({}, settings, { recents: sortedRecents() });
 }
 
-ipcMain.handle('app:ready-info', async () => {
+handle('app:ready-info', async () => {
   const startupFile = pendingOpenPath;
   pendingOpenPath = null;
   return ok({
@@ -929,10 +1127,11 @@ ipcMain.handle('app:ready-info', async () => {
   });
 });
 
-ipcMain.handle('settings:patch', async (event, patch) => {
+handle('settings:patch', async (event, patch) => {
   try {
-    settings = Object.assign(settings, patch || {});
-    if (patch && Object.prototype.hasOwnProperty.call(patch, 'stayResident')) {
+    patch = sanitiseSettings(patch);
+    settings = Object.assign(settings, patch);
+    if (Object.prototype.hasOwnProperty.call(patch, 'stayResident')) {
       if (patch.stayResident) setupTray();
       else if (tray) { tray.destroy(); tray = null; }
     }
@@ -941,18 +1140,18 @@ ipcMain.handle('settings:patch', async (event, patch) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('settings:get', async () => ok(settingsForRenderer()));
+handle('settings:get', async () => ok(settingsForRenderer()));
 
-ipcMain.handle('recents:add', async (event, entry) => {
+handle('recents:add', async (event, entry) => {
   try { rememberRecent(entry); return ok(sortedRecents()); } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('recents:remember-view', async (event, entry) => {
+handle('recents:remember-view', async (event, entry) => {
   try { rememberRecentView(entry); return ok(true); } catch (err) { return fail(err); }
 });
 
 /** Pin or unpin one entry. Pinned entries are exempt from the ageing cap. */
-ipcMain.handle('recents:pin', async (event, payload) => {
+handle('recents:pin', async (event, payload) => {
   try {
     const found = settings.recents.find((r) => r.path === (payload && payload.path));
     if (!found) return ok(sortedRecents());
@@ -967,7 +1166,7 @@ ipcMain.handle('recents:pin', async (event, payload) => {
 });
 
 /** Drop one entry. This is a list the user curates, not a log. */
-ipcMain.handle('recents:remove', async (event, filePath) => {
+handle('recents:remove', async (event, filePath) => {
   try {
     settings.recents = settings.recents.filter((r) => r.path !== filePath);
     saveSettings();
@@ -976,14 +1175,14 @@ ipcMain.handle('recents:remove', async (event, filePath) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('recents:clear', async () => {
+handle('recents:clear', async () => {
   settings.recents = [];
   saveSettings();
   refreshTrayMenu();
   return ok([]);
 });
 
-ipcMain.handle('dialog:open-pdf', async (event, opts) => {
+handle('dialog:open-pdf', async (event, opts) => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: (opts && opts.title) || 'Open PDF',
@@ -997,18 +1196,22 @@ ipcMain.handle('dialog:open-pdf', async (event, opts) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('file:read', async (event, filePath) => {
+handle('file:read', async (event, filePath) => {
   try {
-    const buffer = await fsp.readFile(filePath);
-    return ok({ path: filePath, name: path.basename(filePath), bytes: buffer });
+    const target = absolutePath(filePath);
+    const buffer = await fsp.readFile(target);
+    return ok({ path: target, name: path.basename(target), bytes: buffer });
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('file:exists', async (event, filePath) => {
-  try { return ok(fs.existsSync(filePath)); } catch (err) { return fail(err); }
+handle('file:exists', async (event, filePath) => {
+  // A path this handler will not touch is not a path that exists, as far as
+  // the caller is concerned — the split's overwrite check reads a plain
+  // false, so it must not have to catch here.
+  try { return ok(fs.existsSync(absolutePath(filePath))); } catch (err) { return ok(false); }
 });
 
-ipcMain.handle('dialog:save-as', async (event, opts) => {
+handle('dialog:save-as', async (event, opts) => {
   try {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: (opts && opts.title) || 'Save As',
@@ -1021,7 +1224,7 @@ ipcMain.handle('dialog:save-as', async (event, opts) => {
 });
 
 /** A destination folder. Splitting a drawing writes several files into one. */
-ipcMain.handle('dialog:choose-folder', async (event, opts) => {
+handle('dialog:choose-folder', async (event, opts) => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: (opts && opts.title) || 'Choose a folder',
@@ -1037,9 +1240,10 @@ ipcMain.handle('dialog:choose-folder', async (event, opts) => {
  * Write bytes to disk. When `backup` is set and the target already exists, an
  * untouched copy is preserved once as <name>.bak.pdf before the first overwrite.
  */
-ipcMain.handle('file:write', async (event, payload) => {
+handle('file:write', async (event, payload) => {
   try {
-    const { filePath, bytes, backup } = payload;
+    const { bytes, backup } = payload || {};
+    const filePath = absolutePath(payload && payload.filePath);
     if (backup && fs.existsSync(filePath)) {
       const ext = path.extname(filePath);
       const backupPath = filePath.slice(0, filePath.length - ext.length) + '.bak' + ext;
@@ -1054,16 +1258,19 @@ ipcMain.handle('file:write', async (event, payload) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('file:write-text', async (event, payload) => {
+handle('file:write-text', async (event, payload) => {
   try {
-    await fsp.writeFile(payload.filePath, payload.text, 'utf8');
-    return ok({ filePath: payload.filePath });
+    const filePath = absolutePath(payload && payload.filePath);
+    await fsp.writeFile(filePath, String((payload && payload.text) || ''), 'utf8');
+    return ok({ filePath });
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('shell:show-item', async (event, filePath) => {
-  shell.showItemInFolder(filePath);
-  return ok(true);
+handle('shell:show-item', async (event, filePath) => {
+  try {
+    shell.showItemInFolder(absolutePath(filePath));
+    return ok(true);
+  } catch (err) { return fail(err); }
 });
 
 /**
@@ -1075,7 +1282,7 @@ ipcMain.handle('shell:show-item', async (event, filePath) => {
  */
 const EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
-ipcMain.handle('shell:open-external', async (event, rawUrl) => {
+handle('shell:open-external', async (event, rawUrl) => {
   try {
     let url;
     try { url = new URL(String(rawUrl)); } catch (err) { return fail('Not a usable link: ' + rawUrl); }
@@ -1107,7 +1314,7 @@ ipcMain.handle('shell:open-external', async (event, rawUrl) => {
  * item both land on it — and because `document.execCommand('copy')` cannot see
  * a selection that has already been collapsed by a tool.
  */
-ipcMain.handle('clipboard:write-text', async (event, text) => {
+handle('clipboard:write-text', async (event, text) => {
   try {
     clipboard.writeText(String(text === null || text === undefined ? '' : text));
     return ok(true);
@@ -1123,7 +1330,7 @@ ipcMain.handle('clipboard:write-text', async (event, text) => {
  * bitmap on the Windows clipboard — writing a data URL as *text* is what a
  * naive version of this does, and it pastes into an email as gibberish.
  */
-ipcMain.handle('clipboard:write-image', async (event, bytes) => {
+handle('clipboard:write-image', async (event, bytes) => {
   try {
     const buffer = Buffer.from(bytes);
     if (!buffer.length) return fail(new Error('No image data'));
@@ -1136,14 +1343,14 @@ ipcMain.handle('clipboard:write-image', async (event, bytes) => {
 
 /* A check the user asked for. Everything it has to say it says in a native
    dialog from updater.js, so the renderer only needs the outcome for a toast. */
-ipcMain.handle('update:check', async () => {
+handle('update:check', async () => {
   try {
     if (!updater) return ok({ status: 'unavailable', reason: 'The updater did not load.' });
     return ok(await updater.check({ manual: true }));
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('dialog:message', async (event, opts) => {
+handle('dialog:message', async (event, opts) => {
   const result = await dialog.showMessageBox(mainWindow, Object.assign({
     type: 'question',
     buttons: ['OK'],
@@ -1155,7 +1362,7 @@ ipcMain.handle('dialog:message', async (event, opts) => {
 
 // --- autosave / recovery ---------------------------------------------------
 
-ipcMain.handle('recovery:write', async (event, payload) => {
+handle('recovery:write', async (event, payload) => {
   try {
     const file = path.join(recoveryDir(), recoveryKey(payload.docPath));
     /* The page order rides along with the markups because a drawing whose only
@@ -1175,7 +1382,7 @@ ipcMain.handle('recovery:write', async (event, payload) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('recovery:read', async (event, docPath) => {
+handle('recovery:read', async (event, docPath) => {
   try {
     const file = path.join(recoveryDir(), recoveryKey(docPath));
     if (!fs.existsSync(file)) return ok(null);
@@ -1183,7 +1390,7 @@ ipcMain.handle('recovery:read', async (event, docPath) => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('recovery:clear', async (event, docPath) => {
+handle('recovery:clear', async (event, docPath) => {
   try {
     const file = path.join(recoveryDir(), recoveryKey(docPath));
     if (fs.existsSync(file)) await fsp.unlink(file);
@@ -1193,14 +1400,14 @@ ipcMain.handle('recovery:clear', async (event, docPath) => {
 
 // --- logging / diagnostics -------------------------------------------------
 
-ipcMain.handle('log:append', async (event, text) => {
+handle('log:append', async (event, text) => {
   appendLog(String(text || ''));
   return ok(true);
 });
 
-ipcMain.handle('log:path', async () => ok(logPath()));
+handle('log:path', async () => ok(logPath()));
 
-ipcMain.handle('log:read', async () => {
+handle('log:read', async () => {
   try {
     if (!fs.existsSync(logPath())) return ok('');
     const text = await fsp.readFile(logPath(), 'utf8');
@@ -1208,7 +1415,7 @@ ipcMain.handle('log:read', async () => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('log:reveal', async () => {
+handle('log:reveal', async () => {
   try {
     const file = logPath();
     if (!fs.existsSync(file)) appendLog('(log created on demand)\n');
@@ -1217,7 +1424,7 @@ ipcMain.handle('log:reveal', async () => {
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('diag:info', async () => {
+handle('diag:info', async () => {
   const nodeModules = path.join(__dirname, 'node_modules');
   const readVersion = (pkg) => {
     try {
@@ -1277,7 +1484,7 @@ ipcMain.handle('diag:info', async () => {
  * decides what to print (range, markups, scale) and hands us finished bytes;
  * main only ever moves them to a window and calls the OS dialog.
  */
-ipcMain.handle('print:document', async (event, payload) => {
+handle('print:document', async (event, payload) => {
   try {
     const { bytes, name, autoDialog } = payload || {};
     if (!bytes || !bytes.length) throw new Error('Nothing to print');
@@ -1290,14 +1497,14 @@ ipcMain.handle('print:document', async (event, payload) => {
 });
 
 /** Re-open the OS dialog for the preview that is already on screen. */
-ipcMain.handle('print:dialog', async () => {
+handle('print:dialog', async () => {
   try {
     if (!printWindow || printWindow.isDestroyed()) throw new Error('No print preview is open');
     return ok(await printPreviewWindow(printWindow));
   } catch (err) { return fail(err); }
 });
 
-ipcMain.handle('print:close', async () => {
+handle('print:close', async () => {
   try {
     if (printWindow && !printWindow.isDestroyed()) printWindow.close();
     return ok(true);
@@ -1306,8 +1513,8 @@ ipcMain.handle('print:close', async () => {
 
 // --- window chrome ---------------------------------------------------------
 
-ipcMain.handle('window:minimize', () => { mainWindow?.minimize(); return ok(true); });
-ipcMain.handle('window:toggle-maximize', () => {
+handle('window:minimize', () => { mainWindow?.minimize(); return ok(true); });
+handle('window:toggle-maximize', () => {
   if (!mainWindow) return ok(false);
   if (mainWindow.isMaximized()) mainWindow.unmaximize();
   else mainWindow.maximize();
@@ -1318,7 +1525,7 @@ ipcMain.handle('window:toggle-maximize', () => {
  * Without it the `close` handler below bounces straight back to the renderer
  * and the window would never actually go.
  */
-ipcMain.handle('window:close', (event, opts) => {
+handle('window:close', (event, opts) => {
   if (opts && opts.force) closeApproved = true;
   mainWindow?.close();
   return ok(true);
@@ -1330,25 +1537,25 @@ ipcMain.handle('window:close', (event, opts) => {
  * close cancels the quit — leaving the flag set would let the *next* close slip
  * past the guard.
  */
-ipcMain.handle('window:cancel-close', () => {
+handle('window:cancel-close', () => {
   closeAsking = false;
   quitting = false;
   if (closeAskTimer) { clearTimeout(closeAskTimer); closeAskTimer = null; }
   return ok(true);
 });
-ipcMain.handle('window:is-maximized', () => ok(!!mainWindow?.isMaximized()));
+handle('window:is-maximized', () => ok(!!mainWindow?.isMaximized()));
 /**
  * Presentation mode. The renderer owns the decision — it is the half that
  * hides the toolbars — so this only moves the window and reports back what it
  * actually managed, which is not always what was asked for on a display that
  * refuses fullscreen.
  */
-ipcMain.handle('window:set-fullscreen', (event, on) => {
+handle('window:set-fullscreen', (event, on) => {
   if (!mainWindow) return ok(false);
   mainWindow.setFullScreen(!!on);
   return ok(mainWindow.isFullScreen());
 });
-ipcMain.handle('window:set-title', (event, title) => {
+handle('window:set-title', (event, title) => {
   mainWindow?.setTitle(title || 'Redline PDF');
   return ok(true);
 });

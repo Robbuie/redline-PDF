@@ -760,6 +760,39 @@ src/js/app.js      wiring: toolbar, shortcuts, save pipeline, settings
 test/verify.js     headless checks
 ```
 
+## Security
+
+Redline PDF opens files other people made, which is the whole job, so the app is
+built on the assumption that any drawing it is handed may be hostile.
+
+- **The window that draws your sheets is sandboxed** and has no Node, no file
+  access and no operating-system privileges. Everything it needs — open, save,
+  print, clipboard — goes through `preload.js`, one narrow list of named calls,
+  and each one is checked in the main process for having come from the real app
+  window before it is answered.
+- **It cannot navigate.** The shell is loaded once at launch and there is no
+  route out of it: no `window.open`, no link following, no redirect, no
+  `<webview>`.
+- **Nothing in the renderer compiles code.** PDF.js is run with evaluation
+  turned off, and the content policy allows no inline script and no `eval`, so
+  a drawing that talks the PDF engine into emitting code has nothing to run it.
+- **A link inside a PDF cannot open anything on its own.** Only `http`, `https`
+  and `mailto` are ever passed to Windows, and only after a dialog has shown you
+  the address it actually resolves to — not the text the file displays.
+- **The app is offline.** The one network call is the update check, it is a GET
+  of the release metadata from github.com, and turning it off in Settings →
+  Updates means the app makes none at all. No drawing, no filename and no
+  telemetry ever leaves the machine.
+- **Autosave and recents stay local**, in `%APPDATA%\Redline PDF`.
+
+The one thing still on the list: **the installers are not code-signed.** The
+updater's trust therefore rests on HTTPS to github.com rather than on a
+publisher signature, and Windows SmartScreen will warn on a fresh install.
+Signing is the fix, and it needs a certificate rather than a code change.
+
+`test/verify.js` asserts each of the above, so a later change cannot quietly
+drop one.
+
 ## If something goes wrong
 
 Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> (or the bug icon in the title

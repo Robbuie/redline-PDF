@@ -94,7 +94,20 @@
       const params = Object.assign({
         cMapUrl: this.resolve('cmaps/'),
         cMapPacked: true,
-        standardFontDataUrl: this.resolve('standard_fonts/')
+        standardFontDataUrl: this.resolve('standard_fonts/'),
+        /* pdf.js used to compile parts of a file — `new Function` for Type 4
+           (PostScript calculator) functions and for some font paths — which is
+           the shape of bug CVE-2024-4367 was: a crafted font talking the
+           library into generating code. v6 has no `new Function` left in
+           either the main bundle or the worker, so the renderer's CSP can
+           refuse 'unsafe-eval' outright, and does.
+
+           This flag is therefore belt rather than braces: it is a no-op on v6
+           and the switch that turns evaluation off again on any earlier build
+           this ever runs against. It is the only option here about trust
+           rather than capability — `isOffscreenCanvasSupported` and friends
+           are left alone. */
+        isEvalSupported: false
       }, extra || {});
       if (this.flavour !== 'umd') {
         params.wasmUrl = this.resolve('wasm/');

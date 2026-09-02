@@ -2,8 +2,26 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <!-- Kept identical to the `CSP` constant in main.js, which serves the same
+       policy as a real header over app://. This copy is what covers the
+       file:// fallback, where there is no response to hang a header on.
+
+       No 'unsafe-eval' and no 'unsafe-inline' for scripts. Nothing left in the
+       renderer turns a string into code — pdf.js v6 dropped the last of it,
+       and is pinned that way anyway (see pdfjs-loader.js) — and every script
+       here is a src= tag, which together mean an injected <script>, an
+       onclick= attribute, or a font stream that talks pdf.js into emitting
+       code all have nothing to execute them. Styles keep
+       'unsafe-inline': the pdf.js text layer positions every span with a style
+       attribute. `base-uri` and `form-action` do not fall back to default-src,
+       so they are named; without them an injected <base> or <form> is a way
+       out of the app.
+
+       `frame-ancestors` is deliberately absent: Chromium honours it only as a
+       header, and warns on every load if it is written here. main.js appends
+       it to the served policy instead. -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:;" />
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'none'; form-action 'none';" />
   <title>Redline PDF</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>

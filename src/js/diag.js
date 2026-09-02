@@ -119,7 +119,13 @@
 
       RP.$('#diagCopy').addEventListener('click', async () => {
         try {
-          await navigator.clipboard.writeText(await this.snapshot());
+          /* The main process's clipboard, not `navigator.clipboard` — the same
+             route clip.js takes and for one more reason besides its own: web
+             clipboard access is a Chromium *permission*, and main.js answers
+             every permission request no rather than put a prompt in front of
+             someone on behalf of a file they opened. This path needs no
+             permission and no user-activation gesture. */
+          await window.rp.clipboard.writeText(await this.snapshot());
           RP.toast('Diagnostics copied to the clipboard', 'good');
         } catch (err) {
           RP.toast('Could not copy: ' + err.message, 'error');
