@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.17.2. See `README.md` for user-facing behaviour,
+PDF. Current version 0.17.4. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -458,6 +458,43 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   are identical on screen. `snapshot.js` has known all of this since it shipped
   (`MAX_PIXELS`); the page canvases simply never got it. `test/verify.js`
   covers the limits, the proportions, the probe and the notice.
+- **That probe may only be asked *before* the page is drawn, and the
+  post-render half is a different question — `canvasStillBacked`.** The only
+  thing that makes `canvasTookTheFill` true is the white this code put there
+  itself, so asking it again after `render()` resolves reads whatever the
+  drawing painted at that pixel. On a title block whose frame is plotted flush
+  to the media box that pixel is **black**, and up to 0.17.3 the base raster
+  therefore rejected a page it had rendered perfectly, halved `rasterBackoff`,
+  re-rendered onto the same black pixel, and walked down to
+  `MIN_RASTER_BACKOFF` before putting up *could not be rendered at this zoom*
+  — deterministic at every zoom, on one sheet of a set whose other sheets
+  inset their border by a hair, which is exactly what made it read as a
+  corrupt drawing rather than as a guard with the wrong test in it. The
+  post-render check drops brightness and asks only what a lost surface looks
+  like: the read throws, or it comes back **transparent**. Both contexts are
+  created `alpha: false`, so a live canvas reads alpha 255 whatever is painted
+  on it and alpha 0 cannot be ink. It samples the four corners and the centre
+  and needs **all** of them dead, because the two mistakes do not cost the
+  same — a blank or soft sheet is one the user can zoom out of, a false
+  refusal is a drawing the app insists it cannot show. `renderDetail` has the
+  same pair for the same reason: a crop taken at the edge of a bordered sheet
+  is mostly ink at its own origin. `test/verify.js` covers both halves.
+- **Neither probe reads back off the page raster, and setting
+  `willReadFrequently` on those canvases to quiet Chromium is the trade you do
+  not want.** `getImageData` on a canvas is a readback; Chromium logs the
+  notice after a couple of them and the heuristic behind it can move the
+  canvas onto a CPU backing store. These are the largest canvases in the app —
+  an ANSI E sheet is tens of megapixels — and they exist to be drawn, not
+  read, so demoting them undoes what the raster cap and the sharp crop are
+  for. `viewer.probeSurface()` keeps one 1x1 scratch per viewer *with* the
+  attribute and `samplePixel` reads through it, leaving the page canvas as a
+  `drawImage` source only. The scratch is cleared before each sample, or a
+  surface that draws nothing answers with the previous page's pixel; it is
+  made on first use rather than at load time, because `viewer.js` may not
+  touch the DOM until `init()`; and both probes fall back to reading `ctx`
+  directly when no scratch can be made, which is the path `test/verify.js`
+  takes. `compare.js` and the ink-box measurement do set the attribute, and
+  should: their canvases are offscreen, read whole, and never displayed.
 - **The sharp crop is an overlay, and the page canvas still covers the page.**
   The cap above stops a large sheet blanking and pays for it in sharpness — an
   ANSI E drawing at 400% rasters at about 0.44 device pixels per CSS pixel,

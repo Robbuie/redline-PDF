@@ -1361,7 +1361,9 @@
            replaces the object outright, so a zoom that landed mid-render means
            this crop is measured in CSS pixels that no longer exist. */
         if (record.viewport !== viewport || !record.rendered) { this.releaseDetail(record); return; }
-        if (!this.canvasTookTheFill(ctx, record.detailCanvas)) {
+        // Post-render, so the same rule as the base raster: a crop taken over
+        // the corner of a bordered sheet is full of ink at its own (0, 0).
+        if (!this.canvasStillBacked(ctx, record.detailCanvas)) {
           record.detailOff = true;
           this.releaseDetail(record);
           return;
@@ -1546,6 +1548,71 @@
     },
 
     /**
+     * A 1x1 scratch canvas that the page rasters are read *through*.
+     *
+     * `getImageData` on a page canvas is a readback, and Chromium watches for
+     * them: a canvas read more than a couple of times gets the console notice
+     * about `willReadFrequently`, and the heuristic behind that notice can
+     * move the canvas off the GPU onto a CPU backing store. Setting the
+     * attribute on the page rasters to quiet the warning would be taking that
+     * deal deliberately, and it is the wrong one here — these are the largest
+     * canvases in the app, an ANSI E sheet is tens of megapixels, and they
+     * exist to be *drawn*, not read. `compare.js` and the ink-box measurement
+     * do set it, because their canvases are the opposite: offscreen, read
+     * whole, never displayed.
+     *
+     * So the two probes below sample through this instead. The page canvas is
+     * only ever a `drawImage` source, which is not a readback, and every
+     * actual read lands on a one-pixel surface that is marked for it. One per
+     * viewer, made on first use — `viewer.js` may not touch the DOM at load
+     * time, `test/verify.js` runs it without one.
+     *
+     * Returns null when there is no real canvas to be had (the stub document
+     * in the test harness), and the probes fall back to reading directly.
+     */
+    probeSurface() {
+      if (this.probeCtx !== undefined) return this.probeCtx;
+      this.probeCtx = null;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx && typeof ctx.getImageData === 'function'
+          && typeof ctx.drawImage === 'function' && typeof ctx.clearRect === 'function') {
+          this.probeCanvas = canvas;
+          this.probeCtx = ctx;
+        }
+      } catch (err) {
+        // No document, or no context. Reading directly still works.
+      }
+      return this.probeCtx;
+    },
+
+    /**
+     * One pixel of `canvas` as an RGBA quad, or null when the surface could
+     * not be read at all — which is itself the answer both probes want.
+     *
+     * The scratch is cleared first, so a surface that draws nothing leaves
+     * alpha 0 behind rather than the previous page's pixel. `ctx` is only used
+     * on the fallback path.
+     */
+    samplePixel(ctx, canvas, x, y) {
+      const probe = this.probeSurface();
+      try {
+        if (probe) {
+          probe.clearRect(0, 0, 1, 1);
+          probe.drawImage(canvas, x, y, 1, 1, 0, 0, 1, 1);
+          return probe.getImageData(0, 0, 1, 1).data;
+        }
+        return ctx.getImageData(x, y, 1, 1).data;
+      } catch (err) {
+        // Chromium throws here on a canvas it could not back at all.
+        return null;
+      }
+    },
+
+    /**
      * Did the browser actually give us the canvas we asked for?
      *
      * A refused allocation does not throw and does not come back with zeroed
@@ -1565,13 +1632,56 @@
       // A stubbed context (test/verify.js) has no pixels to read and is not
       // what this guard is about.
       if (!ctx || typeof ctx.getImageData !== 'function') return true;
-      try {
-        const px = ctx.getImageData(0, 0, 1, 1).data;
-        return px[3] !== 0 && px[0] > 250 && px[1] > 250 && px[2] > 250;
-      } catch (err) {
-        // Chromium throws here on a canvas it could not back at all.
-        return false;
+      const px = this.samplePixel(ctx, canvas, 0, 0);
+      if (!px) return false;
+      return px[3] !== 0 && px[0] > 250 && px[1] > 250 && px[2] > 250;
+    },
+
+    /**
+     * The same question *after* a render, where white is no longer the answer.
+     *
+     * `canvasTookTheFill` may only be asked before the page is drawn, because
+     * the only thing making its brightness test true is the fill this code put
+     * there itself. Asked again after `render()`, the pixel it reads is
+     * whatever the drawing painted — and a border rule laid on the sheet edge
+     * puts black at (0, 0). That is an ordinary title block, not a refused
+     * surface, but it fails the brightness test at every scale, so the raster
+     * was rejected, retried at half the dpr onto the same black pixel, and
+     * walked all the way down to `MIN_RASTER_BACKOFF` before the page put up
+     * "could not be rendered at this zoom". A correctly rendered sheet, the
+     * whole way.
+     *
+     * So the post-render test drops brightness and asks only what a lost
+     * surface actually looks like: the read throws, or it comes back
+     * transparent. The context is created with `alpha: false`, so a live
+     * canvas reads alpha 255 everywhere no matter what is painted on it —
+     * alpha 0 cannot be ink. Several points are sampled and *all* of them have
+     * to be dead before the page is called a failure, because the cost of the
+     * two mistakes is not symmetric: a soft or blank sheet is a page the user
+     * can zoom out of, and a false refusal is a drawing the app insists it
+     * cannot show.
+     */
+    canvasStillBacked(ctx, canvas) {
+      if (!canvas || !canvas.width || !canvas.height) return false;
+      if (!ctx || typeof ctx.getImageData !== 'function') return true;
+      const w = canvas.width;
+      const h = canvas.height;
+      const points = [
+        [0, 0],
+        [w - 1, 0],
+        [0, h - 1],
+        [w - 1, h - 1],
+        [(w >> 1), (h >> 1)]
+      ];
+      /* First live pixel wins, so an ordinary sheet costs one sample and the
+         four remaining ones are only ever paid on a canvas that is genuinely
+         coming back dead. */
+      for (const [x, y] of points) {
+        const px = this.samplePixel(ctx, canvas, Math.max(0, x), Math.max(0, y));
+        if (!px) return false;
+        if (px[3] !== 0) return true;
       }
+      return false;
     },
 
     async renderPage(index) {
@@ -1633,9 +1743,11 @@
 
       try {
         await task.promise;
-        // The surface can still be dropped mid-render under memory pressure,
-        // and the promise resolves either way.
-        if (!this.canvasTookTheFill(ctx, record.pdfCanvas)) {
+        /* The surface can still be dropped mid-render under memory pressure,
+           and the promise resolves either way. `canvasStillBacked`, not
+           `canvasTookTheFill`: the white fill is gone by now and the page is
+           entitled to have painted ink at any pixel this looks at. */
+        if (!this.canvasStillBacked(ctx, record.pdfCanvas)) {
           this.rasterRefused(record, plan);
           return;
         }

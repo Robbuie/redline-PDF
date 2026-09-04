@@ -2694,6 +2694,91 @@ function testRasterCap() {
     !viewer.canvasTookTheFill(
       { getImageData() { throw new Error('out of memory'); } }, { width: 100, height: 100 }));
 
+  /* And the *post*-render half, which is a different question with a different
+     answer. The white fill is gone by then — the page has been drawn over it —
+     so brightness says nothing about whether the surface is real. A sheet whose
+     border rule sits on the media box edge paints black at (0, 0), and asking
+     `canvasTookTheFill` about it rejected a perfectly good raster, retried it
+     at half the dpr onto the same black pixel, and gave up with "could not be
+     rendered at this zoom" on a page that had rendered correctly every time.
+     The context is `alpha: false`, so alpha 0 is the one thing that cannot be
+     ink. */
+  const gridCtx = (rgbaAt) => ({ getImageData: (x, y) => ({ data: rgbaAt(x, y) }) });
+  const everywhere = (rgba) => gridCtx(() => rgba);
+  const inked = { width: 100, height: 100 };
+
+  check('ink at the page corner is not mistaken for a refused canvas',
+    viewer.canvasStillBacked(everywhere([0, 0, 0, 255]), inked),
+    'a border rule on the sheet edge is a drawing, not a failure');
+  check('a surface dropped mid-render is still caught',
+    !viewer.canvasStillBacked(everywhere([0, 0, 0, 0]), inked));
+  check('a post-render read that throws is caught, not propagated',
+    !viewer.canvasStillBacked(
+      { getImageData() { throw new Error('out of memory'); } }, inked));
+  check('a zero-sized canvas is caught after the render too',
+    !viewer.canvasStillBacked(everywhere([0, 0, 0, 255]), { width: 0, height: 100 }));
+
+  /* All of the samples have to be dead before the page is called a failure.
+     One live pixel anywhere is a backed surface, and the two mistakes do not
+     cost the same: a blank sheet is something the user can zoom out of, a
+     false refusal is a drawing the app refuses to show. */
+  check('one live pixel among dead ones is a backed surface',
+    viewer.canvasStillBacked(
+      gridCtx((x, y) => (x === 50 && y === 50 ? [255, 255, 255, 255] : [0, 0, 0, 0])),
+      inked),
+    'the centre sample has to be reached');
+  check('the corner samples stay inside the canvas',
+    viewer.canvasStillBacked(
+      gridCtx((x, y) => {
+        if (x < 0 || y < 0 || x >= inked.width || y >= inked.height) {
+          throw new Error('sampled outside the canvas: ' + x + ',' + y);
+        }
+        return [0, 0, 0, 255];
+      }), inked),
+    'an out-of-bounds getImageData throws in Chromium and reads as a refusal');
+
+  /* Neither probe may read back off the page raster to answer any of that.
+     `getImageData` on a canvas is a readback, and Chromium moves a canvas it
+     sees read repeatedly onto a CPU backing store — on the biggest canvases in
+     the app, which is the opposite of what the raster cap and the sharp crop
+     exist for, and it announces the intent in the console first. Both probes
+     therefore sample through a 1x1 scratch marked `willReadFrequently`, so the
+     page canvas is only ever a `drawImage` source. */
+  const drawnFrom = [];
+  const scratchProbe = (rgba) => ({
+    clearRect() { drawnFrom.length = 0; },
+    drawImage(src) { drawnFrom.push(src); },
+    getImageData: () => ({ data: rgba })
+  });
+  const noReadback = {
+    getImageData() { throw new Error('read back off the page raster'); }
+  };
+
+  viewer.probeCtx = scratchProbe([0, 0, 0, 255]);
+  check('the post-render probe does not read back off the page raster',
+    viewer.canvasStillBacked(noReadback, inked) && drawnFrom.length === 1
+      && drawnFrom[0] === inked,
+    'a page canvas read repeatedly gets moved off the GPU');
+
+  viewer.probeCtx = scratchProbe([255, 255, 255, 255]);
+  check('the pre-render probe does not read back off the page raster either',
+    viewer.canvasTookTheFill(noReadback, inked) && drawnFrom.length === 1);
+
+  /* And the scratch is cleared between samples, or a surface that draws
+     nothing keeps answering with the previous page's pixel. */
+  let cleared = 0;
+  viewer.probeCtx = {
+    clearRect() { cleared += 1; },
+    drawImage() {},
+    getImageData: () => ({ data: [0, 0, 0, 0] })
+  };
+  check('the scratch is cleared before every sample',
+    !viewer.canvasStillBacked(noReadback, inked) && cleared === 5,
+    cleared + ' clears for 5 samples');
+
+  // Back to whatever the harness can make, so nothing below inherits a stub.
+  viewer.probeCtx = undefined;
+
   /* A page that could not be rastered has to say so. The failed state is a
      class on the container and a rule in app.css; a white rectangle on its own
      reads as a drawing with nothing on it, which is the wrong thing to tell

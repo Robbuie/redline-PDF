@@ -12,6 +12,39 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.17.4] — 2026-09-04
+
+### Fixed
+
+- **A sheet whose border is drawn on the very edge of the paper no longer
+  reports "This sheet could not be rendered at this zoom."** The check that
+  tells a canvas the browser quietly refused from one it actually gave us
+  reads a pixel back after the page is drawn — and it was still looking for
+  the white it had filled the canvas with beforehand. On a title block whose
+  frame sits flush to the media box there is black ink in that corner, so a
+  page that had rendered correctly was thrown away, retried at half the
+  resolution onto the same black pixel, and finally shown as a failure. The
+  drawing was fine the whole time, at every zoom, which is what made it look
+  like the app could not open the file. The check now asks only what a lost
+  canvas actually looks like, so ink anywhere on the sheet is read as a
+  drawing rather than as a fault.
+- **The sharp crop over a large-format sheet no longer stands itself down over
+  the corner of a bordered drawing**, for the same reason — a detail tile taken
+  at the edge of the paper is mostly ink.
+
+### Changed
+
+- **Large sheets keep their hardware acceleration.** The check above reads a
+  pixel back, and reading pixels off a drawing's canvas is something the
+  browser notices: do it often enough and it quietly moves that canvas into
+  ordinary memory, which on a full-size sheet is the difference between a page
+  that draws and a page you wait for. The check now reads through a
+  one-pixel scratch canvas of its own instead, so the sheet itself is never
+  read from. This also clears the run of `willReadFrequently` notices from the
+  diagnostics log, where they were crowding out things worth seeing.
+
+---
+
 ## [0.17.3] — 2026-09-02
 
 ### Security
