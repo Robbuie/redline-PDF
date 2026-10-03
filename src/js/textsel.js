@@ -287,6 +287,11 @@
       };
       const madeText = (n, noun) => n + ' ' + noun + (n === 1 ? '' : 's') + ' added';
 
+      /* 0.20: the three text markups and the two copies are what this menu
+         is opened for nearly every time, so they are the top level; the
+         shapes drawn around the words and the rarer actions are one submenu
+         row each. It was sixteen rows, which inside the drawing's own menu
+         put the rest of that menu off the bottom of a laptop screen. */
       return [
         { heading: this.wordCount(payload) + ' words selected' },
         {
@@ -303,36 +308,11 @@
         },
         { separator: true },
         {
-          label: 'Cloud around it',
-          run: () => done(madeText(this.shape(payload, 'cloud'), 'cloud'))
-        },
-        {
-          label: 'Box around it',
-          run: () => done(madeText(this.shape(payload, 'rect'), 'box'))
-        },
-        {
-          // Said plainly in the menu, not just in the docs. Someone reaching
-          // for this on a drawing that is about to leave the office needs to
-          // know the words are still in the file.
-          label: 'Cover it',
-          hint: 'not redaction',
-          run: () => done(madeText(this.shape(payload, 'cover'), 'cover'))
-        },
-        { separator: true },
-        {
           label: 'Copy text',
           hint: 'Ctrl+C',
           run: () => {
             RP.clip.write(payload.text).then((ok) => {
               if (ok) done(this.wordCount(payload) + ' words copied');
-            });
-          }
-        },
-        {
-          label: 'Copy with page reference',
-          run: () => {
-            RP.clip.write(this.referenced(payload)).then((ok) => {
-              if (ok) done('Copied with page reference');
             });
           }
         },
@@ -353,17 +333,52 @@
         },
         { separator: true },
         {
-          label: 'Callout with this text',
-          run: () => { this.toCallout(payload); done('Callout added'); }
+          label: 'Add markup',
+          submenu: [
+            {
+              label: 'Cloud around it',
+              run: () => done(madeText(this.shape(payload, 'cloud'), 'cloud'))
+            },
+            {
+              label: 'Box around it',
+              run: () => done(madeText(this.shape(payload, 'rect'), 'box'))
+            },
+            {
+              // Said plainly in the menu, not just in the docs. Someone
+              // reaching for this on a drawing that is about to leave the
+              // office needs to know the words are still in the file.
+              label: 'Cover it',
+              hint: 'not redaction',
+              run: () => done(madeText(this.shape(payload, 'cover'), 'cover'))
+            },
+            { separator: true },
+            {
+              label: 'Callout with this text',
+              run: () => { this.toCallout(payload); done('Callout added'); }
+            },
+            {
+              label: 'Sticky note with this text',
+              run: () => { this.toNote(payload); done('Note added'); }
+            }
+          ]
         },
         {
-          label: 'Sticky note with this text',
-          run: () => { this.toNote(payload); done('Note added'); }
-        },
-        {
-          label: 'Find this in the drawing',
-          hint: 'Ctrl+F',
-          run: () => { this.find(payload); if (typeof options.after === 'function') options.after(); }
+          label: 'More',
+          submenu: [
+            {
+              label: 'Copy with page reference',
+              run: () => {
+                RP.clip.write(this.referenced(payload)).then((ok) => {
+                  if (ok) done('Copied with page reference');
+                });
+              }
+            },
+            {
+              label: 'Find this in the drawing',
+              hint: 'Ctrl+F',
+              run: () => { this.find(payload); if (typeof options.after === 'function') options.after(); }
+            }
+          ]
         }
       ];
     },

@@ -12,6 +12,134 @@ a future maintainer needs lives in `CLAUDE.md`; roadmap lives in `PLAN.md` and
 
 ---
 
+## [0.20.0] — 2026-10-02
+
+### Changed
+
+- **The right-click menu on the drawing is two menus.** A press on a markup
+  offers that markup's commands — properties, status, cut, copy, paste,
+  delete, group and ungroup, and set-scale on a measurement. A press on the
+  paper offers the paper's — copy text, paste here, add note here, copy an
+  area as an image, a **Page** submenu and print. Up to 0.19 every row was on
+  every press, so right-clicking a markup also offered to rotate the page,
+  and with two markups selected the menu ran past thirty-five rows. It is now
+  about ten.
+  - **Status** and **Arrange** are one submenu row each. Arrange still only
+    appears when two or more markups on one sheet are selected.
+  - **Page** holds rotate right, rotate left, turn over, straighten pages and
+    copy this page as an image.
+  - The markup list's right-click menu uses the same Status and Arrange rows.
+- **The text selection menu leads with what it is opened for.** Highlight,
+  strike out, underline, copy text and copy as image are at the top; cloud,
+  box, cover, callout and sticky note are under **Add markup**, and copy with
+  page reference and find are under **More**. It was sixteen rows. *Cover*
+  still says it is not redaction.
+- **The thumbnail menu** keeps rotate, duplicate, extract and delete on top
+  and puts insert, turn over, straighten, split and page numbers under
+  **More**. The Pages panel's ⋯ button no longer repeats Extract, which has
+  its own button beside it.
+- **One Export dropdown.** The markup report, the CSV, the takeoff and the
+  schedules are on one list, from the toolbar's **Export** button and from
+  the **Export** button under the markup list. It replaces the toolbar's
+  *Report* button and the row of four under the list.
+- **Save As is under the arrow beside Save**, with a choice of what `Ctrl+S`
+  writes — a new copy, over the original, or ask each time — beside it. The
+  status-bar chip still cycles the same setting.
+- **One app menu in the title bar.** The settings button opens Settings,
+  keyboard shortcuts, diagnostics and log, and a check for updates. The
+  separate diagnostics button is gone; `Ctrl+Shift+D` and `?` work as before.
+- Every keyboard shortcut works as before.
+
+### Added
+
+- **Six more themes**, ported from the file manager with the same colours:
+  **Graphite** (true black), **Control room** (calm mid greys after modern HMI
+  screens), **Phosphor** (green on black), **Dusk** (warm dark browns),
+  **Frost** (a cool, bright light theme) and **Ink** (black on white with real
+  lines for borders).
+- **The theme can change by itself**, under Settings → Appearance: follow
+  Windows' light or dark setting for apps, or switch by time of day between a
+  light theme and a dark theme of your choosing. It is checked once a minute
+  and the moment Windows changes.
+- **Font:** Segoe UI as before, Segoe UI Variable, or Cascadia Mono
+  throughout (which suits Phosphor).
+- **Corners:** rounded as before, or square (which suits Ink).
+- **An accent for the right-hand pane.** Pick a second accent colour and the
+  right-hand drawing of a split uses it for its tabs and focus ring, so a
+  glance says which side the toolbar is acting on.
+- The menus can be driven from the keyboard: arrow keys move through the
+  rows, Right opens a submenu, Left or Escape closes it.
+
+### Fixed
+
+- A list of choices in a menu — the zoom presets, page layout, status — now
+  lines up whichever one is ticked, instead of the ticked row being pushed
+  right by its tick.
+- On every light theme, not only *Light*, an armed tool's label uses the
+  darker accent so it stays readable on pale chrome.
+
+## [0.19.0] — 2026-09-04
+
+### Fixed
+
+- **A sheet can now carry its own measurement scale, and a set that mixes them
+  no longer reports the wrong length.** The calibration was one ratio for the
+  whole drawing, so a 1:20 detail in a set calibrated on its 1:100 plan
+  measured five times short — and an *area* on it twenty-five times short,
+  because the ratio is squared. Nothing said so: the number simply came out
+  wrong, on a sheet that looked calibrated, in a figure somebody would order
+  material against.
+
+  Calibrating now asks whether the scale applies to the whole drawing or to
+  that sheet alone, and a sheet's own scale wins wherever it has one. Right-
+  click any measurement for *Set this sheet's scale from this measurement*.
+  The status bar shows the scale in force on the sheet you are looking at and
+  says when it is the sheet's own; clicking it offers to clear either the
+  sheet or the drawing.
+
+  Sheet scales are saved in the drawing, survive inserting, deleting,
+  reordering and duplicating pages — a duplicated sheet keeps its calibration —
+  and undo with everything else. A drawing saved here and opened in an older
+  build keeps its default scale and measures every sheet by it, which is what
+  that build did anyway.
+
+### Added
+
+- **The measurement takeoff exports to Excel.** *Takeoff*, beside the other
+  exports, writes a summary of counts, lengths and areas by markup type and a
+  detail sheet with every markup on it. The quantities go in as **numbers**, so
+  the columns add up — which is the whole difference from the CSV, where every
+  reading is text and gets retyped at the other end.
+
+  Totals are grouped by type *and* unit: a set carrying metres on the plan and
+  feet on a detail gets a row for each, because adding them would produce a
+  figure that means nothing. A measurement on a sheet with no scale set is
+  counted and left unmeasured rather than quietly converted from paper, and the
+  summary says how many. A self-intersecting outline exports no area, exactly
+  as it reports none on the sheet.
+
+## [0.18.0] — 2026-09-04
+
+### Added
+
+- **Schedules come out as an Excel workbook.** *Schedules to Excel* in the
+  markup panel reads the ruled tables on a drawing — part lists, panel
+  schedules, revision blocks, sign-off boxes — and writes each one to its own
+  worksheet. Quantities arrive as numbers; stock codes, pipe sizes and revision
+  letters stay as text, so `2026-110-AY02` is still `2026-110-AY02` and not a
+  date. Each worksheet is named after the schedule's own title where it has
+  one.
+
+  A schedule is found by its **ruled grid**, not by guessing from where the
+  words line up, because guessing cannot tell a schedule from the callout
+  balloons on an isometric. What is found is shown to you before a file is
+  chosen — extraction is a reading of the drawing, not a fact about it, and a
+  workbook of three things you did not expect is worse than a list saying which
+  three they were.
+
+  A table drawn without rules is not picked up, and neither is anything on a
+  scanned sheet, which carries no text to read at all.
+
 ## [0.17.4] — 2026-09-04
 
 ### Fixed

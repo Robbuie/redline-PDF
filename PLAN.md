@@ -1,5 +1,51 @@
 # Roadmap
 
+## Done — v0.19
+
+- **Per-sheet measurement scale.** `store.scale` is the document default,
+  `store.pageScales` the overrides, `scaleFor(pageIndex)` the only thing any
+  reading consults. This was a correctness bug rather than a feature: a 1:20
+  detail in a set calibrated at 1:100 measured five times short and an area on
+  it twenty-five times short, silently
+- Keyed by page index rather than by a `pageOrder` uid, because `pageOrder` is
+  null until the page manager is first used — so `remapPageScales` runs beside
+  `remapAnnotations` on every page op, and a duplicated sheet inherits its
+  calibration
+- **Takeoff to Excel** — the item that was on the Later list. Counts, lengths
+  and areas by type, as numbers rather than as label strings, grouped by type
+  *and* unit so metres on a plan are never added to feet on a detail
+
+## Done — v0.18
+
+- **Ruled schedules come out as an Excel workbook.** Part lists, panel
+  schedules, revision blocks and sign-off boxes, each to its own worksheet,
+  with quantities typed as numbers and stock codes left as text
+- The work split into three modules, and the split is the point.
+  `analyse.js` reads one page's *content* — its vector rules and its text
+  runs, in unrotated user space, cached on the viewer's page record beside
+  `textContent`. `tables.js` is the only consumer so far; a sheet index,
+  symbol counting and auto-linking a `3/A-501` callout all want the same two
+  things and should go through it rather than walking the page again
+- `xlsx.js` writes the workbook by hand — five XML parts in a stored ZIP —
+  rather than taking a library that would have been nine direct and about
+  forty transitive packages, each needing a `build.files` entry to survive
+  packaging
+- **The geometry finds candidates; it cannot judge them.** A dimension string
+  is a horizontal rule crossed by two extension lines, so it passes every
+  geometric test a schedule passes — sheet 2 of the reference drawing yields a
+  dozen of them. Fill density separates the populations by an order of
+  magnitude (0.9 against 0.03) and is what actually decides, together with the
+  top row being labels rather than prose
+- Three bugs worth remembering, all in `CLAUDE.md`: a merged rule's *extent* is
+  not its length; a table's outer edges come from its rows rather than from
+  finding a rule there; and a dimension chain drawn to the same width joins the
+  grid as an extra row unless row spacing is checked
+
+**Not recorded here:** v0.16 and v0.17 shipped without roadmap entries — the
+thumbnail navigator, page straightening, the search-hit fix, the render-slot
+leak, the cut-to-page change and the post-render canvas probe. They are in
+`CHANGELOG.md` and `CLAUDE.md`; this file is the one that drifted.
+
 ## Done — v0.15
 
 - **Large sheets raster to the viewport, not to the whole page.** The 0.13.1
@@ -328,12 +374,18 @@ stored as embedded images so they export cleanly.
 - Decrypt protected drawings (RC4, AES-128/256) in the main process so they can
   be saved rather than only reviewed. A real crypto implementation that has to
   be exactly right or it corrupts drawings silently — its own release
-- OCR (Tesseract) so scanned sheets get a text layer for search and true highlight
-- Sheet-set awareness: open a folder of drawings, jump between sheets, search all
+- OCR (Tesseract) so scanned sheets get a text layer for search, true
+  highlight and schedule extraction. Its own decision rather than its own
+  release: tesseract.js plus its wasm and training data is the largest
+  dependency this app would have taken, and every part of it needs a
+  `build.files` entry
+- Sheet-set awareness: open a folder of drawings, jump between sheets, search
+  all. `analyse.js` (0.18) is the enabler — the reference drawing's title block
+  and revision table extract cleanly, which is a drawing register
 - Batch operations: apply a stamp or compare a whole folder against a baseline set
 - Redaction with real content removal
 - Form filling and digital signature verification
-- Measurement takeoff export (counts and lengths by layer) to Excel
+
 
 ## Engineering debt
 

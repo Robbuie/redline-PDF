@@ -584,7 +584,8 @@
           }
           /* The label reads horizontally on screen like every other piece of
              text, so its plate and its glyphs are both placed in the frame. */
-          const label = annot.label || store.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2));
+          const label = annot.label ||
+            store.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2), annot.page);
           const mid = [(annot.x1 + annot.x2) / 2, (annot.y1 + annot.y2) / 2];
           drawLabelPlate(page, { at: mid, lines: [label], dy: -11 }, frame,
             { font, color, fade, rgb: lib().rgb, degrees });
@@ -772,6 +773,109 @@
       });
   }
 
+  /**
+   * The measurable content of one markup, in the units of the sheet it is on.
+   *
+   * Returns numbers rather than the label strings `readingLines` builds,
+   * because a takeoff is arithmetic: a column of "6.00 m" is a column of text
+   * and cannot be summed, which is most of the reason to want a workbook
+   * rather than the CSV. `null` where a quantity does not apply — and for the
+   * area of a self-intersecting outline, which has none, exactly as the label
+   * and the report say. Pure.
+   */
+  function quantitiesOf(annot, store) {
+    const pts = annot.points || [];
+    const out = { length: null, area: null, count: 1 };
+    if (annot.type === 'measure') {
+      out.length = store.lengthValue(
+        RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2), annot.page);
+    } else if (annot.type === 'polylength' && pts.length >= 2) {
+      out.length = store.lengthValue(RP.geom.polylineLength(pts), annot.page);
+    } else if (annot.type === 'area' && pts.length >= 3) {
+      out.length = store.lengthValue(RP.geom.polygonPerimeter(pts), annot.page);
+      const area = RP.render.polyArea(annot);
+      out.area = area === null ? null : store.areaValue(area, annot.page);
+    }
+    return out;
+  }
+
+  /**
+   * The takeoff as worksheets: a summary by type, then every markup.
+   *
+   * Two sheets rather than one because they answer different questions — "how
+   * much conduit is on this job" and "where is each run" — and a single sheet
+   * doing both is a pivot table nobody asked for.
+   *
+   * **Units are per sheet and are stated per row.** A set with a plan at 1:100
+   * and a detail at 1:20 can carry metres on one sheet and millimetres on
+   * another, so a total column that added them would be a number with no
+   * meaning; the summary therefore groups by type *and* unit, and the detail
+   * rows name the unit they are in. Anything uncalibrated is counted and left
+   * without a quantity rather than being quietly converted from paper.
+   */
+  function takeoffSheets(target) {
+    const store = target || RP.store;
+    const annots = store.annotations.slice().sort((a, b) => a.page - b.page || a.created - b.created);
+
+    const groups = new Map();
+    const detail = [['Sheet', 'Type', 'Reading', 'Length', 'Area', 'Unit', 'Status', 'Comment', 'Author']];
+    let uncalibrated = 0;
+
+    for (const annot of annots) {
+      const q = quantitiesOf(annot, store);
+      const unit = store.unitOf(annot.page);
+      const measured = annot.type === 'measure' || RP.render.isMeasuredPoly(annot.type);
+      if (measured && unit === null) uncalibrated += 1;
+
+      const key = store.typeLabel(annot.type) + '\u0000' + (unit === null ? '' : unit);
+      let row = groups.get(key);
+      if (!row) {
+        row = { type: store.typeLabel(annot.type), unit: unit, count: 0, length: 0, area: 0,
+                anyLength: false, anyArea: false };
+        groups.set(key, row);
+      }
+      row.count += 1;
+      if (q.length !== null) { row.length += q.length; row.anyLength = true; }
+      if (q.area !== null) { row.area += q.area; row.anyArea = true; }
+
+      detail.push([
+        String(annot.page + 1),
+        store.typeLabel(annot.type),
+        measured ? RP.render.readingOf(annot, store) : '',
+        q.length === null ? '' : q.length.toFixed(3),
+        q.area === null ? '' : q.area.toFixed(3),
+        unit === null ? '' : unit,
+        RP.STATUS_LABELS[RP.statusOf(annot)],
+        annot.note || annot.text || '',
+        annot.author || ''
+      ]);
+    }
+
+    const summary = [['Type', 'Count', 'Total length', 'Total area', 'Unit']];
+    for (const row of Array.from(groups.values()).sort((a, b) => a.type.localeCompare(b.type))) {
+      summary.push([
+        row.type,
+        String(row.count),
+        row.anyLength ? row.length.toFixed(3) : '',
+        row.anyArea ? row.area.toFixed(3) : '',
+        /* A unit against a row with nothing to measure — a count of revision
+           clouds — reads as a quantity somebody failed to fill in. It is named
+           only where there is a number for it to belong to. */
+        (row.unit === null || (!row.anyLength && !row.anyArea)) ? '' : row.unit
+      ]);
+    }
+    if (uncalibrated) {
+      summary.push([]);
+      summary.push([uncalibrated + (uncalibrated === 1 ? ' measurement is' : ' measurements are') +
+        ' on a sheet with no scale set, so they are counted but not measured.']);
+    }
+
+    return [
+      { name: 'Takeoff summary', rows: summary },
+      { name: 'Measurements', rows: detail }
+    ];
+  }
+
   function toCsv(target) {
     const store = target || RP.store;
     const rows = summaryRows(store);
@@ -879,6 +983,8 @@
     splitSaved,
     stripToBaseBytes,
     toCsv,
+    takeoffSheets,
+    quantitiesOf,
     buildReportPdf,
     summaryRows
   };

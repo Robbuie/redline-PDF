@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 **Redline PDF** — a Windows desktop PDF markup tool for electrical drawings.
 Electron shell, PDF.js for rendering, pdf-lib for writing markups back into the
-PDF. Current version 0.17.4. See `README.md` for user-facing behaviour,
+PDF. Current version 0.20.0. See `README.md` for user-facing behaviour,
 `CHANGELOG.md` for what changed when, and `PLAN.md` for the roadmap and known
 engineering debt.
 
@@ -49,9 +49,9 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | File | Responsibility |
 |---|---|
 | `util.js` | `RP.$`, `RP.el`, geometry (`RP.geom`), colours, the `RP.bus` event bus, toasts |
-| `appearance.js` | the four display axes — theme, accent, chrome density, paper mode: the catalog of each, the normalisers, and the four functions that apply them |
+| `appearance.js` | the four display axes — theme, accent, chrome density, paper mode — plus font, corners, the right-pane accent and the theme that follows Windows or the clock: the catalogs, the normalisers, and the functions that apply them |
 | `diag.js` | error capture, on-screen diagnostics panel, log file streaming |
-| `menu.js` | the one popup menu — right-click menus and toolbar dropdowns both |
+| `menu.js` | the one popup menu — right-click menus and toolbar dropdowns both, submenus included |
 | `pdfjs-loader.js` | loads PDF.js (ESM v4+ or UMD v3), worker path, `docParams()` |
 | `store.js` | `createStore()` — one document's model: annotations, selection, snapshot undo/redo, measurement scale |
 | `render.js` | canvas drawing and hit-testing for every markup type |
@@ -66,6 +66,9 @@ dependency order by the `<script>` tags at the bottom of `src/index.html`:
 | `tools.js` | pointer interaction — creating markups and the select/edit tool |
 | `edit.js` | commands over a *set* of markups: the markup clipboard, align, distribute, match size and style |
 | `search.js` | per-document text index and find |
+| `analyse.js` | one page's *content* — its vector rules and its text runs, cached |
+| `tables.js` | finding ruled schedules on a page and reading them out as cells |
+| `xlsx.js` | writing an Excel workbook, dependency-free |
 | `sidebar.js` | panel switching, markup list, recents |
 | `outline.js` | the file's *own* bookmarks — outline tree, dest jumps |
 | `snapshot.js` | copying a region of a drawing to the clipboard as a picture |
@@ -608,6 +611,124 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   changes which runs the index keeps has to keep that correspondence, or every
   highlight lands on the wrong run. `test/verify.js` covers the joining, the
   ordinals, the run offsets, the sideways box and the query.
+- **The measurement scale is per *sheet*, and every reading has to say which
+  sheet it is asking about.** `store.scale` is the document default and
+  `store.pageScales` holds overrides; `scaleFor(pageIndex)` is the only thing
+  that should ever be consulted for a number. `formatLength`, `formatArea`,
+  `lengthValue` and `areaValue` all take a page index and every call site
+  passes `annot.page` — never the viewer's current page, which means nothing to
+  a markup being stamped into a file or listed in a report. A missing index
+  falls back to the document default rather than throwing, deliberately: a call
+  site somebody forgets should degrade to the pre-0.19 answer, not to a broken
+  drawing. The cost of getting this wrong is silent and expensive — a 1:20
+  detail in a set calibrated at 1:100 measures five times short, and an area on
+  it twenty-five times short, in a figure that gets ordered against.
+- **`pageScales` is keyed by page index, so every page op has to remap it.**
+  Keying by a `pageOrder` descriptor's `uid` would survive reorders for free
+  and was the first design — but `store.pageOrder` is `null` until the page
+  manager is first used, so a document nobody has re-paginated has no uids to
+  key on. `RP.pages.remapPageScales` therefore runs beside
+  `remapAnnotations`, off the same `{map, clones}`, and a duplicated sheet
+  inherits its original's calibration. A scale left pointing at the old index
+  is worse than one never set: the sheet still measures, just at another
+  sheet's ratio.
+- **Setting the document default must not clear the sheet overrides.** Someone
+  who calibrated a detail by hand and checked the numbers has said nothing
+  about it by later setting the drawing's default, and silently re-measuring it
+  would change figures they had already signed off. `setScale(null)` with no
+  page is the reset and clears both; `setScale(null, page)` clears one sheet.
+- **The takeoff export writes numbers, and that is the entire point of it.**
+  `readingLines` builds label strings — "6.00 m" — which are right on a sheet
+  and useless in a spreadsheet, because a column of them cannot be summed.
+  `RP.exporter.quantitiesOf` returns bare values in the sheet's own units and
+  `takeoffSheets` groups by type **and unit**: a set carrying metres on the
+  plan and feet on a detail must not have them added, since the sum would be a
+  number with no meaning. An uncalibrated measurement is counted and left
+  unmeasured rather than converted from paper, and a self-intersecting outline
+  exports no area — the same refusal `polyArea` makes everywhere else, because
+  a takeoff that quietly wrote the shoelace difference into a priced cell is
+  the worst version of that bug.
+- **A dimension string is, geometrically, a two-column table, and nothing about
+  the linework will tell you otherwise.** `tables.js` finds a schedule by its
+  ruled grid — which is right, because guessing from where the words line up
+  reads the callout balloons on an isometric as rows — but a dimension chain is
+  a horizontal rule crossed by two extension lines with a figure between them,
+  so it passes every geometric test a schedule passes. Sheet 2 of the reference
+  drawing yields a dozen candidates of eighty columns, every one of them a
+  dimension chain, and the first version of this shipped them as tables. What
+  separates the two is **how full the grid is**: a real schedule fills about 90%
+  of its cells and a dimension chain about 3%, an order of magnitude apart
+  rather than a close call. So the rules only ever propose a candidate and
+  `scoreOf` decides, on density **and** on the top row being labels rather than
+  prose — density alone admits a ruled block of drawing notes, which scores 0.5
+  on two rows of text. Both halves are load-bearing and `test/verify.js` has a
+  fixture for each.
+- **A rule's extent is not its length, and using the extent is how four columns
+  become one.** `mergeRules` collapses collinear segments into a lane by
+  position alone — it has to, because CAD emits a rectangle per cell, so a
+  column separator arrives as a dozen stacked segments. But that also merges a
+  62-point separator with a leader line 900 points away at the same x, and the
+  lane's *extent* is then nearly a thousand points of mostly nothing. Every test
+  phrased against `lengthOf` then judges the separator by linework it has
+  nothing to do with: the reference part list came out with VENDOR, DESCRIPTION,
+  SIZE and MATERIAL merged into a single column. `longestSpan`, `spanInside` and
+  `spansAgree` ask about one span at a time and are what the table finder must
+  use; `lengthOf` is for reporting only.
+- **A table's outer edges come from its rows, not from finding a rule there.**
+  A schedule tucked against the title block shares its right edge with that
+  block's border, and the border test — rightly, or the whole page fuses into
+  one grid of ninety columns — throws out any rule near the full height of the
+  sheet. So the edge rule is gone, and with it the last column: on the reference
+  part list that was the quantities, silently absent from the workbook. The row
+  rules already say where the table starts and stops, so `x0` and `x1` are
+  always column boundaries.
+- **Rows are gathered by x-extent, which is not quite enough on a drawing.** A
+  dimension string beneath a schedule, drawn to nearly the same width, agrees
+  with every row of it and joins the grid as one more row, bringing its figure
+  in as a cell. Rows of a real table are evenly spaced, so `trimRows` drops a
+  gap far larger than the median — from the ends only, and never past the seed,
+  or a table gets cut in half. The trim stops **at** the seed rather than one
+  short of it: the seed is whichever row rule happened to be longest and is
+  routinely the second from the end, and requiring a row to spare on each side
+  meant the common case could never be trimmed at all.
+- **`constructPath`'s argument shape changes across pdf.js majors and a wrong
+  guess fails silently.** v6 hands over `[op, [path], bbox]` with the command
+  codes interleaved among the coordinates; v3 handed over two parallel arrays.
+  Guess wrong and you get *no segments* rather than an error — so schedule
+  extraction simply stops finding schedules after an npm bump, with nothing
+  anywhere to say why. `RP.analyse.pathData` accepts both and normalises, and
+  `test/verify.js` drives both shapes so the next major fails in the suite
+  instead. Same reasoning as `pdfjs-loader.js` refusing to assume a flavour.
+  Note also that the path command codes are pdf.js's own private enum inside
+  that argument, **not** the `OPS` constants.
+- **The analyser measures against the page's own box, never a viewport.**
+  `RP.analyse` returns rules and runs in unrotated user space, because that is
+  what the content stream and the text matrices are in. A viewport is scaled by
+  the zoom and turned by `/Rotate`, so measuring the border test against one
+  swaps width for height on every landscape sheet — which is most of a set.
+  `RP.tables.scan` reads `pageProxy.view`.
+- **`RP.analyse` is the one place a page's content is read, and the cache lives
+  on the viewer's page record.** `getOperatorList` is a full trip through the
+  one pdf.js worker and runs to 42,000 ops on the reference sheet, so it is a
+  once-per-page cost and `record.vectorRules` is not optional. It sits beside
+  `record.textContent` deliberately: the record is torn down with the page DOM
+  on a tab switch, which is exactly when both caches should go. Anything else
+  that wants a page's geometry — symbol counting, a sheet index, auto-linking a
+  `3/A-501` callout — goes through here rather than walking the page again, and
+  `runsOf` borrows `RP.search.pageEntry` rather than re-deciding where a word
+  starts.
+- **`xlsx.js` writes the workbook by hand, and that is a decision rather than an
+  omission.** An .xlsx is a ZIP of XML and the subset Excel needs is five parts;
+  the smallest credible library is nine direct and about forty transitive
+  packages, every one of which needs its own entry in the hand-maintained
+  `build.files` array or it is absent from the installer and the feature throws
+  on a machine that is not this one — a failure mode that has already cost this
+  project a release. Entries are **stored, not deflated**, which keeps `build`
+  pure and synchronous; the browser's only deflate is `CompressionStream` and it
+  is async. Number detection is deliberately **strict**: only a bare integer or
+  decimal, because a part code like `2026-110-AY02` guessed generously becomes a
+  date, which is the single most complained-about behaviour of every other
+  PDF-to-Excel converter.
 - **Rasterisation is queued, not fired off the observer.** pdf.js has one
   worker, so `requestPage` puts indices in `renderQueue` and `pumpRenders` runs
   at most `MAX_PAGE_RENDERS` at a time, nearest the viewport first. Thumbnails
@@ -984,6 +1105,27 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
   colour**, because an unset one inherits from `:root`, which is the *dark*
   set — a light theme with a forgotten `--bg-3` gets a near-black hover state
   on white chrome.
+- **The right-hand pane's accent re-declares the tints, and it has to.** A
+  custom property whose value uses `var()` is resolved on the element that
+  declares it, so `--accent-soft` worked out on `:root` arrives at the second
+  pane already red; overriding `--accent-rgb` there alone changes nothing.
+  The tint block is therefore declared on `:root, .panes.split > .pane ~ .pane`
+  and that pane takes `--accent-rgb: var(--accent-right-rgb)`. "Same as the
+  accent" *removes* `--accent-right-rgb` so the stylesheet's
+  `var(--accent-rgb)` fallback applies — writing the main triple into it would
+  be a copy that stops following the picker. Font and corners are choices
+  beside the four axes (`body[data-font]`, `body[data-corners]`), for the
+  axes' reason. The six themes from the file manager carry its greys
+  verbatim; `--canvas-bg`, the shadows and `--page-ring` are this app's own
+  because the file manager has no sheet. **The theme on screen and the
+  theme picked can differ** when it follows Windows or the clock:
+  `RP.appearance.pickTheme` is pure and decides, `App.startThemeFollow` asks it
+  once a minute and on `prefers-color-scheme` changes, and the Settings box is
+  filled from `settings.theme`, not from `current()`, or opening the dialog at
+  night would rewrite the day theme. Windows' answer comes through
+  `prefers-color-scheme`, which Electron keeps in step with the OS for as long
+  as nothing sets `nativeTheme.themeSource` — set it and following Windows
+  stops working with no error. `test/verify.js` covers the decision table.
 - **Nothing may assign `document.body.className`.** Up to 0.12 `applyTheme`
   did, which took `presenting` off with it (and `data-tool`, which it then put
   back by hand two lines later) — so changing the theme from inside a
@@ -1226,6 +1368,21 @@ per-document state needs a `stash()`/`unstash()` pair adding there.
 - **There is one popup menu, `RP.menu`.** Two implementations means two sets of
   outside-click listeners fighting over one press. `RP.pages.openMenu` wraps it
   to keep its own async/busy guard; anything else calls `RP.menu.open` directly.
+- **A submenu is part of that one menu, not a second popup.** `{label,
+  submenu: [...]}` opens another level on `RP.menu.stack`, and the stack shares
+  the one outside-click listener, the one Escape and the one `close()` — which
+  is the only reason submenus did not reintroduce the two-listener problem.
+  `RP.menu.tidy` drops nulls, separators at an end or doubled, and any submenu
+  that comes out empty, so callers keep writing `cond ? item : null`; a caller
+  that tidies by hand is doing work the menu already does. `RP.pages.openMenu`
+  wraps rows **recursively**, or a page command inside a submenu runs without
+  the busy guard. The right-click on the drawing is deliberately two menus: a
+  press on a markup returns after the markup's menu and never reaches the
+  paper's, so page turns and print are not offered over a markup and markup
+  commands are not offered over paper. `statusSubmenu()` and
+  `arrangeSubmenu()` are the one-row forms of `statusMenuItems()` and
+  `menuItems()`; the long forms stay because `test/verify.js` and the
+  arrange maths are written against them.
 - **Pointer handling is delegated on each pane's `.pages`**, so it also sees events on the
   text layer and on the native annotation layer. The highlighter in text mode
   returns early from `onPointerDown` for exactly this reason — swallowing the

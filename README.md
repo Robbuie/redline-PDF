@@ -62,6 +62,91 @@ GitHub release. Every push runs the headless checks on their own.
 
 ---
 
+## What's new in 0.20
+
+**Shorter menus.** Right-click a markup and you get the markup's commands:
+properties, status, cut, copy, paste, delete, group, and — with two or more
+selected — one **Arrange** row that opens the align, distribute and match
+commands. Right-click the paper and you get the paper's: copy text, paste,
+add a note, copy an area, a **Page** row (rotate, turn over, straighten, copy
+the page as an image) and print. The text menu leads with highlight, strike
+out, underline and the two copies; the shapes, callout and note are under
+**Add markup**. The thumbnail menu keeps rotate, duplicate, extract and
+delete on top and the rest under **More**. Every command is still there and
+every key works as before.
+
+**One Export button.** The markup report, the CSV, the takeoff and the
+schedules are on one dropdown, on the toolbar and under the markup list.
+**Save As** is under the arrow beside Save, along with what `Ctrl+S` does.
+The title bar's settings button now opens one menu: Settings, keyboard
+shortcuts, diagnostics and the update check.
+
+**Six more themes**, the ones the file manager added: **Graphite** (true
+black), **Control room** (calm greys after modern HMI screens), **Phosphor**
+(green on black), **Dusk** (warm browns), **Frost** (cool and bright) and
+**Ink** (black on white with real lines for borders). Same colours in both
+apps, so they still look like one family.
+
+**The theme can change by itself** — follow Windows' light or dark setting,
+or switch by time of day between a light theme and a dark theme you pick.
+Also in **Settings → Appearance**: a **font** choice (Segoe UI, Segoe UI
+Variable, or Cascadia Mono throughout), **square corners**, and a second
+accent colour for the **right-hand pane** of a split, so you can tell at a
+glance which drawing the toolbar is acting on.
+
+---
+
+## What's new in 0.19
+
+**A sheet can carry its own scale.** The calibration used to be one ratio for
+the whole drawing, which is fine until a set puts a 1:20 detail next to its
+1:100 plan — and then the detail measured five times short, and an area on it
+twenty-five times short, with nothing on screen to say so.
+
+Calibrating now asks whether the scale is for the whole drawing or for that
+sheet alone, and a sheet's own scale wins wherever it has one. Right-click any
+measurement for **Set this sheet's scale from this measurement**. The status bar
+shows the scale in force on the sheet you are looking at and marks it when it is
+the sheet's own; click it to clear either. Sheet scales are saved in the
+drawing, survive page insertions, deletions, reordering and duplication, and
+undo with everything else.
+
+**The takeoff goes to Excel.** *Takeoff*, beside the other exports, writes a
+summary of counts, lengths and areas by markup type plus a detail sheet listing
+every markup. The quantities arrive as **numbers**, so the columns add up —
+which is the whole difference from the CSV, where every reading is text and gets
+retyped at the other end.
+
+Totals are grouped by type *and* unit, so a set carrying metres on the plan and
+feet on a detail gets a row for each rather than a sum that means nothing. A
+measurement on an uncalibrated sheet is counted and left unmeasured instead of
+being quietly converted from paper.
+
+---
+
+## What's new in 0.18
+
+**Schedules come out as a spreadsheet.** *Schedules to Excel*, in the markup
+panel beside the CSV and report buttons, reads the ruled tables on a drawing and
+writes each one to its own worksheet — part lists, panel schedules, revision
+blocks, sign-off boxes. Quantities arrive as numbers so they add up; stock
+codes, pipe sizes and revision letters stay as text, so `2026-110-AY02` is still
+`2026-110-AY02` and not a date, which is what most converters make of it. Each
+worksheet takes the schedule's own title where it has one.
+
+A schedule is found by its **ruled grid**. That is what lets it tell a real
+schedule from the callout balloons scattered over an isometric, which sit in
+tidy rows and columns of their own and come out of a naive reading as a table
+full of single letters. It also means a table drawn without rules is not picked
+up — and neither is anything on a scanned sheet, which carries no text to read
+at all.
+
+What was found is listed before you choose a file. Extraction is a reading of
+the drawing rather than a fact about it, and a workbook holding three things you
+did not expect is worse than a list telling you which three they were.
+
+---
+
 ## What's new in 0.16
 
 **The thumbnail is a navigator.** Zoomed in far enough that the pane holds a
@@ -385,7 +470,7 @@ The **Pages** panel is now a page manager, not just a set of thumbnails.
 | Insert a blank page | Toolbar ⊕, dropped in after the selection at the same sheet size |
 | Duplicate | Toolbar ⧉ — the copy brings that page's markups with it |
 | Rotate | Toolbar ↺ / ↻, in 90° steps, applied to the page itself — or `Ctrl+[` / `Ctrl+]` for the sheet on screen |
-| Turn over | Right-click a page → **Turn page over**, for one that came in upside down |
+| Turn over | Right-click a page → **More → Turn page over**, for one that came in upside down |
 | Straighten | Toolbar ⋯ → **Straighten pages…** — finds the sheets that are sideways or upside down and turns them back |
 | Extract | Toolbar ⇱ — writes the selected pages out as their own PDF, markups included and still editable |
 | Delete | Toolbar 🗑 or `Del` while the panel has focus |
@@ -554,10 +639,11 @@ Closing the window asks about every unsaved drawing, not just the one in front.
 
 Press **`?`** at any time for the full list, grouped by what you are trying to do.
 
-**Right-click anywhere on a drawing** for copy text, copy an area or the page as
-an image, markup properties, copy/cut/paste markups, delete, "add note here",
-rotating or straightening the sheet, and print. Right-click a page thumbnail for
-the page operations.
+**Right-click on a markup** for its properties, status, cut/copy/paste, delete,
+group and arrange. **Right-click on the paper** for copy text, paste, "add note
+here", copy an area as an image, the **Page** submenu (rotate, turn over,
+straighten, copy the page as an image) and print. Right-click a page thumbnail
+for the page operations.
 
 **Copy and paste markups.** `Ctrl+C` copies whatever markups are selected,
 `Ctrl+X` cuts them, and `Ctrl+V` drops them **under the pointer** — so stamping
@@ -584,7 +670,8 @@ gives you loose markups. Delete all but one member and the survivor stops being
 a group of one. Grouping is one `Ctrl+Z`, and it is stored in the drawing, so it
 survives saving and re-opening.
 
-**Arrange several markups.** Select two or more on a sheet and right-click:
+**Arrange several markups.** Select two or more on a sheet, right-click one of
+them and open **Arrange**:
 
 | | |
 |---|---|
@@ -701,9 +788,14 @@ reader already has, so a saved sheet reads the same everywhere without carrying
 a font with it. A callout's colour is its box and leader; its text is coloured
 separately. A typewriter note has no box, so its colour *is* its text.
 
-**Measuring:** draw a measurement over a known distance and enter its real length
-once — every measurement on that drawing then reads in real units. The status bar
-shows the calibration; click it to reset. Run lengths and areas use the same
+**Measuring:** draw a measurement over a known distance and enter its real
+length once — every measurement then reads in real units. You are asked whether
+that scale is for the whole drawing or for that sheet alone, because a set often
+plots a detail at a different scale from its plan; a sheet's own scale wins
+wherever it has one, and right-clicking any measurement offers *Set this sheet's
+scale from this measurement*. The status bar shows the scale in force on the
+sheet you are looking at and marks it when that is the sheet's own; click it to
+clear either the sheet or the drawing. Run lengths and areas use the same
 calibration, and an area squares it, so it reports square units.
 
 **Takeoff:** the run length tool measures a path with bends and labels each
@@ -744,7 +836,7 @@ is lost.
 main.js            Electron main: windows, dialogs, file I/O, settings, tray
 preload.js         the only bridge into the renderer (contextIsolation on)
 src/index.html     app shell + icon sprite
-src/css/app.css    dark CAD-pro theme (light theme included)
+src/css/app.css    the eleven themes, density, font and corner rules
 src/js/util.js     helpers, geometry, event bus
 src/js/store.js    one document's annotation model and undo/redo
 src/js/render.js   canvas drawing, hit testing, transforms
@@ -753,6 +845,9 @@ src/js/viewer.js   one pane's page rendering, zoom, text layer, thumbnails
 src/js/tabs.js     open documents as tabs, and the panes they live in
 src/js/tools.js    pointer interaction, creation and editing
 src/js/search.js   text index and find
+src/js/analyse.js  one page's vector rules and text runs, cached
+src/js/tables.js   finding ruled schedules and reading them out
+src/js/xlsx.js     writing an Excel workbook, dependency-free
 src/js/sidebar.js  panels, markup list, recents
 src/js/compare.js  revision compare engine and UI
 src/js/exporter.js pdf-lib export, embedded markup, CSV/PDF reports
@@ -795,8 +890,8 @@ drop one.
 
 ## If something goes wrong
 
-Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> (or the bug icon in the title
-bar) for **Diagnostics**: versions, install paths, which PDF.js flavour loaded,
+Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> (or the settings button in the
+title bar → **Diagnostics and log**) for **Diagnostics**: versions, install paths, which PDF.js flavour loaded,
 and every error from this session. **Copy all** puts the lot on the clipboard.
 
 Everything is also streamed to a log file — `Show log folder` in that panel opens
@@ -863,6 +958,11 @@ build, so `pdfjs-dist` can be upgraded without the app going dark.
   other people's drawings into its own settings folder. A set assembled that way
   is offered back with its markups and the pages as they are on disk, rather
   than being offered back incomplete.
+- Schedule extraction reads *ruled* tables. A schedule laid out by spacing
+  alone, with no grid drawn around it, is not found — the rules are what
+  separate a schedule from the balloons and dimension chains on the same sheet,
+  and without them there is nothing to tell them apart by. A scanned sheet
+  yields nothing at all, since it carries no text to read.
 - Page numbering is one run per document. A set that needs both a drawing number
   and a separate Bates stamp needs two, which is not supported yet.
 - Annotations that came with the file are shown, not edited. You can read another

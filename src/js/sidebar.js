@@ -184,7 +184,7 @@
              selection spans sheets, which the list can select across and the
              drawing cannot. */
           RP.menu.open(event.clientX, event.clientY, [
-            ...RP.app.statusMenuItems(),
+            RP.app.statusSubmenu(),
             { separator: true },
             {
               label: RP.store.selection.size > 1 ? 'Copy markups' : 'Copy markup',
@@ -192,7 +192,7 @@
               run: () => RP.edit.copy()
             },
             ...RP.edit.groupMenuItems(),
-            ...RP.edit.menuItems(annot.id)
+            RP.edit.arrangeSubmenu(annot.id)
           ]);
         });
         list.appendChild(row);

@@ -150,23 +150,28 @@
    * it is a drawing tool, not a ruler.
    */
   function readingLines(annot, store) {
+    /* Every reading is asked for by sheet: the scale is per-page from 0.19, so
+       a detail at 1:20 in a set whose default is 1:100 reads five times short
+       if the page is not passed through. `annot.page` is the only source of it
+       here — the store's "current" page means nothing to a markup being
+       stamped or listed. */
     const target = store || RP.store;
     if (annot.type === 'measure') {
       return [annot.label ||
-        target.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2))];
+        target.formatLength(RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2), annot.page)];
     }
     const pts = annot.points || [];
     if (annot.type === 'polylength') {
       if (pts.length < 2) return [];
-      return ['Total ' + target.formatLength(RP.geom.polylineLength(pts))];
+      return ['Total ' + target.formatLength(RP.geom.polylineLength(pts), annot.page)];
     }
     if (annot.type === 'area') {
       if (pts.length < 3) return [];
       const area = polyArea(annot);
-      const perimeter = 'Perimeter ' + target.formatLength(RP.geom.polygonPerimeter(pts));
+      const perimeter = 'Perimeter ' + target.formatLength(RP.geom.polygonPerimeter(pts), annot.page);
       return area === null
         ? ['Outline crosses itself — no area', perimeter]
-        : [target.formatArea(area), perimeter];
+        : [target.formatArea(area, annot.page), perimeter];
     }
     return [];
   }
@@ -198,7 +203,7 @@
         out.push({
           kind: 'segment',
           at: [(pts[i - 1][0] + pts[i][0]) / 2, (pts[i - 1][1] + pts[i][1]) / 2],
-          lines: [target.formatLength(len)],
+          lines: [target.formatLength(len, annot.page)],
           dy: -13
         });
       }
@@ -698,7 +703,7 @@
         drawEndTick(ctx, b, a, 6);
         drawEndTick(ctx, a, b, 6);
         const pdfLen = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
-        const label = annot.label || (options.store || RP.store).formatLength(pdfLen);
+        const label = annot.label || (options.store || RP.store).formatLength(pdfLen, annot.page);
         drawLabel(ctx, label, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 14, annot.color, fade);
         break;
       }

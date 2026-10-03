@@ -113,7 +113,6 @@
     wire() {
       this.modal = RP.$('#diagModal');
       this.pre = RP.$('#diagText');
-      RP.$('#btnDiag').addEventListener('click', () => this.open());
       RP.$('#diagClose').addEventListener('click', () => this.close());
       this.modal.addEventListener('click', (e) => { if (e.target === this.modal) this.close(); });
 

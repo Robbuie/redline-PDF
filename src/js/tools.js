@@ -1738,120 +1738,153 @@
       const many = store.selection.size > 1;
       const hasText = RP.clip.hasTextSelection();
 
-      /* Right-clicking inside a standing area selection means "act on this",
-         so the full set of text actions is spliced in at the top and the bare
-         "Copy text" row is dropped — it would be the same command twice.
-         Right-clicking anywhere else leaves the selection alone but offers
-         only the plain copy, because the click was not about it. */
       const inSelection = RP.textsel.hitTest(record.index, pdf[0], pdf[1]);
+
+      /* 0.20: two menus, not one. Up to 0.19 every row was offered on every
+         press, so a right-click on a markup also offered to rotate the page
+         and print, and with two markups selected the eleven Arrange rows took
+         it past thirty-five rows. Now a press on a markup gets the markup's
+         commands, a press on paper gets the paper's, and the long tails —
+         status, arrange, the page turns — are one submenu row each. Every
+         command is still here and every key still works. */
+      const measureHit = hit && !many && store.get(hit.id) && store.get(hit.id).type === 'measure';
+
+      /* Rotating the sheet you are looking at, without going through the
+         Pages panel to find and select it first. These turn the *page*, so
+         the rotation is in the saved file — unlike the toolbar's rotate
+         button, which only turns the view. Named pages rather than the
+         selection: the press landed on this sheet, and the Pages panel may
+         well have a different one picked. Wrapped in `RP.pages.run` because
+         these do not go through `RP.pages.openMenu`, which is where the
+         busy guard usually comes from. */
+      const pageMenu = {
+        label: 'Page',
+        submenu: [
+          {
+            label: 'Rotate right',
+            hint: 'Ctrl+]',
+            run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 90))
+          },
+          {
+            label: 'Rotate left',
+            hint: 'Ctrl+[',
+            run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], -90))
+          },
+          {
+            label: 'Turn over',
+            run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 180))
+          },
+          { separator: true },
+          {
+            label: 'Straighten pages…',
+            run: () => RP.pages.run(() => RP.pages.straightenPages())
+          },
+          { separator: true },
+          {
+            label: 'Copy this page as image',
+            run: () => RP.snapshot.copyPage(record.index, store)
+          }
+        ]
+      };
+
+      /* Offered whether or not the press landed on a markup: pasting is about
+         the empty space you are pointing at, not about what is already there.
+         The point is captured now rather than read at run time — the menu is
+         dismissed before the handler fires, and the pointer has moved to the
+         row that was clicked. */
+      const paste = RP.edit.hasBuffer() ? {
+        label: 'Paste here',
+        hint: 'Ctrl+V',
+        run: () => RP.edit.paste(record.index, pdf)
+      } : null;
+
+      if (hit) {
+        RP.menu.open(event.clientX, event.clientY, [
+          {
+            label: 'Properties…',
+            run: () => RP.props.open(hit)
+          },
+          RP.app.statusSubmenu(),
+          { separator: true },
+          {
+            label: many ? 'Cut markups' : 'Cut markup',
+            hint: 'Ctrl+X',
+            run: () => RP.edit.cut()
+          },
+          {
+            label: many ? 'Copy markups' : 'Copy markup',
+            hint: 'Ctrl+C',
+            run: () => RP.edit.copy()
+          },
+          paste,
+          {
+            label: many ? 'Delete markups' : 'Delete markup',
+            hint: 'Del',
+            danger: true,
+            run: () => RP.app.deleteSelection()
+          },
+          /* Group and Ungroup carry their own conditions and their own leading
+             separator, and come before Arrange because "these are one thing"
+             is the coarser decision — you group a set and *then* line it up.
+             Arrange needs at least two markups on one sheet and is absent
+             below that rather than a submenu of dead rows. */
+          ...RP.edit.groupMenuItems(),
+          RP.edit.arrangeSubmenu(hit.id),
+          /* The per-sheet entry point. Offered on a measurement rather than
+             anywhere, because a calibration needs a drawn distance to be a
+             calibration — and offered even when the sheet already has one,
+             since correcting a scale is at least as common as setting one. */
+          measureHit ? { separator: true } : null,
+          measureHit ? {
+            label: 'Set this sheet’s scale from this measurement…',
+            run: () => RP.tools.calibrateSheet(store.get(hit.id))
+          } : null,
+          /* A markup drawn over a standing text selection still leaves the
+             text reachable, one row down rather than spliced in on top. */
+          inSelection ? { separator: true } : null,
+          inSelection ? {
+            label: 'Selected text',
+            submenu: RP.textsel.items(RP.textsel.current, { after: () => RP.textsel.clear() })
+          } : null,
+          { separator: true },
+          pageMenu
+        ]);
+        return;
+      }
+
+      /* Right-clicking inside a standing area selection means "act on this",
+         so the text actions lead. Anywhere else the selection is left alone
+         and only the plain copy is offered, and only when there is text to
+         copy — a dead row at the top of the menu is the first thing read. */
       const textItems = inSelection
         ? RP.textsel.items(RP.textsel.current, { after: () => RP.textsel.clear() })
-        : [{
+        : [hasText ? {
           label: 'Copy text',
           hint: 'Ctrl+C',
-          disabled: !hasText,
           run: () => RP.clip.copyText()
-        }];
+        } : null];
 
       RP.menu.open(event.clientX, event.clientY, [
         ...textItems,
-        hit ? { separator: true } : null,
-        ...(hit ? RP.app.statusMenuItems() : []),
-        hit ? { separator: true } : null,
-        hit ? {
-          label: 'Markup properties…',
-          run: () => RP.props.open(hit)
-        } : null,
-        hit ? {
-          label: many ? 'Copy markups' : 'Copy markup',
-          hint: 'Ctrl+C',
-          run: () => RP.edit.copy()
-        } : null,
-        hit ? {
-          label: many ? 'Cut markups' : 'Cut markup',
-          hint: 'Ctrl+X',
-          run: () => RP.edit.cut()
-        } : null,
-        /* Offered whether or not the press landed on a markup: pasting is
-           about the empty space you are pointing at, not about what is
-           already there. The point is captured now rather than read at run
-           time — the menu is dismissed before the handler fires, and the
-           pointer has moved to the row that was clicked. */
-        RP.edit.hasBuffer() ? {
-          label: 'Paste here',
-          hint: 'Ctrl+V',
-          run: () => RP.edit.paste(record.index, pdf)
-        } : null,
-        hit ? {
-          label: many ? 'Delete markups' : 'Delete markup',
-          hint: 'Del',
-          danger: true,
-          run: () => RP.app.deleteSelection()
-        } : null,
-        /* Group and Ungroup carry their own conditions and their own leading
-           separator, and come before Arrange because "these are one thing" is
-           the coarser decision — you group a set and *then* line it up. */
-        ...RP.edit.groupMenuItems(),
-        /* Arranging needs at least two markups on one sheet, so `menuItems`
-           returns nothing at all below that rather than a section of dead
-           rows. It carries its own leading separator for the same reason. */
-        ...RP.edit.menuItems(hit ? hit.id : null),
         { separator: true },
-        /* Copying a picture of an area is offered two ways round, because the
-           two are different gestures. Inside a standing selection the box is
-           already drawn and the region is known, so it copies then and there.
-           Anywhere else there is nothing to copy yet, so the row arms the tool
-           and the drag is the next thing you do. */
-        inSelection ? {
-          label: 'Copy area as image',
-          run: () => {
-            const box = RP.textsel.boxOn(RP.textsel.current, record.index);
-            if (box) RP.snapshot.copy(record.index, box, store);
-          }
-        } : {
-          label: 'Copy area as image…',
-          hint: 'S',
-          run: () => this.setTool('snapshot')
-        },
-        {
-          label: 'Copy this page as image',
-          run: () => RP.snapshot.copyPage(record.index, store)
-        },
-        { separator: true },
+        paste,
         {
           label: 'Add note here',
           // `createNote` hands the tool back and opens the editor itself, so
           // this is the whole gesture.
           run: () => this.createNote(record, pdf)
         },
-        { separator: true },
-        /* Rotating the sheet you are looking at, without going through the
-           Pages panel to find and select it first. These turn the *page*, so
-           the rotation is in the saved file — unlike the toolbar's rotate
-           button, which only turns the view. Named pages rather than the
-           selection: the press landed on this sheet, and the Pages panel may
-           well have a different one picked. Wrapped in `RP.pages.run` because
-           these do not go through `RP.pages.openMenu`, which is where the
-           busy guard usually comes from. */
-        {
-          label: 'Rotate page right',
-          hint: 'Ctrl+]',
-          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 90))
-        },
-        {
-          label: 'Rotate page left',
-          hint: 'Ctrl+[',
-          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], -90))
-        },
-        {
-          label: 'Turn page over',
-          run: () => RP.pages.run(() => RP.pages.rotatePages([record.index], 180))
-        },
-        {
-          label: 'Straighten pages…',
-          run: () => RP.pages.run(() => RP.pages.straightenPages())
+        /* Copying a picture of an area. Inside a standing selection the text
+           menu above already has *Copy as image* for the drawn box, so the row
+           is only offered elsewhere — where there is nothing to copy yet, and
+           the row arms the tool so the drag is the next thing you do. */
+        inSelection ? null : {
+          label: 'Copy area as image…',
+          hint: 'S',
+          run: () => this.setTool('snapshot')
         },
         { separator: true },
+        pageMenu,
         {
           label: 'Print…',
           hint: 'Ctrl+P',
@@ -1864,37 +1897,119 @@
     // Measurement calibration
     // ---------------------------------------------------------------------
 
+    /**
+     * Turn one drawn measurement into a calibration.
+     *
+     * Shared by the prompt after a first measurement and by the right-click
+     * row on an existing one, so there is a single place that decides what a
+     * calibration *is* — the two used to be one flow and a second copy of the
+     * arithmetic is how the sheet and the document scales would come to
+     * disagree.
+     */
+    applyCalibration(annot, real, unit, scope) {
+      const pdfLength = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
+      if (!(pdfLength > 0) || !isFinite(real) || real <= 0) return false;
+      const scale = { pdfLength, realLength: real, unit: unit };
+      RP.store.setScale(scale, scope === 'sheet' ? annot.page : undefined);
+      RP.bus.emit('annots:changed', { reason: 'scale' });
+      RP.toast((scope === 'sheet' ? 'Sheet ' + (annot.page + 1) + ' scale set: ' : 'Scale set: ') +
+        '1 pt = ' + (real / pdfLength).toPrecision(4) + ' ' + unit, 'good');
+      return true;
+    },
+
+    /**
+     * Offer a calibration after the first measurement on an uncalibrated sheet.
+     *
+     * Gated on the scale *in force on that sheet*, not on the document having
+     * one: a set with a default of 1:100 and a detail plotted at 1:20 is the
+     * case this whole thing exists for, and asking `store.scale` would say the
+     * detail was already calibrated and quietly measure it five times short.
+     */
     async afterMeasure(annot) {
-      if (RP.store.scale) return;
+      if (RP.store.scaleFor(annot.page)) return;
+      const known = !!RP.store.scale;
       const answer = await RP.promptDialog({
         title: 'Calibrate the drawing scale',
-        message: 'You just measured a known distance. Enter its real length and every measurement on this drawing will use that scale.',
+        message: 'You just measured a known distance. Enter its real length and measurements will use that scale.',
         fields: [
           { name: 'length', label: 'Real length', value: '', placeholder: 'e.g. 3.5', type: 'text' },
-          { name: 'unit', label: 'Unit', value: 'm', type: 'select', options: ['mm', 'cm', 'm', 'in', 'ft'] }
+          { name: 'unit', label: 'Unit', value: 'm', type: 'select', options: ['mm', 'cm', 'm', 'in', 'ft'] },
+          {
+            name: 'scope', label: 'Applies to', type: 'select',
+            value: known ? 'sheet' : 'document',
+            options: [
+              { value: 'document', label: 'The whole drawing' },
+              { value: 'sheet', label: 'This sheet only (sheet ' + (annot.page + 1) + ')' }
+            ]
+          },
+          {
+            type: 'note',
+            label: 'A set often plots a detail at a different scale from its plan. ' +
+              'Calibrate the drawing once, then set a sheet of its own wherever that is not true — ' +
+              'the sheet\u2019s own scale wins where it has one.'
+          }
         ],
         confirm: 'Set scale',
         cancel: 'Skip'
       });
       if (!answer) return;
-      const real = parseFloat(answer.length);
-      if (!isFinite(real) || real <= 0) return;
-      const pdfLength = RP.geom.dist(annot.x1, annot.y1, annot.x2, annot.y2);
-      RP.store.setScale({ pdfLength, realLength: real, unit: answer.unit });
-      RP.bus.emit('annots:changed', { reason: 'scale' });
-      RP.toast('Scale set: 1 pt = ' + (real / pdfLength).toPrecision(4) + ' ' + answer.unit, 'good');
+      this.applyCalibration(annot, parseFloat(answer.length), answer.unit, answer.scope);
     },
 
-    async recalibrate() {
+    /** Set this sheet's own scale from a measurement already on it. */
+    async calibrateSheet(annot) {
+      if (!annot || annot.type !== 'measure') return;
+      const current = RP.store.scaleFor(annot.page);
       const answer = await RP.promptDialog({
-        title: 'Reset scale',
-        message: 'Clear the current calibration? Draw a measurement over a known distance to set a new one.',
-        fields: [],
-        confirm: 'Clear scale',
+        title: 'Scale for sheet ' + (annot.page + 1),
+        message: current
+          ? 'This sheet currently measures at 1 pt = ' +
+            (current.realLength / current.pdfLength).toPrecision(3) + ' ' + current.unit +
+            '. Enter the real length of the selected measurement to set a scale for this sheet alone.'
+          : 'Enter the real length of the selected measurement.',
+        fields: [
+          { name: 'length', label: 'Real length', value: '', placeholder: 'e.g. 3.5', type: 'text' },
+          { name: 'unit', label: 'Unit', value: (current && current.unit) || 'm', type: 'select',
+            options: ['mm', 'cm', 'm', 'in', 'ft'] }
+        ],
+        confirm: 'Set sheet scale',
         cancel: 'Cancel'
       });
       if (!answer) return;
-      RP.store.setScale(null);
+      this.applyCalibration(annot, parseFloat(answer.length), answer.unit, 'sheet');
+    },
+
+    /**
+     * Clear a calibration — this sheet's own, or the whole drawing's.
+     *
+     * Two separate questions, so two rows rather than one confirm: clearing the
+     * drawing's default while a sheet override stands would leave that sheet
+     * the only one still measuring, which reads as the reset having failed.
+     */
+    async recalibrate() {
+      const page = RP.viewer ? RP.viewer.currentPage : 0;
+      const own = RP.store.hasOwnScale(page);
+      const answer = await window.rp.dialog.message({
+        type: 'question',
+        message: 'Measurement scale',
+        detail: own
+          ? 'Sheet ' + (page + 1) + ' has a scale of its own, over the drawing\u2019s default. ' +
+            'Clearing the sheet returns it to the default; clearing the drawing clears every sheet.'
+          : 'Clearing the scale returns every measurement to paper inches. ' +
+            'Draw a measurement over a known distance to set a new one.',
+        buttons: own
+          ? ['Clear this sheet\u2019s scale', 'Clear the whole drawing', 'Cancel']
+          : ['Clear the whole drawing', 'Cancel'],
+        defaultId: own ? 2 : 1,
+        cancelId: own ? 2 : 1
+      });
+      if (own && answer.response === 0) {
+        RP.store.setScale(null, page);
+      } else if ((own && answer.response === 1) || (!own && answer.response === 0)) {
+        RP.store.setScale(null);
+      } else {
+        return;
+      }
       RP.bus.emit('annots:changed', { reason: 'scale' });
     }
   };

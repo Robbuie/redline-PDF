@@ -103,7 +103,16 @@
     dirty: false,
     savedTo: null,      // last path we wrote
     saveModeDecided: null, // 'copy' | 'overwrite' once the user answered "ask"
-    scale: null,        // {pdfLength, realLength, unit} measure calibration
+    scale: null,        // {pdfLength, realLength, unit} — the document's default
+    /* Per-sheet overrides, keyed by page index. A set carries a 1:100 plan, a
+       1:20 detail and an unscaled schedule in one file, so one ratio per
+       document is not a simplification but a wrong answer on every sheet but
+       one — and a wrong length is the kind of error that gets ordered against
+       rather than noticed. Keyed by index rather than by a page descriptor's
+       uid because `pageOrder` is null until the page manager is first used,
+       so a fresh document has no uids to key on; the cost is that page ops
+       have to remap these exactly as they remap annotations. */
+    pageScales: null,
     numbering: null,    // page-number / Bates spec, or null for none
     history: [],
     future: [],
@@ -143,6 +152,7 @@
       this.savedTo = null;
       this.saveModeDecided = null;
       this.scale = null;
+      this.pageScales = null;
       this.numbering = null;
       this.history = [];
       this.future = [];
@@ -172,6 +182,7 @@
       this.savedTo = null;
       this.saveModeDecided = null;
       this.scale = null;
+      this.pageScales = null;
       this.numbering = null;
       this.emit('doc:loaded', this);
     },
@@ -184,6 +195,7 @@
       return JSON.stringify({
         annotations: this.annotations,
         scale: this.scale,
+        pageScales: this.pageScales,
         pageOrder: this.pageOrder,
         numbering: this.numbering
       });
@@ -201,6 +213,7 @@
       const orderBefore = JSON.stringify(this.pageOrder);
       this.annotations = parsed.annotations || [];
       this.scale = parsed.scale || null;
+      this.pageScales = parsed.pageScales || null;
       this.numbering = parsed.numbering || null;
       if (parsed.pageOrder !== undefined) this.pageOrder = parsed.pageOrder;
       const alive = new Set(this.annotations.map((a) => a.id));
@@ -531,11 +544,80 @@
 
     // -- measurement scale -------------------------------------------------
 
-    setScale(scale) {
+    /**
+     * The scale in force on a sheet: its own override, else the document's.
+     *
+     * Every measurement reading goes through here rather than through
+     * `this.scale`, so a caller that forgets to say which sheet it is asking
+     * about gets the document default — the pre-0.19 answer — rather than a
+     * throw. That is deliberate: a missed call site should degrade to the old
+     * behaviour, not to a broken drawing.
+     */
+    scaleFor(pageIndex) {
+      if (this.pageScales && pageIndex !== undefined && pageIndex !== null) {
+        const own = this.pageScales[pageIndex];
+        if (own) return own;
+      }
+      return this.scale || null;
+    },
+
+    /** The unit in force on a sheet, or null when it is uncalibrated. */
+    unitOf(pageIndex) {
+      const scale = this.scaleFor(pageIndex);
+      return scale && scale.pdfLength ? (scale.unit || '') : null;
+    },
+
+    /**
+     * A length as a *number* in the sheet's real units, or null uncalibrated.
+     *
+     * The formatters return a string with its unit on it, which is right for a
+     * label and useless in a spreadsheet — a column of "6.00 m" cannot be
+     * summed. The takeoff export needs the bare value, and needs it converted
+     * per sheet, so that a plan at 1:100 and a detail at 1:20 can be added
+     * together and mean something.
+     */
+    lengthValue(points, pageIndex) {
+      const scale = this.scaleFor(pageIndex);
+      if (!scale || !scale.pdfLength) return null;
+      return points * (scale.realLength / scale.pdfLength);
+    },
+
+    /** The same for an area, with the ratio squared. Null uncalibrated. */
+    areaValue(pointsSq, pageIndex) {
+      const scale = this.scaleFor(pageIndex);
+      if (!scale || !scale.pdfLength) return null;
+      const ratio = scale.realLength / scale.pdfLength;
+      return pointsSq * ratio * ratio;
+    },
+
+    /** True when this sheet is measured by its own scale rather than the document's. */
+    hasOwnScale(pageIndex) {
+      return !!(this.pageScales && this.pageScales[pageIndex]);
+    },
+
+    /**
+     * Set the calibration, for one sheet or for the whole drawing.
+     *
+     * Setting the document default deliberately does **not** clear the
+     * overrides: someone who calibrated a detail at 1:20 and then sets the
+     * drawing's default has not said anything about that detail, and silently
+     * re-measuring it would change numbers they already checked. `setScale`
+     * with no scale and no page clears everything, which is the reset.
+     */
+    setScale(scale, pageIndex) {
       this.checkpoint();
-      this.scale = scale;
+      if (pageIndex === undefined || pageIndex === null) {
+        this.scale = scale;
+        if (!scale) this.pageScales = null;
+      } else if (scale) {
+        if (!this.pageScales) this.pageScales = {};
+        this.pageScales[pageIndex] = scale;
+      } else if (this.pageScales) {
+        delete this.pageScales[pageIndex];
+        if (!Object.keys(this.pageScales).length) this.pageScales = null;
+      }
       this.markDirty();
-      this.emit('scale:changed', scale);
+      this.emit('scale:changed', this.scaleFor(pageIndex));
     },
 
     // -- page numbering ----------------------------------------------------
@@ -559,14 +641,21 @@
       return true;
     },
 
-    /** Convert a length in PDF points to the calibrated real-world string. */
-    formatLength(points) {
-      if (!this.scale || !this.scale.pdfLength) {
+    /**
+     * A length in PDF points as a calibrated real-world string.
+     *
+     * `pageIndex` says which sheet is being measured, because the scale is
+     * per-sheet: a detail at 1:20 in a set calibrated at 1:100 reads five
+     * times short without it. Callers pass `annot.page`.
+     */
+    formatLength(points, pageIndex) {
+      const scale = this.scaleFor(pageIndex);
+      if (!scale || !scale.pdfLength) {
         return (points / 72).toFixed(2) + ' in (paper)';
       }
-      const value = points * (this.scale.realLength / this.scale.pdfLength);
+      const value = points * (scale.realLength / scale.pdfLength);
       const decimals = value >= 100 ? 1 : 2;
-      return value.toFixed(decimals) + ' ' + (this.scale.unit || '');
+      return value.toFixed(decimals) + ' ' + (scale.unit || '');
     },
 
     /**
@@ -583,14 +672,15 @@
      * stamp this string into a PDF as it stands. Anything outside that
      * encoding throws in pdf-lib rather than substituting.
      */
-    formatArea(pointsSq) {
-      if (!this.scale || !this.scale.pdfLength) {
+    formatArea(pointsSq, pageIndex) {
+      const scale = this.scaleFor(pageIndex);
+      if (!scale || !scale.pdfLength) {
         return (pointsSq / 5184).toFixed(2) + ' in² (paper)';
       }
-      const ratio = this.scale.realLength / this.scale.pdfLength;
+      const ratio = scale.realLength / scale.pdfLength;
       const value = pointsSq * ratio * ratio;
       const decimals = value >= 100 ? 1 : 2;
-      return value.toFixed(decimals) + ' ' + (this.scale.unit || '') + '²';
+      return value.toFixed(decimals) + ' ' + (scale.unit || '') + '²';
     },
 
     /**
@@ -609,6 +699,15 @@
      * whereas a container markup would be drawn as an unrecognised type or
      * dropped, and its children left naming a parent that no longer exists.
      *
+     * `pageScales` (version 6) is the same shape of document-level field as
+     * `numbering` and round-trips the same way: an older build reads the model,
+     * never looks at the key, and writes its own model back without it. What it
+     * loses is only the *overrides* — `scale` is still there and is still the
+     * document default — so a set opened in 0.18 measures every sheet at the
+     * default rather than refusing to measure. Degrading to the old answer is
+     * the right failure here; the alternative, folding the overrides into
+     * `scale`, would pick one sheet's ratio and apply it to all of them.
+     *
      * `numbering` is a document-level field rather than a per-annotation one,
      * so an older build round-trips it as *nothing*: it reads the model, never
      * looks at the key, and writes its own model back without it. That is the
@@ -617,10 +716,11 @@
      */
     serialize() {
       return {
-        version: 5,
+        version: 6,
         app: 'redline-pdf',
         savedAt: Date.now(),
         scale: this.scale,
+        pageScales: this.pageScales,
         numbering: this.numbering,
         annotations: this.annotations.map((a) => {
           const copy = Object.assign({}, a);

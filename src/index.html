@@ -261,8 +261,10 @@
     <span class="tb-dirty" id="tbDirty" title="Unsaved changes" hidden>•</span>
   </div>
   <div class="tb-actions no-drag">
-    <button class="tb-btn" id="btnDiag" title="Diagnostics &amp; log  (Ctrl+Shift+D)"><svg><use href="#i-bug"/></svg></button>
-    <button class="tb-btn" id="btnSettings" title="Settings"><svg><use href="#i-settings"/></svg></button>
+    <!-- One app menu rather than a button per thing: Settings, the shortcut
+         sheet, diagnostics and the update check all hang off it, the way the
+         file manager keeps them under Help. -->
+    <button class="tb-btn" id="btnAppMenu" title="Settings, shortcuts, diagnostics and updates"><svg><use href="#i-settings"/></svg></button>
     <span class="tb-sep"></span>
     <button class="win-btn" id="winMin" title="Minimise"><svg><use href="#i-min"/></svg></button>
     <button class="win-btn" id="winMax" title="Maximise"><svg><use href="#i-max"/></svg></button>
@@ -276,9 +278,9 @@
     <button class="tbtn wide-btn" id="btnOpen" title="Open PDF  (Ctrl+O)"><svg><use href="#i-open"/></svg><span>Open</span></button>
     <button class="tbtn icon-only" id="btnOpenRecent" title="Open a recent drawing"><svg class="caret-down"><use href="#i-chev"/></svg></button>
     <button class="tbtn wide-btn" id="btnSave" title="Save  (Ctrl+S)"><svg><use href="#i-save"/></svg><span>Save</span></button>
-    <button class="tbtn wide-btn" id="btnSaveAs" title="Save a copy…  (Ctrl+Shift+S)"><svg><use href="#i-saveas"/></svg><span>Save As</span></button>
+    <button class="tbtn icon-only caret-btn" id="btnSaveMore" title="Save As, and what Ctrl+S does"><svg class="caret-down"><use href="#i-chev"/></svg></button>
     <button class="tbtn wide-btn" id="btnPrint" title="Print  (Ctrl+P)"><svg><use href="#i-print"/></svg><span>Print</span></button>
-    <button class="tbtn wide-btn" id="btnExport" title="Export a markup summary report"><svg><use href="#i-report"/></svg><span>Report</span></button>
+    <button class="tbtn wide-btn" id="btnExport" title="Export a markup report, the markup list, a takeoff or the schedules"><svg><use href="#i-report"/></svg><span>Export</span><svg class="caret-down trailing"><use href="#i-chev"/></svg></button>
   </div>
 
   <div class="tsep"></div>
@@ -463,8 +465,7 @@
       </div>
       <div class="markup-list" id="markupList"></div>
       <div class="side-foot">
-        <button class="ghost-btn" id="btnExportCsv">Export CSV</button>
-        <button class="ghost-btn" id="btnExportReport">PDF report</button>
+        <button class="ghost-btn" id="btnExportList" title="A markup report, the markup list, a takeoff or the schedules">Export<svg class="caret-down"><use href="#i-chev"/></svg></button>
       </div>
     </section>
 
@@ -667,21 +668,55 @@
              out of step with it is an option that sets a value the CSS has no
              rule for. -->
         <label class="opt field">
+          <span>Theme changes by itself</span>
+          <select id="optFollow"></select>
+        </label>
+        <label class="opt field" id="optThemeRow">
           <span>Theme</span>
           <select id="optTheme"></select>
         </label>
+        <label class="opt field follow-row" hidden>
+          <span>Light theme</span>
+          <select id="optThemeLight"></select>
+        </label>
+        <label class="opt field follow-row" hidden>
+          <span>Dark theme</span>
+          <select id="optThemeDark"></select>
+        </label>
+        <div class="opt field schedule-row" hidden>
+          <span>Light from</span>
+          <div class="hours-row">
+            <input type="number" id="optDayFrom" min="0" max="23" step="1" />
+            <span>:00, dark from</span>
+            <input type="number" id="optNightFrom" min="0" max="23" step="1" />
+            <span>:00</span>
+          </div>
+        </div>
         <div class="opt field">
           <span>Accent colour</span>
           <div class="accent-row" id="optAccent" role="radiogroup" aria-label="Accent colour"></div>
+        </div>
+        <div class="opt field">
+          <span>Right-hand pane</span>
+          <div class="accent-row" id="optAccentRight" role="radiogroup" aria-label="Accent for the right-hand pane of a split"></div>
         </div>
         <label class="opt field">
           <span>Interface size</span>
           <select id="optDensity"></select>
         </label>
         <label class="opt field">
+          <span>Font</span>
+          <select id="optFont"></select>
+        </label>
+        <label class="opt field">
+          <span>Corners</span>
+          <select id="optCorners"></select>
+        </label>
+        <label class="opt field">
           <span>Paper display</span>
           <select id="optPaper"></select>
         </label>
+        <p class="opt-note">The right-hand pane's colour shows only when two drawings are side by side, so a glance says which one the toolbar is acting on.</p>
         <p class="opt-note">Paper display filters the drawing on screen only — your markups keep their real colours, and saved files, prints and copied snapshots are never affected.</p>
       </section>
       <section>
@@ -811,6 +846,9 @@
 <script src="js/tools.js"></script>
 <script src="js/edit.js"></script>
 <script src="js/search.js"></script>
+<script src="js/analyse.js"></script>
+<script src="js/tables.js"></script>
+<script src="js/xlsx.js"></script>
 <script src="js/sidebar.js"></script>
 <script src="js/outline.js"></script>
 <script src="js/compare.js"></script>

@@ -145,6 +145,31 @@
     applyAppearance(settings) {
       RP.appearance.applyAll(settings || this.settings || {});
       this.syncPaperButton();
+      this.startThemeFollow();
+    },
+
+    /**
+     * Re-decide the theme when it is allowed to change by itself.
+     *
+     * Checked once a minute and whenever Windows' light/dark setting changes
+     * (Chromium reports that through `prefers-color-scheme`, which Electron
+     * keeps in step with the OS while nothing sets `nativeTheme.themeSource`).
+     * The class is only touched when the answer changes, so a tick costs one
+     * comparison. Same arrangement as the file manager's `themeswitch`.
+     */
+    startThemeFollow() {
+      const A = RP.appearance;
+      const check = () => {
+        const want = A.pickTheme(this.settings, { windowsLight: A.windowsLight(), hour: new Date().getHours() });
+        if (A.current().theme !== want) A.applyTheme(want);
+      };
+      this.checkTheme = check;
+      if (this.themeTimer) return;
+      this.themeTimer = setInterval(check, 60000);
+      try {
+        const media = window.matchMedia('(prefers-color-scheme: light)');
+        if (media && media.addEventListener) media.addEventListener('change', check);
+      } catch (err) { /* no media queries: the timer alone */ }
     },
 
     // -----------------------------------------------------------------------
@@ -283,6 +308,11 @@
       if (embedded) {
         store.load(embedded.annotations);
         store.scale = embedded.scale || null;
+        /* Absent from a model written before 0.19, and dropped by an older build
+           that round-tripped this one. Either way `scale` survives as the
+           document default, so the drawing still measures — at the default on
+           every sheet, which is the pre-0.19 answer rather than a broken one. */
+        store.pageScales = embedded.pageScales || null;
         // Absent in a file written before 0.12, and absent from one written by
         // an older build that read this one — either way the numbers are still
         // stamped into the pages, only no longer re-editable here.
@@ -317,6 +347,7 @@
             if (answer.response === 0) {
               store.load(marks);
               if (recovered.scale) store.scale = recovered.scale;
+              if (recovered.pageScales) store.pageScales = recovered.pageScales;
               if (recovered.numbering) store.numbering = recovered.numbering;
               store.markDirty(true);
               /* The pages are rebuilt last, because the rebuild reads the
@@ -639,6 +670,131 @@
       RP.toast('Report written to ' + RP.basename(path), 'good');
     },
 
+    /**
+     * The measurement takeoff as a workbook.
+     *
+     * Quantities go in as numbers so they add up — that is the whole
+     * difference from the CSV, which writes "6.00 m" into a cell and leaves
+     * you retyping it. Grouped by type *and* unit, because a set can carry
+     * metres on the plan and millimetres on a detail and a total across the
+     * two would be a number with no meaning.
+     */
+    async exportTakeoff() {
+      const store = RP.store;
+      if (!store.annotations.length) { RP.toast('No markups to export yet', 'warn'); return; }
+      const measured = store.annotations.filter((a) =>
+        a.type === 'measure' || RP.render.isMeasuredPoly(a.type));
+      if (!measured.length) {
+        RP.toast('No measurements on this drawing yet — measure, run length or area', 'warn', 5000);
+        return;
+      }
+      if (!store.scale && !store.pageScales) {
+        const answer = await window.rp.dialog.message({
+          type: 'question',
+          message: 'This drawing has no scale set',
+          detail: 'The takeoff will list every measurement and count them, but the lengths and areas ' +
+            'will be blank — there is no calibration to convert them with.\n\n' +
+            'Draw a measurement over a known distance to set a scale first.',
+          buttons: ['Export anyway', 'Cancel'],
+          defaultId: 1,
+          cancelId: 1
+        });
+        if (answer.response !== 0) return;
+      }
+
+      const suggestion = RP.joinPath(RP.dirname(store.docPath || ''),
+        RP.stripExt(store.docName) + '-takeoff.xlsx');
+      const target = await window.rp.files.saveAsDialog({
+        title: 'Export takeoff',
+        defaultPath: suggestion,
+        filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }]
+      });
+      if (!target) return;
+
+      try {
+        const bytes = RP.xlsx.build(RP.exporter.takeoffSheets(store));
+        await window.rp.files.write(target, bytes, false);
+        RP.toast('Takeoff written to ' + RP.basename(target), 'good');
+      } catch (err) {
+        RP.toast('Could not write the takeoff: ' + err.message, 'error');
+      }
+    },
+
+    /**
+     * Find the ruled schedules in this drawing and write them to a workbook.
+     *
+     * The scan is a full operator-list walk per page — tens of thousands of ops
+     * on a plotted sheet — so it reports progress and is not offered as
+     * something that happens on open. What comes back is confirmed before a
+     * file is chosen: extraction is a reading of the drawing rather than a fact
+     * about it, and a workbook of three things the user did not expect is worse
+     * than a dialog saying which three they were.
+     */
+    async exportSchedules() {
+      if (!RP.viewer || !RP.viewer.pages.length) { RP.toast('Open a drawing first', 'warn'); return; }
+      const store = RP.store;
+      RP.toast('Looking for schedules…', '', 1500);
+
+      let tables;
+      try {
+        tables = await RP.tables.scan((done, total) => {
+          RP.status('Reading sheet ' + done + ' of ' + total + '…');
+        });
+      } catch (err) {
+        RP.toast('Could not read this drawing: ' + err.message, 'error');
+        return;
+      } finally {
+        RP.status('');
+      }
+
+      if (!tables.length) {
+        await window.rp.dialog.message({
+          type: 'info',
+          message: 'No schedules found in this drawing',
+          detail: 'Schedules are found by their ruled grid, so a table drawn without rules — or one on a ' +
+            'scanned sheet, which carries no text at all — is not picked up.\n\n' +
+            'Markups can still go out as a CSV or a report.',
+          buttons: ['Close']
+        });
+        return;
+      }
+
+      /* The store is captured before the dialog, and the workbook is built from
+         that capture: this is a long await and the user can switch tabs across
+         it, the same reason `App.save` captures before `resolveTarget`. */
+      const summary = tables.slice(0, 12).map((t) =>
+        '  • ' + t.name + '  (sheet ' + (t.page + 1) + ', ' + t.rows + ' rows × ' + t.columns + ' columns)').join('\n');
+      const answer = await window.rp.dialog.message({
+        type: 'question',
+        message: tables.length === 1 ? 'One schedule found' : tables.length + ' schedules found',
+        detail: summary + (tables.length > 12 ? '\n  … and ' + (tables.length - 12) + ' more' : '') +
+          '\n\nEach becomes a worksheet. Numbers go in as numbers; part codes, sizes and ' +
+          'revisions stay as text.',
+        buttons: ['Export…', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1
+      });
+      if (answer.response !== 0) return;
+
+      const suggestion = RP.joinPath(RP.dirname(store.docPath || ''),
+        RP.stripExt(store.docName) + '-schedules.xlsx');
+      const target = await window.rp.files.saveAsDialog({
+        title: 'Export schedules',
+        defaultPath: suggestion,
+        filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }]
+      });
+      if (!target) return;
+
+      try {
+        const bytes = RP.xlsx.build(tables.map((t) => ({ name: t.name, rows: t.cells })));
+        await window.rp.files.write(target, bytes, false);
+        RP.toast(tables.length + (tables.length === 1 ? ' schedule' : ' schedules') +
+          ' written to ' + RP.basename(target), 'good');
+      } catch (err) {
+        RP.toast('Could not write the workbook: ' + err.message, 'error');
+      }
+    },
+
     /* Snapshots are keyed by document path, so every open tab gets its own —
        a crash with six drawings up must not only recover the one that happened
        to be in front. */
@@ -658,6 +814,7 @@
             await window.rp.recovery.write(store.docPath, store.annotations, {
               pageOrder,
               scale: store.scale,
+              pageScales: store.pageScales,
               numbering: store.numbering
             });
           } catch (err) { /* ignore */ }
@@ -709,11 +866,11 @@
         this.openRecentsMenu(event.currentTarget);
       });
       RP.$('#btnSave').addEventListener('click', () => this.save());
-      RP.$('#btnSaveAs').addEventListener('click', () => this.saveAs());
+      RP.$('#btnSaveMore').addEventListener('click', (event) => this.openSaveMenu(event.currentTarget));
       RP.$('#btnPrint').addEventListener('click', () => RP.print.show());
-      RP.$('#btnExport').addEventListener('click', () => this.exportReport());
-      RP.$('#btnExportCsv').addEventListener('click', () => this.exportCsv());
-      RP.$('#btnExportReport').addEventListener('click', () => this.exportReport());
+      RP.$('#btnExport').addEventListener('click', (event) => this.openExportMenu(event.currentTarget));
+      RP.$('#btnExportList').addEventListener('click', (event) => this.openExportMenu(event.currentTarget));
+      RP.$('#btnAppMenu').addEventListener('click', (event) => this.openAppMenu(event.currentTarget));
 
       RP.$$('.tbtn.tool[data-tool]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -909,6 +1066,82 @@
           }
         }))
       ];
+    },
+
+    // -----------------------------------------------------------------------
+    // Toolbar dropdowns
+    // -----------------------------------------------------------------------
+
+    /**
+     * Every export in one list. Up to 0.19 the report was a toolbar button and
+     * the CSV, the report again, the takeoff and the schedules were a row of
+     * buttons under the markup list; the same list now hangs off both places.
+     */
+    openExportMenu(anchor) {
+      RP.menu.openUnder(anchor, [
+        { label: 'Markup report (PDF)…', run: () => this.exportReport() },
+        { label: 'Markup list (CSV)…', run: () => this.exportCsv() },
+        { separator: true },
+        {
+          label: 'Takeoff (Excel)…',
+          title: 'Counts, lengths and areas by markup type, as an Excel workbook',
+          run: () => this.exportTakeoff()
+        },
+        {
+          label: 'Schedules (Excel)…',
+          title: 'Find the ruled schedules in this drawing and write them to an Excel workbook',
+          run: () => this.exportSchedules()
+        }
+      ]);
+    },
+
+    /**
+     * Save As, and the save mode. The mode is the status-bar chip's setting —
+     * offered here as well because "what will Ctrl+S do" is a question asked
+     * at the Save button, and a chip that cycles is a poor way to pick one of
+     * three things.
+     */
+    openSaveMenu(anchor) {
+      const mode = this.settings.saveMode;
+      const pick = (value) => async () => {
+        if (value === this.settings.saveMode) return;
+        this.settings = await window.rp.settings.patch({ saveMode: value });
+        this.clearSaveModeDecisions();
+        this.updateSaveModeChip();
+        RP.toast('Save mode: ' + this.saveModeLabel(value), value === 'overwrite' ? 'warn' : '');
+      };
+      RP.menu.openUnder(anchor, [
+        { label: 'Save', hint: 'Ctrl+S', run: () => this.save() },
+        { label: 'Save As…', hint: 'Ctrl+Shift+S', run: () => this.saveAs() },
+        { separator: true },
+        { heading: 'Ctrl+S writes' },
+        { label: 'A new copy', checked: mode === 'copy', run: pick('copy') },
+        { label: 'Over the original', checked: mode === 'overwrite', run: pick('overwrite') },
+        { label: 'Ask each time', checked: mode === 'ask', run: pick('ask') }
+      ]);
+    },
+
+    /** The title bar's one menu: everything about the app rather than the drawing. */
+    openAppMenu(anchor) {
+      RP.menu.openUnder(anchor, [
+        { label: 'Settings…', run: () => this.openSettings() },
+        { label: 'Keyboard shortcuts', hint: '?', run: () => RP.keys.show() },
+        { label: 'Diagnostics and log', hint: 'Ctrl+Shift+D', run: () => RP.diag.open() },
+        { separator: true },
+        { label: 'Check for updates', run: () => this.checkForUpdates() },
+        { label: 'Redline PDF ' + (this.appVersion || ''), disabled: true }
+      ]);
+    },
+
+    /**
+     * The same rows as one submenu row, for the right-click menus. The parent
+     * carries the count, so the heading inside it would only say it twice.
+     */
+    statusSubmenu() {
+      const rows = this.statusMenuItems().filter((item) => !item.heading);
+      if (!rows.length) return null;
+      const n = RP.store.selection.size;
+      return { label: n > 1 ? 'Status of ' + n + ' markups' : 'Status', submenu: rows };
     },
 
     // -----------------------------------------------------------------------
@@ -1434,7 +1667,7 @@
         this.updateSaveModeChip();
         modal.hidden = false;
       };
-      RP.$('#btnSettings').addEventListener('click', open);
+      this.openSettings = open;
       RP.$('#settingsClose').addEventListener('click', () => { modal.hidden = true; });
       modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
 
@@ -1458,22 +1691,7 @@
       RP.$('#optAutoUpdate').addEventListener('change', (e) => patch(
         e.target.checked ? { autoUpdate: true, skipVersion: null } : { autoUpdate: false }
       ));
-      RP.$('#btnCheckUpdates').addEventListener('click', async (e) => {
-        const button = e.currentTarget;
-        button.disabled = true;
-        RP.status('Checking for updates…');
-        try {
-          // Everything worth reading is a native dialog raised by the main
-          // process; the toast is only here for the states that show nothing.
-          const result = await window.rp.updates.check();
-          if (result && result.status === 'busy') RP.toast('A check is already running', 'warn');
-        } catch (err) {
-          RP.toast('Update check failed: ' + err.message, 'error');
-        } finally {
-          button.disabled = false;
-          RP.status('');
-        }
-      });
+      RP.$('#btnCheckUpdates').addEventListener('click', (e) => this.checkForUpdates(e.currentTarget));
       RP.$('#optRestoreView').addEventListener('change', (e) => patch({ restoreView: e.target.checked }));
       RP.$('#optAuthor').addEventListener('change', (e) => {
         // Every open drawing, not just the one in front — the author is a
@@ -1485,8 +1703,44 @@
       // Appearance. Each one applies first and persists second: the change is
       // visible on the same frame the control moved, and a failed write costs
       // the preference rather than the preview.
+      // The theme is persisted as chosen and then re-decided, because when
+      // it follows Windows or the clock the theme on screen is not
+      // necessarily the one just picked.
+      const themePatch = (values) => patch(values).then(() => {
+        if (this.checkTheme) this.checkTheme();
+        this.syncFollowRows();
+      });
       RP.$('#optTheme').addEventListener('change', (e) => {
-        patch({ theme: RP.appearance.applyTheme(e.target.value) });
+        RP.appearance.applyTheme(e.target.value);
+        themePatch({ theme: RP.appearance.themeOf(e.target.value) });
+      });
+      RP.$('#optFollow').addEventListener('change', (e) => {
+        themePatch({ themeFollow: RP.appearance.followOf(e.target.value) });
+      });
+      RP.$('#optThemeLight').addEventListener('change', (e) => {
+        themePatch({ themeLight: RP.appearance.themeOf(e.target.value) });
+      });
+      RP.$('#optThemeDark').addEventListener('change', (e) => {
+        themePatch({ themeDark: RP.appearance.themeOf(e.target.value) });
+      });
+      const hour = (input, key) => input.addEventListener('change', () => {
+        const n = Math.floor(Number(input.value));
+        if (!Number.isFinite(n) || n < 0 || n > 23) { input.value = this.settings[key]; return; }
+        themePatch({ [key]: n });
+      });
+      hour(RP.$('#optDayFrom'), 'dayFrom');
+      hour(RP.$('#optNightFrom'), 'nightFrom');
+      RP.$('#optFont').addEventListener('change', (e) => {
+        patch({ font: RP.appearance.applyFont(e.target.value) });
+      });
+      RP.$('#optCorners').addEventListener('change', (e) => {
+        patch({ corners: RP.appearance.applyCorners(e.target.value) });
+      });
+      RP.$('#optAccentRight').addEventListener('click', (e) => {
+        const dot = e.target.closest('.accent-dot');
+        if (!dot) return;
+        patch({ accentRight: RP.appearance.applyRightAccent(dot.dataset.accent) });
+        this.fillAppearanceControls();
       });
       RP.$('#optDensity').addEventListener('change', (e) => {
         patch({ density: RP.appearance.applyDensity(e.target.value) });
@@ -1500,6 +1754,39 @@
         patch({ accent: RP.appearance.applyAccent(dot.dataset.accent) });
         this.fillAppearanceControls();
       });
+    },
+
+    /** Show the rows that only apply while the theme follows something. */
+    syncFollowRows() {
+      const follow = RP.appearance.followOf((this.settings || {}).themeFollow);
+      RP.$$('.follow-row').forEach((row) => { row.hidden = follow === 'off'; });
+      RP.$$('.schedule-row').forEach((row) => { row.hidden = follow !== 'schedule'; });
+      const fixed = RP.$('#optThemeRow');
+      if (fixed) fixed.hidden = follow !== 'off';
+    },
+
+    /** Replaced by `wireSettings` with the version that fills the dialog
+        first; this only stands in if that stage of boot failed. */
+    openSettings() {
+      const modal = RP.$('#settingsModal');
+      if (modal) modal.hidden = false;
+    },
+
+    /** From the Settings button in the app menu and from the dialog. */
+    async checkForUpdates(button) {
+      if (button) button.disabled = true;
+      RP.status('Checking for updates…');
+      try {
+        // Everything worth reading is a native dialog raised by the main
+        // process; the toast is only here for the states that show nothing.
+        const result = await window.rp.updates.check();
+        if (result && result.status === 'busy') RP.toast('A check is already running', 'warn');
+      } catch (err) {
+        RP.toast('Update check failed: ' + err.message, 'error');
+      } finally {
+        if (button) button.disabled = false;
+        RP.status('');
+      }
     },
 
     /**
@@ -1527,9 +1814,37 @@
         box.value = current;
       };
 
-      fill('#optTheme', A.THEMES, now.theme);
+      const settings = this.settings || {};
+      // The picker's own theme, not the one on screen: while the theme
+      // follows Windows or the clock the two differ, and filling this box
+      // with the one on screen would quietly change the fixed choice.
+      fill('#optTheme', A.THEMES, A.themeOf(settings.theme));
+      fill('#optFollow', A.FOLLOW, A.followOf(settings.themeFollow));
+      fill('#optThemeLight', A.THEMES.filter((t) => t.light), A.themeOf(settings.themeLight || 'light'));
+      fill('#optThemeDark', A.THEMES.filter((t) => !t.light), A.themeOf(settings.themeDark || 'dark'));
+      const day = RP.$('#optDayFrom');
+      const night = RP.$('#optNightFrom');
+      if (day) day.value = settings.dayFrom === undefined ? A.DEFAULTS.dayFrom : settings.dayFrom;
+      if (night) night.value = settings.nightFrom === undefined ? A.DEFAULTS.nightFrom : settings.nightFrom;
       fill('#optDensity', A.DENSITIES, now.density);
       fill('#optPaper', A.PAPER_MODES, now.paperMode);
+      fill('#optFont', A.FONTS, now.font);
+      fill('#optCorners', A.CORNERS, now.corners);
+      this.syncFollowRows();
+
+      const right = RP.$('#optAccentRight');
+      if (right) {
+        right.replaceChildren(...A.RIGHT_ACCENTS.map((item) => RP.el('button', {
+          type: 'button',
+          class: 'accent-dot' + (item.id === 'same' ? ' same' : '') + (item.id === now.accentRight ? ' on' : ''),
+          'data-accent': item.id,
+          title: item.label,
+          'aria-label': item.label,
+          role: 'radio',
+          'aria-checked': item.id === now.accentRight ? 'true' : 'false',
+          style: item.rgb ? '--dot: rgb(' + item.rgb + ');' : null
+        })));
+      }
 
       const accent = now.accent;
       const row = RP.$('#optAccent');
@@ -1675,9 +1990,21 @@
       if (pageInput) pageInput.disabled = !store.numPages;
       if (pageOf) pageOf.textContent = 'of ' + (store.numPages || '—');
 
-      RP.$('#stScale').textContent = store.scale
-        ? 'Scale: 1 pt = ' + (store.scale.realLength / store.scale.pdfLength).toPrecision(3) + ' ' + store.scale.unit
+      /* The scale shown is the one in force on the sheet being looked at, not
+         the document default — on a set with a detail at its own ratio those
+         are different numbers, and the status bar showing the wrong one is how
+         somebody would trust a measurement they should have questioned. The
+         sheet marker is there so an override never looks like the default. */
+      const page = RP.viewer ? RP.viewer.currentPage : 0;
+      const inForce = store.scaleFor(page);
+      const stScale = RP.$('#stScale');
+      stScale.textContent = inForce
+        ? 'Scale: 1 pt = ' + (inForce.realLength / inForce.pdfLength).toPrecision(3) + ' ' + inForce.unit +
+          (store.hasOwnScale(page) ? ' (this sheet)' : '')
         : 'Scale: not calibrated';
+      stScale.title = store.hasOwnScale(page)
+        ? 'Sheet ' + (page + 1) + ' has its own scale, over the drawing\u2019s default'
+        : 'Measurement scale — click to clear';
 
       this.updateDims();
       this.updateSelectionStatus();
@@ -1741,6 +2068,8 @@
   function FALLBACK_SETTINGS() {
     return {
       theme: 'dark', accent: 'redline', density: 'normal', paperMode: 'normal',
+      accentRight: 'same', font: 'ui', corners: 'round',
+      themeFollow: 'off', themeLight: 'light', themeDark: 'dark', dayFrom: 7, nightFrom: 19,
       saveMode: 'copy', backupOnOverwrite: true, autosave: false,
       autosaveIntervalMs: 60000, stayResident: false, defaultAuthor: '',
       restoreView: true, autoUpdate: true, skipVersion: null, recents: []

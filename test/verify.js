@@ -81,9 +81,9 @@ global.document = {
 };
 
 const globalEval = eval; // indirect eval => runs in global scope
-for (const file of ['util.js', 'appearance.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
+for (const file of ['util.js', 'appearance.js', 'menu.js', 'store.js', 'render.js', 'compare.js', 'exporter.js', 'pages.js',
   'print.js', 'annots.js', 'views.js', 'viewer.js', 'snapshot.js', 'textsel.js', 'clip.js',
-  'tools.js', 'search.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
+  'tools.js', 'search.js', 'analyse.js', 'tables.js', 'xlsx.js', 'sidebar.js', 'pdfjs-loader.js', 'edit.js', 'app.js']) {
   globalEval(fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8'));
 }
 const RP = global.RP;
@@ -1513,7 +1513,7 @@ function testGrouping() {
 
   // --- persistence ----------------------------------------------------------
   const model = store.serialize();
-  check('the embedded model is at version 5', model.version === 5, String(model.version));
+  check('the embedded model is at version 6', model.version === 6, String(model.version));
   check('the model carries the group field',
     model.annotations.some((x) => RP.groupOf(x)),
     JSON.stringify(model.annotations.map((x) => x.group || null)));
@@ -1593,7 +1593,7 @@ function testMarkupStatus() {
     JSON.stringify(counts));
 
   const payload = store.serialize();
-  check('the embedded model declares version 5', payload.version === 5, 'version ' + payload.version);
+  check('the embedded model declares version 6', payload.version === 6, 'version ' + payload.version);
   check('status is part of the embedded model',
     payload.annotations.every((a) => typeof a.status === 'string'));
   check('the numbering spec is a document-level field, not a per-markup one',
@@ -3751,6 +3751,452 @@ function testSessions() {
    page subset, and — the one that matters most for drawings — that actual-size
    printing leaves page geometry byte-for-byte alone.
    --------------------------------------------------------------------------- */
+
+// --- schedule extraction ----------------------------------------------------
+
+/** A merged rule, as `mergeRules` would have produced it. */
+function ruleAt(at, spans) {
+  return { at, n: 1, spans: spans.map((s) => [s[0], s[1]]) };
+}
+
+/** A text run in the shape `search.pageEntry` produces. */
+function runAt(str, x, y, w, h) {
+  return { str, div: 0, t: [1, 0, 0, 1, x, y], w, h: h || 10, font: '', start: 0, end: str.length };
+}
+
+async function ruledTablePdf() {
+  const doc = await PDFLib.PDFDocument.create();
+  const page = doc.addPage([400, 300]);
+  const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+  const xs = [50, 150, 250, 350];
+  const ys = [250, 230, 210, 190];
+  const line = (x1, y1, x2, y2) => page.drawLine({
+    start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: 1, color: PDFLib.rgb(0, 0, 0)
+  });
+  for (const y of ys) line(xs[0], y, xs[xs.length - 1], y);
+  for (const x of xs) line(x, ys[ys.length - 1], x, ys[0]);
+  const cells = [['ITEM', 'SIZE', 'QTY'], ['CONDUIT', '3/4 EMT', '12'], ['WIRE', '#12 THHN', '500']];
+  for (let r = 0; r < cells.length; r++) {
+    for (let c = 0; c < cells[r].length; c++) {
+      page.drawText(cells[r][c], { x: xs[c] + 6, y: ys[r] - 14, size: 8, font });
+    }
+  }
+  /* A dimension chain beneath it: one rule, two extension lines, one figure.
+     Geometrically a two-column table, and the thing the density check exists
+     to throw out. */
+  line(60, 100, 340, 100);
+  line(60, 90, 60, 110);
+  line(340, 90, 340, 110);
+  line(200, 90, 200, 110);
+  page.drawText('23\'-4"', { x: 180, y: 104, size: 8, font });
+  return doc.save();
+}
+
+
+// --- per-sheet measurement scale --------------------------------------------
+
+function testPageScales() {
+  console.log('\nPer-sheet measurement scale');
+  const store = RP.createStore();
+  store.numPages = 4;
+
+  // A set plotted at 1:100 with one detail at 1:20 — the case the whole
+  // feature exists for, and the one a single document ratio gets wrong.
+  store.scale = { pdfLength: 72, realLength: 3, unit: 'm' };          // 1pt = 1/24 m
+  store.pageScales = { 2: { pdfLength: 72, realLength: 0.6, unit: 'm' } }; // 1pt = 1/120 m
+
+  check('a sheet with no scale of its own uses the drawing\'s',
+    store.formatLength(144, 0) === '6.00 m', store.formatLength(144, 0));
+  check('a sheet with its own scale uses that instead',
+    store.formatLength(144, 2) === '1.20 m', store.formatLength(144, 2));
+  check('and the sheet after it is unaffected',
+    store.formatLength(144, 3) === '6.00 m', store.formatLength(144, 3));
+  check('a caller that names no sheet still gets the drawing\'s default',
+    store.formatLength(144) === '6.00 m', store.formatLength(144));
+  check('hasOwnScale distinguishes an override from the default',
+    store.hasOwnScale(2) === true && store.hasOwnScale(0) === false);
+
+  /* The ratio is squared for an area, so a wrong scale is wrong by the square
+     — a 1:20 detail measured at the 1:100 default over-reports by 25x, which
+     is the difference between a room and a floor. */
+  check('an area on an overridden sheet squares that sheet\'s ratio',
+    store.formatArea(5000, 2) === '0.35 m²', store.formatArea(5000, 2));
+  check('and on a default sheet squares the default',
+    store.formatArea(5000, 0) === '8.68 m²', store.formatArea(5000, 0));
+
+  // -- what a reading quotes ------------------------------------------------
+  /* The integration point: `readingLines` is what the sheet, the markup list,
+     the CSV and the report all quote, and it has to take the scale from the
+     markup's own page rather than from whatever is on screen. */
+  const onDetail = { id: 'm1', page: 2, type: 'measure', x1: 0, y1: 0, x2: 144, y2: 0 };
+  const onPlan = { id: 'm2', page: 0, type: 'measure', x1: 0, y1: 0, x2: 144, y2: 0 };
+  check('a measurement quotes the scale of the sheet it is on',
+    RP.render.readingOf(onDetail, store) === '1.20 m', RP.render.readingOf(onDetail, store));
+  check('two identical measurements on differently scaled sheets read differently',
+    RP.render.readingOf(onPlan, store) === '6.00 m' &&
+    RP.render.readingOf(onDetail, store) === '1.20 m');
+
+  // -- setting and clearing -------------------------------------------------
+  const s2 = RP.createStore();
+  s2.numPages = 3;
+  s2.setScale({ pdfLength: 72, realLength: 3, unit: 'm' });
+  s2.setScale({ pdfLength: 72, realLength: 0.6, unit: 'm' }, 1);
+  check('setting a sheet scale leaves the document default alone',
+    s2.scale.realLength === 3 && s2.pageScales[1].realLength === 0.6);
+  /* Setting the default must not silently re-measure a sheet somebody already
+     calibrated by hand and checked. */
+  s2.setScale({ pdfLength: 72, realLength: 6, unit: 'm' });
+  check('changing the document default does not clear a sheet override',
+    s2.scale.realLength === 6 && s2.pageScales[1].realLength === 0.6);
+  s2.setScale(null, 1);
+  check('clearing one sheet returns it to the default',
+    s2.pageScales === null && s2.formatLength(72, 1) === '6.00 m');
+  s2.setScale({ pdfLength: 72, realLength: 0.6, unit: 'm' }, 1);
+  s2.setScale(null);
+  check('clearing the drawing clears the overrides with it',
+    s2.scale === null && s2.pageScales === null &&
+    s2.formatLength(72, 1).indexOf('paper') > 0);
+
+  // -- page operations ------------------------------------------------------
+  /* Keyed by index, so every page op moves them. A scale left pointing at the
+     old index is worse than one never set: the sheet still measures, just at
+     another sheet's ratio. */
+  const remap = RP.pages.remapPageScales;
+  const scales = { 0: { pdfLength: 1, realLength: 10, unit: 'm' },
+                   2: { pdfLength: 1, realLength: 20, unit: 'm' } };
+  const afterDelete = remap(scales, { 0: 0, 1: -1, 2: 1 }, []);
+  check('deleting a sheet moves the scales after it',
+    afterDelete[0].realLength === 10 && afterDelete[1].realLength === 20 &&
+    afterDelete[2] === undefined, JSON.stringify(afterDelete));
+  const afterReorder = remap(scales, { 0: 2, 1: 1, 2: 0 }, []);
+  check('reordering carries each scale to where its sheet went',
+    afterReorder[2].realLength === 10 && afterReorder[0].realLength === 20);
+  const afterDuplicate = remap(scales, { 0: 0, 1: 1, 2: 2 }, [{ from: 2, to: 3 }]);
+  check('a duplicated sheet inherits its original\'s scale',
+    afterDuplicate[3].realLength === 20);
+  check('a scale on a deleted sheet is dropped, not left pointing at another',
+    remap({ 1: { pdfLength: 1, realLength: 5, unit: 'm' } }, { 0: 0, 1: -1 }, []) === null);
+  check('no overrides remains no overrides', remap(null, { 0: 0 }, []) === null);
+
+  // -- persistence ----------------------------------------------------------
+  const s3 = RP.createStore();
+  s3.numPages = 2;
+  s3.scale = { pdfLength: 72, realLength: 3, unit: 'm' };
+  s3.pageScales = { 1: { pdfLength: 72, realLength: 0.6, unit: 'm' } };
+  const model = s3.serialize();
+  check('the overrides ride in the embedded model',
+    model.pageScales && model.pageScales[1].realLength === 0.6);
+  check('the model is at version 6 for them', model.version === 6, String(model.version));
+
+  /* An older build drops the key and keeps `scale`, so the drawing still
+     measures — at the default on every sheet, which is the pre-0.19 answer
+     rather than a broken one. */
+  const older = Object.assign({}, model);
+  delete older.pageScales;
+  const s4 = RP.createStore();
+  s4.scale = older.scale;
+  s4.pageScales = older.pageScales || null;
+  check('a model round-tripped through an older build still measures',
+    s4.formatLength(144, 1) === '6.00 m', s4.formatLength(144, 1));
+
+  // -- undo -----------------------------------------------------------------
+  const s5 = RP.createStore();
+  s5.numPages = 2;
+  s5.setScale({ pdfLength: 72, realLength: 3, unit: 'm' });
+  s5.setScale({ pdfLength: 72, realLength: 0.6, unit: 'm' }, 1);
+  check('a sheet scale is set on this sheet before the undo',
+    s5.formatLength(144, 1) === '1.20 m');
+  s5.undo();
+  check('and Ctrl+Z takes it back off',
+    s5.formatLength(144, 1) === '6.00 m', s5.formatLength(144, 1));
+}
+
+
+// --- takeoff export ---------------------------------------------------------
+
+function testTakeoffExport() {
+  console.log('\nTakeoff export');
+  const store = RP.createStore();
+  store.numPages = 3;
+  store.scale = { pdfLength: 72, realLength: 3, unit: 'm' };            // 1pt = 1/24 m
+  store.pageScales = { 1: { pdfLength: 72, realLength: 30, unit: 'ft' } };
+
+  const run = { id: 'r1', page: 0, type: 'polylength', created: 1,
+    points: [[0, 0], [72, 0], [72, 72]] };                              // 144pt = 6 m
+  const room = { id: 'a1', page: 0, type: 'area', created: 2,
+    points: [[0, 0], [72, 0], [72, 72], [0, 72]] };                     // 5184pt² = 9 m²
+  const onFeet = { id: 'm1', page: 1, type: 'measure', created: 3,
+    x1: 0, y1: 0, x2: 72, y2: 0 };                                      // 72pt = 30 ft
+  const bowtie = { id: 'a2', page: 0, type: 'area', created: 5,
+    points: [[0, 0], [72, 72], [72, 0], [0, 72]] };
+  const cloud = { id: 'c1', page: 0, type: 'cloud', created: 6, x: 0, y: 0, w: 10, h: 10 };
+  store.annotations = [run, room, onFeet, bowtie, cloud];
+
+  const q = RP.exporter.quantitiesOf(run, store);
+  check('a run measures its total length in the sheet\'s units',
+    Math.abs(q.length - 6) < 1e-9, String(q.length));
+  const qa = RP.exporter.quantitiesOf(room, store);
+  check('an area measures both its area and its perimeter',
+    Math.abs(qa.area - 9) < 1e-9 && Math.abs(qa.length - 12) < 1e-9,
+    qa.area + ' / ' + qa.length);
+  check('a measurement on an overridden sheet uses that sheet\'s units',
+    Math.abs(RP.exporter.quantitiesOf(onFeet, store).length - 30) < 1e-9);
+  /* A bow-tie has no area anybody would agree on, and the export says so the
+     same way the label, the list and the report do rather than quietly
+     writing the shoelace difference into a cell somebody prices. */
+  check('a self-intersecting outline exports no area at all',
+    RP.exporter.quantitiesOf(bowtie, store).area === null);
+  check('a markup that measures nothing still counts as one',
+    RP.exporter.quantitiesOf(cloud, store).count === 1 &&
+    RP.exporter.quantitiesOf(cloud, store).length === null);
+
+  const sheets = RP.exporter.takeoffSheets(store);
+  check('the takeoff is a summary and a detail sheet',
+    sheets.length === 2 && sheets[0].name === 'Takeoff summary' &&
+    sheets[1].name === 'Measurements');
+
+  const summary = sheets[0].rows;
+  const header = summary[0];
+  check('the summary names its columns',
+    header[0] === 'Type' && header[1] === 'Count' && header[4] === 'Unit');
+  /* Grouped by type *and* unit: a total that added metres on the plan to feet
+     on the detail would be a number with no meaning. */
+  const label = store.typeLabel('measure');
+  const feet = summary.find((r) => r[0] === label && r[4] === 'ft');
+  check('measurements in different units are not totalled together',
+    !!feet && Math.abs(Number(feet[2]) - 30) < 1e-6, feet ? feet.join(' | ') : 'no ft row');
+
+  /* A sheet is only ever uncalibrated when the *drawing* has no default
+     either — the default covers every sheet that has not overridden it, which
+     is the whole point of it being a default. */
+  const bare = RP.createStore();
+  bare.numPages = 1;
+  bare.annotations = [{ id: 'm3', page: 0, type: 'measure', created: 1, x1: 0, y1: 0, x2: 72, y2: 0 }];
+  const bareSummary = RP.exporter.takeoffSheets(bare)[0].rows;
+  check('an uncalibrated measurement is counted, not converted from paper',
+    !!bareSummary.find((r) => r[0] === label && r[4] === '' && r[2] === ''),
+    JSON.stringify(bareSummary.filter((r) => r[0] === label)));
+  check('and the summary says so in words rather than leaving a blank column',
+    bareSummary.some((r) => r.length === 1 && /no scale set/.test(r[0])));
+  check('areas total separately from lengths',
+    !!summary.find((r) => r[0] === 'Area' && Math.abs(Number(r[3]) - 9) < 1e-6),
+    JSON.stringify(summary.find((r) => r[0] === 'Area')));
+
+  const detail = sheets[1].rows;
+  check('every markup gets a detail row, measured or not',
+    detail.length === store.annotations.length + 1, String(detail.length - 1));
+  check('a markup that measures nothing leaves its quantity columns empty',
+    detail.find((r) => r[1] === store.typeLabel('cloud'))[3] === '');
+  check('the detail carries the reading and the bare number side by side',
+    detail[1][2] === 'Total 6.00 m' && Math.abs(Number(detail[1][3]) - 6) < 1e-6,
+    detail[1].slice(0, 5).join(' | '));
+
+  /* The point of the workbook over the CSV: these have to arrive as numbers,
+     or the column cannot be summed and nothing was gained. */
+  check('quantities are written in a form the workbook types as numbers',
+    RP.xlsx.isNumeric(detail[1][3]) === true && RP.xlsx.isNumeric(detail[1][0]) === true,
+    detail[1][0] + ' / ' + detail[1][3]);
+  check('but a unit or a reading stays text',
+    RP.xlsx.isNumeric('6.00 m') === false && RP.xlsx.isNumeric('ft') === false);
+
+  const book = RP.xlsx.build(sheets);
+  check('the takeoff builds a workbook', book[0] === 0x50 && book[1] === 0x4B && book.length > 1000);
+}
+
+async function testScheduleExtraction() {
+  console.log('\nSchedule extraction');
+  const A = RP.analyse;
+  const T = RP.tables;
+
+  // -- the pdf.js argument shapes ------------------------------------------
+  /* Both shapes must decode to the same path, because a wrong guess yields no
+     segments rather than an error — the feature would just stop finding
+     schedules on a version bump with nothing to say why. */
+  const interleaved = A.pathData([28, [[0, 10, 20, 1, 90, 20, 1, 90, 80, 4]], null]);
+  const parallel = A.pathData([[0, 1, 1, 4], [10, 20, 90, 20, 90, 80]]);
+  check('the v6 interleaved path shape decodes',
+    JSON.stringify(interleaved) === JSON.stringify([0, 10, 20, 1, 90, 20, 1, 90, 80, 4]),
+    JSON.stringify(interleaved));
+  check('the v3 parallel path shape decodes to the same thing',
+    JSON.stringify(parallel) === JSON.stringify(interleaved));
+  check('an empty argument list is refused rather than guessed at', A.pathData([]) === null);
+  check('an unrecognised path command yields no rules rather than nonsense',
+    A.rulesFromOps({ fnArray: [4], argsArray: [[28, [[99, 7, 7, 1, 60, 7]]]] },
+      { save: 1, restore: 2, transform: 3, constructPath: 4 }).h.length === 0);
+
+  // -- reading segments out of an operator list -----------------------------
+  const OPS = { save: 1, restore: 2, transform: 3, constructPath: 4 };
+  const opList = {
+    fnArray: [OPS.save, OPS.transform, OPS.constructPath, OPS.restore, OPS.constructPath],
+    argsArray: [
+      null,
+      [2, 0, 0, 2, 100, 100],                       // scale 2, offset 100
+      [28, [[0, 0, 0, 1, 50, 0]], null],            // 0,0 -> 50,0 under that CTM
+      null,
+      [28, [[0, 0, 0, 1, 0, 40]], null]             // 0,0 -> 0,40 at identity
+    ]
+  };
+  const raw = A.rulesFromOps(opList, OPS);
+  check('a segment is placed through the CTM in force',
+    raw.h.length === 1 && Math.abs(raw.h[0].at - 100) < 0.01 &&
+    Math.abs(raw.h[0].a - 100) < 0.01 && Math.abs(raw.h[0].b - 200) < 0.01,
+    raw.h.length ? `y=${raw.h[0].at} x ${raw.h[0].a}..${raw.h[0].b}` : 'none');
+  check('`restore` puts the CTM back',
+    raw.v.length === 1 && Math.abs(raw.v[0].at) < 0.01 && Math.abs(raw.v[0].b - 40) < 0.01,
+    raw.v.length ? `x=${raw.v[0].at} y ${raw.v[0].a}..${raw.v[0].b}` : 'none');
+  const curved = A.rulesFromOps({
+    fnArray: [OPS.constructPath],
+    argsArray: [[28, [[0, 0, 0, 2, 10, 10, 20, 20, 30, 0]], null]]
+  }, OPS);
+  check('a curve is never read as a rule', curved.h.length === 0 && curved.v.length === 0);
+
+  // -- merging --------------------------------------------------------------
+  const merged = A.mergeRules([
+    { at: 10, a: 0, b: 20 }, { at: 10.4, a: 20, b: 40 },   // touching, one span
+    { at: 10.2, a: 200, b: 260 },                          // far away, its own
+    { at: 60, a: 0, b: 5 }
+  ]);
+  check('collinear touching segments become one span',
+    merged.length === 2 && merged[0].spans.length === 2 &&
+    merged[0].spans[0][0] === 0 && merged[0].spans[0][1] === 40,
+    JSON.stringify(merged[0] && merged[0].spans));
+  check('a real break in a rule is kept as a separate span',
+    merged[0].spans[1][0] === 200 && merged[0].spans[1][1] === 260);
+
+  // -- the merged-lane trap -------------------------------------------------
+  /* Rules merge into a lane by position alone, so a 60-point column separator
+     that shares its x with a leader line 900 points away reports an extent of
+     nearly a thousand. Every test phrased against the extent then judges the
+     separator by linework it has nothing to do with — which merged four
+     columns of the reference part list into one. */
+  const shared = ruleAt(1156, [[554, 567], [1020, 1033], [1479, 1541]]);
+  check('a rule\'s extent spans the linework it merged with', A.lengthOf(shared) === 987);
+  check('its longest span reports what it actually is', A.longestSpan(shared) === 62);
+  check('a separator ruled only against the header still counts as a column',
+    A.spanInside(shared, 1479, 1541, 0.6) === true);
+  check('and it is not admitted to a band it has no span in',
+    A.spanInside(shared, 300, 400, 0.6) === false);
+  check('two rules agree only when a span of each mostly overlaps the other',
+    A.spansAgree(ruleAt(0, [[898, 2283]]), ruleAt(9, [[898, 2283]]), 0.75) === true &&
+    A.spansAgree(ruleAt(0, [[898, 2283]]), ruleAt(9, [[27, 2421]]), 0.75) === false);
+
+  // -- the discriminator ----------------------------------------------------
+  const dense = [['ITEM', 'SIZE', 'QTY'], ['CONDUIT', '3/4 EMT', '12'], ['WIRE', '#12', '500']];
+  const chain = [['', '23\'-4"', '', '', ''], ['', '', '', '', ''], ['', '', '', '', '']];
+  check('a filled grid scores as a table', T.scoreOf(dense, 3).ok === true,
+    'density ' + T.scoreOf(dense, 3).density.toFixed(2));
+  check('a dimension chain does not', T.scoreOf(chain, 5).ok === false,
+    'density ' + T.scoreOf(chain, 5).density.toFixed(2));
+  const signoff = [['', 'REVIEWED BY', ''], ['MEMBER', 'INITIALS', 'DATE'],
+    ['ENGINEER', '', ''], ['DESIGN MANAGER', '', '']];
+  check('a sign-off block waiting for initials is still a table',
+    T.scoreOf(signoff, 3).ok === true, 'density ' + T.scoreOf(signoff, 3).density.toFixed(2));
+  const prose = [['', 'ALL WORK TO COMPLY WITH THE CURRENT EDITION OF THE CODE', ''],
+    ['1', 'SEE SHEET E-101 FOR THE FULL SCHEDULE OF LUMINAIRES', '']];
+  check('a ruled block of prose is not offered as a schedule',
+    T.scoreOf(prose, 3).ok === false);
+
+  // -- the table's own edges ------------------------------------------------
+  /* A schedule tucked against the title block shares its right edge with that
+     block's border, which the border test rightly throws out for being nearly
+     the height of the sheet. The edges therefore come from the rows, which
+     already say where the table stops — without it the last column of the
+     reference part list, the quantities, went with the border. */
+  const rules = {
+    h: [ruleAt(100, [[0, 300]]), ruleAt(80, [[0, 300]]), ruleAt(60, [[0, 300]])],
+    v: [ruleAt(0, [[60, 100]]), ruleAt(100, [[60, 100]]), ruleAt(200, [[60, 100]])]
+  };
+  const grid = T.gridsOf(rules, { width: 1000, height: 1000 })[0];
+  check('the table\'s outer edges are columns even with no rule at one of them',
+    grid && grid.cols.length === 4 && grid.cols[3] === 300,
+    grid ? grid.cols.join(', ') : 'no grid');
+
+  // -- cells ----------------------------------------------------------------
+  const runs = [
+    runAt('ITEM', 10, 85, 40), runAt('QTY', 110, 85, 30), runAt('NOTE', 210, 85, 40),
+    runAt('CONDUIT', 10, 65, 60), runAt('12', 110, 65, 20), runAt('EMT', 210, 65, 30)
+  ];
+  const cells = T.cellsOf(grid, runs);
+  check('runs land in the cell their centre falls in',
+    cells.length === 2 && cells[0][0] === 'ITEM' && cells[0][2] === 'NOTE' &&
+    cells[1][1] === '12', JSON.stringify(cells));
+  const sideways = [{ str: 'DRAWING NO', div: 0, t: [0, 1, -1, 0, 150, 70], w: 40, h: 10, font: '' }];
+  check('a run set across the page is not read as a cell',
+    T.cellsOf(grid, sideways).length === 0);
+
+  // -- naming ---------------------------------------------------------------
+  const titled = { cells: [['', 'PANEL SCHEDULE LP-1', ''], ['CKT', 'LOAD', 'VA']], columns: 3 };
+  check('a title row inside the grid names the table',
+    T.nameOf(titled, 3, []) === 'PANEL SCHEDULE LP-1', T.nameOf(titled, 3, []));
+  const headed = { cells: [['CKT', 'LOAD', 'VA'], ['1', 'LTG', '480']], columns: 3,
+    bbox: { x: 0, y: 60, w: 300, h: 40 } };
+  check('a caption just above the grid names it when the grid has no title row',
+    T.nameOf(headed, 3, [runAt('PART LIST (SUBMITTAL)', 20, 104, 90)]) === 'PART LIST (SUBMITTAL)',
+    T.nameOf(headed, 3, [runAt('PART LIST (SUBMITTAL)', 20, 104, 90)]));
+  check('a run far above the grid is not mistaken for its caption',
+    T.nameOf(headed, 3, [runAt('GENERAL NOTES', 20, 260, 70)]).indexOf('Sheet 4') === 0);
+
+  // -- the workbook ---------------------------------------------------------
+  const book = RP.xlsx.build([
+    { name: 'PART LIST', rows: [['CODE', 'QTY', 'SIZE'], ['2026-110-AY02', '9', '1 1/2 FNPT']] }
+  ]);
+  check('the workbook is a zip', book[0] === 0x50 && book[1] === 0x4B);
+  const text = Buffer.from(book).toString('latin1');
+  for (const part of ['[Content_Types].xml', 'xl/workbook.xml', 'xl/worksheets/sheet1.xml',
+    'xl/_rels/workbook.xml.rels', '_rels/.rels']) {
+    check('the workbook carries ' + part, text.indexOf(part) >= 0);
+  }
+  check('the end-of-directory record counts every part',
+    text.lastIndexOf('PK') > text.indexOf('PK'));
+  /* Strict number detection is the whole difference between a stock code
+     surviving the trip and arriving as a date. */
+  check('a bare quantity goes in as a number', RP.xlsx.isNumeric('9') === true);
+  check('a stock code does not', RP.xlsx.isNumeric('2026-110-AY02') === false);
+  check('nor does a pipe size', RP.xlsx.isNumeric('1 1/2 FNPT') === false);
+  check('nor does a revision letter', RP.xlsx.isNumeric('B') === false);
+  check('the quantity is written as a value and the code as a string',
+    text.indexOf('<v>9</v>') >= 0 && text.indexOf('2026-110-AY02</t>') >= 0);
+  check('worksheet names are trimmed to Excel\'s limit and made unique',
+    JSON.stringify(RP.xlsx.sheetNames(['A'.repeat(40), 'Sheet', 'Sheet'])) ===
+    JSON.stringify(['A'.repeat(31), 'Sheet', 'Sheet (2)']),
+    JSON.stringify(RP.xlsx.sheetNames(['A'.repeat(40), 'Sheet', 'Sheet'])));
+  check('a name Excel would refuse is cleaned rather than passed through',
+    RP.xlsx.sheetNames(['LP-1/LP-2'])[0].indexOf('/') < 0);
+  check('the same tables export to the same bytes',
+    Buffer.from(RP.xlsx.build([{ name: 'S', rows: [['a', '1']] }])).equals(
+      Buffer.from(RP.xlsx.build([{ name: 'S', rows: [['a', '1']] }]))));
+
+  // -- the whole way through, off a real PDF --------------------------------
+  const pdfjs = await loadPdfjs();
+  if (!pdfjs) {
+    check('pdf.js available for the extraction round trip', false, 'pdfjs-dist not found');
+    return;
+  }
+  const bytes = await ruledTablePdf();
+  const parsed = await pdfjs.getDocument({
+    data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false
+  }).promise;
+  const page = await parsed.getPage(1);
+  const found = A.rulesFromOps(await page.getOperatorList(), pdfjs.OPS);
+  const pageRules = { h: A.mergeRules(found.h), v: A.mergeRules(found.v) };
+  const entry = RP.search.pageEntry(0, await page.getTextContent());
+  const tables = RP.tables.findOnPage(pageRules, entry.items, { width: 400, height: 300 });
+
+  check('a ruled schedule is found in a real PDF', tables.length === 1,
+    tables.length + ' table(s)');
+  if (tables.length) {
+    const t = tables[0];
+    check('it comes back with its rows and columns', t.rows === 3 && t.columns === 3,
+      t.rows + '×' + t.columns);
+    check('the header reads back', JSON.stringify(t.cells[0]) === JSON.stringify(['ITEM', 'SIZE', 'QTY']),
+      JSON.stringify(t.cells[0]));
+    check('so does a body row', JSON.stringify(t.cells[1]) === JSON.stringify(['CONDUIT', '3/4 EMT', '12']),
+      JSON.stringify(t.cells[1]));
+  }
+  check('the dimension chain on the same sheet is not offered as a second table',
+    tables.length === 1);
+}
+
 async function testPrinting() {
   console.log('\nPrinting');
   const Print = RP.print;
@@ -4187,6 +4633,75 @@ function testAppearance() {
     A.accentOf('puce') === 'redline' && A.accentRgb('puce') === '255, 91, 74');
   check('an unknown density falls back to the default',
     A.densityOf('enormous') === 'normal' && A.densityOf('compact') === 'compact');
+  check('an unknown font, corner shape or right-pane accent falls back to the default',
+    A.fontOf('comic') === 'ui' && A.cornersOf('bevelled') === 'round' &&
+    A.rightAccentOf('puce') === 'same' && A.rightAccentOf('blue') === 'blue');
+
+  // --- the file manager's themes ------------------------------------------
+  /* Ported verbatim so the family shares one set of numbers. The light flag
+     has to agree with the file manager's LIGHT_THEMES, or "follow Windows"
+     offers a dark theme as the light one. */
+  const LIGHT = ['light', 'paper', 'control', 'frost', 'ink'];
+  check('all eleven themes are in the catalog', A.THEMES.length === 11,
+    A.THEMES.map((t) => t.id).join(', '));
+  check('the light themes are the file manager\'s light themes',
+    A.THEMES.filter((t) => t.light).map((t) => t.id).sort().join() === LIGHT.slice().sort().join());
+  const block = (id) => (css.match(new RegExp('body\\.theme-' + id + '\\s*\\{([^}]*)\\}')) || [])[1] || '';
+  check('Graphite carries the file manager\'s greys', /--bg-0:\s*#000000/.test(block('graphite')) &&
+    /--bg-4:\s*#24242a/.test(block('graphite')) && /--txt-0:\s*#ededf0/.test(block('graphite')));
+  check('Ink carries the file manager\'s greys', /--line:\s*#8c8c88/.test(block('ink')) &&
+    /--txt-0:\s*#0a0a0a/.test(block('ink')));
+  check('pale chrome takes the darker accent text on every light theme',
+    /body\.light-chrome \.tbtn\.active/.test(css) && !/body\.theme-light \.tbtn/.test(css) &&
+    /classList\.toggle\('light-chrome'/.test(fs.readFileSync(path.join(ROOT, 'src', 'js', 'appearance.js'), 'utf8')));
+
+  // --- font and corners ---------------------------------------------------
+  const unfonted = A.FONTS.filter((f) => f.id !== 'ui' && !new RegExp('body\\[data-font="' + f.id + '"\\]').test(css));
+  check('every font in the catalog has a rule', unfonted.length === 0, unfonted.map((f) => f.id).join(', '));
+  const square = (css.match(/body\[data-corners="square"\]\s*\{([^}]*)\}/) || [])[1] || '';
+  check('square corners restate all three radii',
+    /--radius:/.test(square) && /--radius-sm:/.test(square) && /--radius-lg:/.test(square));
+  check('the dialogs follow the corner choice',
+    /\.modal \{[^}]*border-radius: var\(--radius-lg\)/.test(rules));
+
+  // --- the right-hand pane's accent -----------------------------------------
+  /* A custom property that uses var() is resolved where it is declared, so
+     the tints have to be re-declared on the right pane or it inherits tints
+     already worked out from the main accent and the picker changes nothing. */
+  check('the accent tints are declared on the right-hand pane as well as :root',
+    /:root,\s*\.panes\.split > \.pane ~ \.pane\s*\{[^}]*--accent-soft:/.test(rules));
+  check('the right-hand pane takes the second accent',
+    /\.panes\.split > \.pane ~ \.pane\s*\{\s*--accent-rgb:\s*var\(--accent-right-rgb\)/.test(rules));
+  check('"same" leaves no copy of the main accent behind',
+    /removeProperty\('--accent-right-rgb'\)/.test(fs.readFileSync(path.join(ROOT, 'src', 'js', 'appearance.js'), 'utf8')) &&
+    /--accent-right-rgb:\s*var\(--accent-rgb\)/.test(rules));
+
+  // --- a theme that changes by itself -------------------------------------
+  const follow = (extra, now) => A.pickTheme(Object.assign({ theme: 'blueprint',
+    themeLight: 'frost', themeDark: 'dusk', dayFrom: 7, nightFrom: 19 }, extra), now);
+  check('following off keeps the picker\'s theme',
+    follow({ themeFollow: 'off' }, { windowsLight: true, hour: 12 }) === 'blueprint');
+  check('following Windows picks the light or the dark theme',
+    follow({ themeFollow: 'windows' }, { windowsLight: true }) === 'frost' &&
+    follow({ themeFollow: 'windows' }, { windowsLight: false }) === 'dusk');
+  check('an unreadable Windows setting keeps the picker\'s theme',
+    follow({ themeFollow: 'windows' }, { windowsLight: null }) === 'blueprint');
+  check('the schedule is light by day and dark by night',
+    follow({ themeFollow: 'schedule' }, { hour: 7 }) === 'frost' &&
+    follow({ themeFollow: 'schedule' }, { hour: 18 }) === 'frost' &&
+    follow({ themeFollow: 'schedule' }, { hour: 19 }) === 'dusk' &&
+    follow({ themeFollow: 'schedule' }, { hour: 3 }) === 'dusk');
+  check('a day that runs over midnight is somebody on nights',
+    follow({ themeFollow: 'schedule', dayFrom: 22, nightFrom: 6 }, { hour: 23 }) === 'frost' &&
+    follow({ themeFollow: 'schedule', dayFrom: 22, nightFrom: 6 }, { hour: 2 }) === 'frost' &&
+    follow({ themeFollow: 'schedule', dayFrom: 22, nightFrom: 6 }, { hour: 12 }) === 'dusk');
+  check('equal hours, or a theme that does not exist, fall back to the picker\'s theme',
+    follow({ themeFollow: 'schedule', dayFrom: 8, nightFrom: 8 }, { hour: 12 }) === 'blueprint' &&
+    follow({ themeFollow: 'windows', themeLight: 'neon' }, { windowsLight: true }) === 'blueprint');
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  check('the new appearance settings are allowed through the settings filter',
+    ['accentRight', 'font', 'corners', 'themeFollow', 'themeLight', 'themeDark', 'dayFrom', 'nightFrom']
+      .every((key) => new RegExp('\\n  ' + key + ':').test(mainSrc)));
 
   // --- wiring ---------------------------------------------------------------
   check('appearance.js is loaded before app.js',
@@ -4333,8 +4848,9 @@ function testChrome() {
     /RP\.pages\.run\(\(\) => RP\.pages\.rotatePages/.test(app) &&
     /RP\.pages\.run\(\(\) => RP\.pages\.rotatePages/.test(tools));
   check('the viewer context menu offers rotate, turn over and straighten',
-    /label: 'Rotate page right'/.test(tools) && /label: 'Rotate page left'/.test(tools) &&
-    /label: 'Turn page over'/.test(tools) && /label: 'Straighten pages…'/.test(tools));
+    /label: 'Page',\s*submenu: \[/.test(tools) &&
+    /label: 'Rotate right'/.test(tools) && /label: 'Rotate left'/.test(tools) &&
+    /label: 'Turn over'/.test(tools) && /label: 'Straighten pages…'/.test(tools));
   const pagesSrc = fs.readFileSync(path.join(ROOT, 'src', 'js', 'pages.js'), 'utf8');
   check('straightening is offered from the Pages panel too',
     /Straighten pages…/.test(pagesSrc) && /straightenPages\(/.test(pagesSrc));
@@ -4425,6 +4941,96 @@ function testChrome() {
   check('it leaves the file\'s own annotations alone',
     /onContextMenu\(event\)\s*\{\s*if \(event\.target\.closest && event\.target\.closest\('\.' \+ RP\.annots\.LAYER_CLASS\)\) return;/
       .test(tools));
+}
+
+/**
+ * The menus, after the 0.20 tidy. `RP.menu.tidy` is pure and is what lets the
+ * callers write `cond ? item : null` without leaving a dead separator or an
+ * empty submenu behind; the rest are static checks that the long menus
+ * stayed short and that every control the wiring reaches for exists.
+ */
+function testMenus() {
+  console.log('\nMenus');
+
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(ROOT, 'src', 'js', 'app.js'), 'utf8');
+  const tools = fs.readFileSync(path.join(ROOT, 'src', 'js', 'tools.js'), 'utf8');
+  const pages = fs.readFileSync(path.join(ROOT, 'src', 'js', 'pages.js'), 'utf8');
+  const textsel = fs.readFileSync(path.join(ROOT, 'src', 'js', 'textsel.js'), 'utf8');
+  const tidy = RP.menu.tidy;
+
+  const a = { label: 'A' };
+  const b = { label: 'B' };
+  check('nulls are dropped', tidy([null, a, null, b]).length === 2);
+  check('separators at the ends or doubled up are dropped',
+    tidy([{ separator: true }, a, { separator: true }, { separator: true }, b, { separator: true }])
+      .map((i) => i.separator ? '-' : i.label).join('') === 'A-B');
+  check('a submenu with nothing in it is not shown',
+    tidy([a, { label: 'Empty', submenu: [null, { separator: true }] }, b]).length === 2);
+  check('a submenu that is only a heading is not shown either',
+    tidy([a, { label: 'Lonely', submenu: [{ heading: 'Nothing here' }] }]).length === 1);
+  check('a submenu is tidied too',
+    tidy([{ label: 'S', submenu: [{ separator: true }, a, null] }])[0].submenu.length === 1);
+  check('a trailing heading is dropped', tidy([a, { heading: 'H' }]).length === 1);
+
+  /* A submenu is part of the one menu: the same stack, the same outside-click
+     and the same Escape. A second popup for it would be the two-sets-of-
+     listeners problem the shared menu exists to prevent. */
+  const menuSrc = fs.readFileSync(path.join(ROOT, 'src', 'js', 'menu.js'), 'utf8');
+  check('submenus live on the one menu\'s stack',
+    /this\.stack\.some\(\(m\) => m\.contains\(event\.target\)\)/.test(menuSrc) &&
+    (menuSrc.match(/addEventListener\('pointerdown'/g) || []).length === 1);
+  check('a submenu flips left rather than running off the window',
+    /left \+ s\.width > window\.innerWidth - EDGE/.test(menuSrc));
+
+  /* The drawing's menu is two menus: a press on a markup gets the markup's
+     commands, a press on paper gets the paper's. */
+  const ctx = tools.slice(tools.indexOf('onContextMenu(event) {'), tools.indexOf('applyCalibration('));
+  check('a markup right-click returns before the paper menu is built',
+    /if \(hit\) \{[\s\S]*?RP\.menu\.open\([\s\S]*?return;\s*\}/.test(ctx));
+  check('status and arrange are one row each on the drawing',
+    /RP\.app\.statusSubmenu\(\)/.test(ctx) && /RP\.edit\.arrangeSubmenu\(hit\.id\)/.test(ctx) &&
+    !/statusMenuItems\(\)/.test(ctx) && !/RP\.edit\.menuItems\(/.test(ctx));
+  check('the paper menu does not offer markup commands',
+    !/Delete markup/.test(ctx.slice(ctx.lastIndexOf('RP.menu.open('))));
+
+  // Arrange as a submenu keeps every command, with nothing dead below two.
+  check('arrange is absent below two markups', RP.edit.arrangeSubmenu(null) === null);
+
+  check('the text menu leads with the three text markups and the two copies',
+    /label: 'Highlight'[\s\S]{0,200}label: 'Strike out'[\s\S]{0,200}label: 'Underline'[\s\S]{0,400}label: 'Copy text'[\s\S]{0,900}label: 'Copy as image'[\s\S]{0,900}label: 'Add markup',\s*submenu/.test(textsel));
+  check('"cover" still says it is not redaction', /label: 'Cover it',\s*\n[^\n]*hint: 'not redaction'/.test(textsel));
+
+  check('the thumbnail menu keeps the rare commands under More',
+    /label: 'More',\s*submenu: \[[\s\S]{0,400}Insert blank page after/.test(pages));
+  check('a row inside a submenu still goes through the page busy guard',
+    /if \(item\.submenu\) return Object\.assign\(\{\}, item, \{ submenu: guard\(item\.submenu\) \}\)/.test(pages));
+
+  // --- toolbar --------------------------------------------------------------
+  check('every export is on one dropdown',
+    /openExportMenu\(anchor\)[\s\S]{0,900}exportReport\(\)[\s\S]{0,200}exportCsv\(\)[\s\S]{0,600}exportTakeoff\(\)[\s\S]{0,600}exportSchedules\(\)/.test(app));
+  check('the markup list and the toolbar open the same export list',
+    /'#btnExport'\)\.addEventListener\('click', \(event\) => this\.openExportMenu/.test(app) &&
+    /'#btnExportList'\)\.addEventListener\('click', \(event\) => this\.openExportMenu/.test(app));
+  check('Save As is under the Save caret and still on Ctrl+Shift+S',
+    /openSaveMenu\(anchor\)[\s\S]{0,1200}this\.saveAs\(\)/.test(app) &&
+    /event\.shiftKey \? this\.saveAs\(\) : this\.save\(\)/.test(app));
+  check('changing the save mode from the Save menu reaches every open drawing',
+    /openSaveMenu\(anchor\)[\s\S]{0,700}this\.clearSaveModeDecisions\(\)/.test(app));
+  check('the title bar has one app menu with settings, shortcuts, diagnostics and updates',
+    /id="btnAppMenu"/.test(html) && !/id="btnDiag"/.test(html) && !/id="btnSettings"/.test(html) &&
+    /openAppMenu\(anchor\)[\s\S]{0,700}openSettings\(\)[\s\S]{0,200}RP\.keys\.show\(\)[\s\S]{0,200}RP\.diag\.open\(\)[\s\S]{0,200}checkForUpdates\(\)/.test(app));
+
+  /* The cheap way this breaks is a button removed from the page that the
+     wiring still reaches for: `RP.$('#x').addEventListener` throws, and the
+     whole UI stage of boot goes with it. */
+  const wired = new Set();
+  for (const file of ['app.js', 'diag.js', 'sidebar.js', 'pages.js', 'compare.js', 'print.js']) {
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'js', file), 'utf8');
+    for (const m of src.matchAll(/RP\.\$\('#([A-Za-z0-9_-]+)'\)\.addEventListener/g)) wired.add(m[1]);
+  }
+  const absent = Array.from(wired).filter((id) => !new RegExp('id="' + id + '"').test(html));
+  check('every control the wiring reaches for is on the page', absent.length === 0, absent.join(', '));
 }
 
 /* The packaging contract for the updater.
@@ -5943,6 +6549,7 @@ async function pageLabel(bytes, index) {
     testLayoutContract();
     testAppearance();
     testChrome();
+    testMenus();
     testNativeAnnotations();
     testGeometry();
     testTakeoff();
@@ -5975,6 +6582,9 @@ async function pageLabel(bytes, index) {
     await testPageManagement();
     await testPageAssembly();
     await testPrinting();
+    testPageScales();
+    testTakeoffExport();
+    await testScheduleExtraction();
   } catch (err) {
     failures += 1;
     console.error('\nUnexpected error:', err && err.stack ? err.stack : err);

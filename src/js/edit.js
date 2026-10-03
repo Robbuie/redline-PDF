@@ -655,6 +655,18 @@
         { label: 'Match size', run: () => this.matchSize() },
         { label: 'Match style', run: () => this.matchStyle(sourceId) }
       ];
+    },
+
+    /**
+     * `menuItems` as one submenu row. Null when there is nothing to arrange,
+     * so the caller can drop it into a list unconditionally.
+     */
+    arrangeSubmenu(sourceId) {
+      const rows = this.menuItems(sourceId).filter((item) => !item.separator && !item.heading);
+      if (!rows.length) return null;
+      return { label: 'Arrange ' + RP.store.selection.size + ' markups', submenu: [
+        ...rows.slice(0, 6), { separator: true }, ...rows.slice(6, 8), { separator: true }, ...rows.slice(8)
+      ] };
     }
   };
 

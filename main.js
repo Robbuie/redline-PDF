@@ -67,10 +67,19 @@ let printWindow = null;
 const DEFAULT_SETTINGS = {
   // Appearance is four independent axes — see src/js/appearance.js, which owns
   // the catalog of valid values and normalises anything it does not recognise.
-  theme: 'dark',               // dark | light | paper | blueprint | contrast
+  theme: 'dark',               // one of RP.appearance.THEMES — eleven since 0.20
   accent: 'redline',           // the one colour every tint in the UI derives from
   density: 'normal',           // compact | normal | large — chrome metrics only
   paperMode: 'normal',         // normal | invert | grey | soft | contrast
+  // 0.20, beside the axes rather than part of them.
+  accentRight: 'same',         // a second accent for the right pane of a split
+  font: 'ui',                  // ui | variable | mono
+  corners: 'round',            // round | square
+  themeFollow: 'off',          // off | windows | schedule
+  themeLight: 'light',         // the theme used for "light" when following
+  themeDark: 'dark',           // ...and for "dark"
+  dayFrom: 7,                  // schedule: the hour the light theme starts
+  nightFrom: 19,               // schedule: the hour the dark theme starts
 
   saveMode: 'copy',            // 'copy' | 'overwrite' | 'ask'
   backupOnOverwrite: true,

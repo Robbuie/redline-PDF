@@ -355,6 +355,29 @@
     return kept.concat(copies).sort((a, b) => a.page - b.page);
   }
 
+  /**
+   * Per-sheet calibrations through the same page remap the annotations take.
+   *
+   * They are keyed by page index, so every insert, delete, reorder and
+   * duplicate moves them — and a scale left pointing at the old index is worse
+   * than one that was never set, because the sheet still measures, just at
+   * another sheet's ratio. A duplicated page inherits its original's, which is
+   * the only sensible reading of duplicating a calibrated detail. Pure.
+   */
+  function remapPageScales(pageScales, map, clones) {
+    if (!pageScales) return null;
+    const out = {};
+    for (const key of Object.keys(pageScales)) {
+      const to = map[Number(key)];
+      if (to >= 0) out[to] = pageScales[key];
+    }
+    for (const clone of clones || []) {
+      const own = pageScales[clone.from];
+      if (own) out[clone.to] = own;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
   // -------------------------------------------------------------------------
   // Rebuilding the bytes
   // -------------------------------------------------------------------------
@@ -568,7 +591,8 @@
       enable('pgDelete', has && !this.busy && picked.length < total);
     },
 
-    /** The whole-document operations, which do not fit six icons in a column. */
+    /** The whole-document operations, which do not fit six icons in a column.
+        Extract is not repeated here: it has its own button beside this one. */
     openDocumentMenu(anchor) {
       const picked = this.selected();
       const many = picked.length > 1;
@@ -584,7 +608,6 @@
         },
         { separator: true },
         { label: 'Insert pages from another PDF…', run: () => this.run(() => this.mergeFrom()) },
-        { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.run(() => this.extractSelected()) },
         { label: 'Split into separate PDFs…', run: () => this.run(() => this.splitDocument()) },
         { separator: true },
         {
@@ -671,6 +694,7 @@
       store.checkpoint();
       store.pageOrder = result.order;
       store.annotations = remapAnnotations(store.annotations, result.map, result.clones);
+      store.pageScales = remapPageScales(store.pageScales, result.map, result.clones);
       // Deleting a sheet can take all but one member of a group with it — only
       // possible for a group that already reached across pages, which nothing
       // here makes, but a file from another build could carry one.
@@ -1093,6 +1117,7 @@
       sub.docName = name || RP.store.docName;
       sub.numPages = order.length;
       sub.scale = store.scale;
+      sub.pageScales = remapPageScales(store.pageScales, map, []);
       sub.author = store.author;
       sub.numbering = rebaseNumbering(store.numbering, picked);
       sub.annotations = remapAnnotations(
@@ -1394,23 +1419,34 @@
         this.sync();
       }
       const many = this.selected().length > 1;
+      /* 0.20: the everyday page commands at the top and the rest under More,
+         the way the file manager's row menu went in its 0.50. The whole-set
+         commands — split, numbering — are on the panel's "more" button and
+         under More here, not repeated at the top of both. */
       this.openMenu(event.clientX, event.clientY, [
-        { label: 'Insert blank page after', run: () => this.insertBlank() },
-        { label: 'Insert pages from another PDF…', run: () => this.mergeFrom(index + 1) },
-        { label: many ? 'Duplicate pages' : 'Duplicate page', run: () => this.duplicateSelected() },
-        { label: 'Rotate left', run: () => this.rotateSelected(-ROT_STEP) },
         { label: 'Rotate right', run: () => this.rotateSelected(ROT_STEP) },
-        { label: many ? 'Turn pages over' : 'Turn page over', run: () => this.rotateSelected(180) },
+        { label: 'Rotate left', run: () => this.rotateSelected(-ROT_STEP) },
+        { label: many ? 'Duplicate pages' : 'Duplicate page', run: () => this.duplicateSelected() },
+        { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.extractSelected() },
+        { separator: true },
         {
-          label: many ? 'Straighten these pages…' : 'Straighten this page…',
-          run: () => this.straightenPages(this.selected())
+          label: 'More',
+          submenu: [
+            { label: 'Insert blank page after', run: () => this.insertBlank() },
+            { label: 'Insert pages from another PDF…', run: () => this.mergeFrom(index + 1) },
+            { separator: true },
+            { label: many ? 'Turn pages over' : 'Turn page over', run: () => this.rotateSelected(180) },
+            {
+              label: many ? 'Straighten these pages…' : 'Straighten this page…',
+              run: () => this.straightenPages(this.selected())
+            },
+            { separator: true },
+            { label: 'Split into separate PDFs…', run: () => this.splitDocument() },
+            { label: RP.store.numbering ? 'Page numbering…' : 'Add page numbers…', run: () => this.numberPages() }
+          ]
         },
         { separator: true },
-        { label: many ? 'Extract pages…' : 'Extract page…', run: () => this.extractSelected() },
-        { label: 'Split into separate PDFs…', run: () => this.splitDocument() },
-        { label: RP.store.numbering ? 'Page numbering…' : 'Add page numbers…', run: () => this.numberPages() },
-        { separator: true },
-        { label: many ? 'Delete pages' : 'Delete page', run: () => this.deleteSelected(), danger: true }
+        { label: many ? 'Delete pages' : 'Delete page', hint: 'Del', run: () => this.deleteSelected(), danger: true }
       ]);
     },
 
@@ -1419,9 +1455,13 @@
        over one outside-click. Every action here still goes through `this.run`,
        which is the async/busy guard the page operations need. */
     openMenu(x, y, items) {
-      RP.menu.open(x, y, items.map((item) => (
-        item.separator ? item : Object.assign({}, item, { run: () => this.run(item.run) })
-      )));
+      // Recursive, so a row inside a submenu gets the busy guard as well.
+      const guard = (list) => list.map((item) => {
+        if (!item || item.separator || item.heading) return item;
+        if (item.submenu) return Object.assign({}, item, { submenu: guard(item.submenu) });
+        return Object.assign({}, item, { run: () => this.run(item.run) });
+      });
+      RP.menu.open(x, y, guard(items));
     },
 
     closeMenu() { RP.menu.close(); },
@@ -1465,6 +1505,7 @@
   RP.pages.ops = ops;
   RP.pages.buildBytes = buildBytes;
   RP.pages.remapAnnotations = remapAnnotations;
+  RP.pages.remapPageScales = remapPageScales;
   RP.pages.recoverableOrder = recoverableOrder;
   // Pure, so `test/verify.js` can drive the split and extract maths headless.
   RP.pages.parseGroups = parseGroups;

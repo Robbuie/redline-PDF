@@ -32,14 +32,9 @@
   --txt-2: #79828f;
 
   --accent-rgb: 255, 91, 74;              /* redline red — the brand default */
-  --accent: rgb(var(--accent-rgb));
-  --accent-dim: color-mix(in srgb, rgb(var(--accent-rgb)) 70%, #000);
-  --accent-text: color-mix(in srgb, rgb(var(--accent-rgb)) 74%, #fff);
-  --accent-lift: color-mix(in srgb, rgb(var(--accent-rgb)) 62%, #ffb066);
-  --accent-soft: rgba(var(--accent-rgb), .14);
-  --accent-wash: rgba(var(--accent-rgb), .17);
-  --accent-line: rgba(var(--accent-rgb), .45);
-  --accent-glow: rgba(var(--accent-rgb), .8);
+  /* The right-hand pane's accent. Unset unless a second accent is picked, so
+     it follows the main one rather than holding a copy of it. */
+  --accent-right-rgb: var(--accent-rgb);
 
   --info: #4aa8ff;
   --good: #46c98b;
@@ -60,6 +55,7 @@
   --page-ring: rgba(0, 0, 0, .55);   /* the hairline around a sheet */
   --radius: 7px;
   --radius-sm: 5px;
+  --radius-lg: 12px;
   --font: "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
   --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
 
@@ -77,6 +73,24 @@
   --tool-h: 46px;
   --tool-icon: 20px;
 }
+
+/* The tints of the accent. A custom property that uses var() is resolved on
+   the element that declares it, so these are declared on the right-hand pane
+   of a split as well as on :root — otherwise that pane would inherit tints
+   already worked out from the main accent and the second one would change
+   nothing. Its own --accent-rgb is the right-pane triple. */
+:root,
+.panes.split > .pane ~ .pane {
+  --accent: rgb(var(--accent-rgb));
+  --accent-dim: color-mix(in srgb, rgb(var(--accent-rgb)) 70%, #000);
+  --accent-text: color-mix(in srgb, rgb(var(--accent-rgb)) 74%, #fff);
+  --accent-lift: color-mix(in srgb, rgb(var(--accent-rgb)) 62%, #ffb066);
+  --accent-soft: rgba(var(--accent-rgb), .14);
+  --accent-wash: rgba(var(--accent-rgb), .17);
+  --accent-line: rgba(var(--accent-rgb), .45);
+  --accent-glow: rgba(var(--accent-rgb), .8);
+}
+.panes.split > .pane ~ .pane { --accent-rgb: var(--accent-right-rgb); }
 
 /* --- themes --------------------------------------------------------------
    `theme-dark` is the :root set above and needs no block of its own. Each
@@ -165,6 +179,171 @@ body.theme-contrast {
   --warn: #ffd75e;
   --sel: #7cc4ff;
   --page-ring: rgba(255, 255, 255, .35);
+}
+
+
+/* --- the file manager's themes -------------------------------------------
+   0.20. Added to the file manager in its 0.48 and ported back here with the
+   greys copied verbatim, so the family is on one set of numbers again — if
+   one changes there it changes here. The file manager has no canvas behind a
+   sheet and no page shadow, so --canvas-bg, the shadows and --page-ring are
+   this app's own, chosen the way the five above were: the desk a step darker
+   than the backdrop, shadows heavy on dark chrome and light on pale. */
+
+/* True black for an OLED panel or a dim room. The steps between the greys are
+   smaller than Dark's because on black a small step already reads. */
+body.theme-graphite {
+  --bg-0: #000000;
+  --bg-1: #070708;
+  --bg-2: #0e0e11;
+  --bg-3: #18181c;
+  --bg-4: #24242a;
+  --canvas-bg: #000000;
+  --line: #1f1f24;
+  --line-soft: #151518;
+  --txt-0: #ededf0;
+  --txt-1: #a6a6ae;
+  --txt-2: #77777f;
+  --info: #5ab0ff;
+  --sel: #5ab0ff;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .6);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, .6);
+  --shadow-3: 0 18px 60px rgba(0, 0, 0, .7);
+  --page-ring: rgba(255, 255, 255, .06);
+}
+
+/* After the ISA-101 high-performance HMI screens: calm mid greys, dark text,
+   and colour left to the things that need somebody. The greens and ambers are
+   darker than the other themes' because they sit on a light grey. */
+body.theme-control {
+  --bg-0: #b7babe;
+  --bg-1: #c6c9cc;
+  --bg-2: #dcdee1;
+  --bg-3: #cdd0d4;
+  --bg-4: #b4b8be;
+  --canvas-bg: #a2a6ab;
+  --line: #a9aeb4;
+  --line-soft: #c3c7cc;
+  --txt-0: #14181c;
+  --txt-1: #343a41;
+  --txt-2: #535a63;
+  --info: #2f5fa8;
+  --good: #2b8a55;
+  --warn: #a97a08;
+  --sel: #2f5fa8;
+  --shadow-1: 0 1px 2px rgba(20, 24, 28, .16);
+  --shadow-2: 0 6px 20px rgba(20, 24, 28, .18);
+  --shadow-3: 0 18px 48px rgba(20, 24, 28, .24);
+  --page-ring: rgba(0, 0, 0, .18);
+}
+
+/* Green on black. Pairs with the monospace font and the green accent, though
+   neither is forced: a theme sets greys, not a typeface. */
+body.theme-phosphor {
+  --bg-0: #020604;
+  --bg-1: #051009;
+  --bg-2: #08150d;
+  --bg-3: #0e2216;
+  --bg-4: #163222;
+  --canvas-bg: #000201;
+  --line: #13301f;
+  --line-soft: #0d2116;
+  --txt-0: #b4ffc8;
+  --txt-1: #70dc97;
+  --txt-2: #4c9f6b;
+  --info: #39ff88;
+  --good: #39ff88;
+  --warn: #e6d34a;
+  --sel: #39ff88;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .6);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, .6);
+  --shadow-3: 0 18px 60px rgba(0, 0, 0, .7);
+  --page-ring: rgba(0, 0, 0, .6);
+}
+
+/* Warm dark browns, for the end of a long day. */
+body.theme-dusk {
+  --bg-0: #14100e;
+  --bg-1: #1b1613;
+  --bg-2: #221c18;
+  --bg-3: #2c2420;
+  --bg-4: #3a302a;
+  --canvas-bg: #0d0a08;
+  --line: #322923;
+  --line-soft: #28211c;
+  --txt-0: #f2e7db;
+  --txt-1: #c3b4a4;
+  --txt-2: #928372;
+  --info: #6fb2ff;
+  --good: #5cc98b;
+  --sel: #6fb2ff;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .55);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, .5);
+  --shadow-3: 0 18px 60px rgba(0, 0, 0, .6);
+  --page-ring: rgba(0, 0, 0, .6);
+}
+
+/* A cool light theme with steel-blue greys: brighter than Paper, softer than
+   Light. */
+body.theme-frost {
+  --bg-0: #dee5ed;
+  --bg-1: #ecf1f6;
+  --bg-2: #f8fbfd;
+  --bg-3: #e5ecf3;
+  --bg-4: #d1dbe6;
+  --canvas-bg: #c2cdda;
+  --line: #cdd7e2;
+  --line-soft: #e1e8ef;
+  --txt-0: #131f2b;
+  --txt-1: #405066;
+  --txt-2: #67768c;
+  --info: #3b7dd8;
+  --good: #2c9c66;
+  --warn: #b9800e;
+  --sel: #3b7dd8;
+  --shadow-1: 0 1px 2px rgba(19, 31, 43, .12);
+  --shadow-2: 0 6px 20px rgba(19, 31, 43, .14);
+  --shadow-3: 0 18px 48px rgba(19, 31, 43, .2);
+  --page-ring: rgba(19, 31, 43, .14);
+}
+
+/* Black on white like a printed drawing, with the borders made real lines
+   rather than hints. Pairs with square corners. */
+body.theme-ink {
+  --bg-0: #ebebe9;
+  --bg-1: #f7f7f5;
+  --bg-2: #ffffff;
+  --bg-3: #efefec;
+  --bg-4: #d4d4d0;
+  --canvas-bg: #cfcfcb;
+  --line: #8c8c88;
+  --line-soft: #c6c6c2;
+  --txt-0: #0a0a0a;
+  --txt-1: #2d2d2d;
+  --txt-2: #5a5a5a;
+  --info: #0a58ca;
+  --good: #1d8a4c;
+  --warn: #a8700f;
+  --sel: #0a58ca;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .14);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .14);
+  --shadow-3: 0 12px 36px rgba(0, 0, 0, .2);
+  --page-ring: rgba(0, 0, 0, .35);
+}
+
+/* --- font and corners ------------------------------------------------------
+   Choices beside the axes rather than part of a theme. The corners override
+   the three radii only; anything drawn as a circle or a pill on purpose
+   (swatches, the badge on a thumbnail) keeps its own shape. */
+body[data-font="variable"] { --font: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif; }
+body[data-font="mono"] { --font: var(--mono); }
+
+/* Square keeps a hint of rounding: at zero, two selected rows next to each
+   other read as one slab. */
+body[data-corners="square"] {
+  --radius: 2px;
+  --radius-sm: 2px;
+  --radius-lg: 3px;
 }
 
 /* --- density -------------------------------------------------------------
@@ -397,8 +576,11 @@ kbd {
   position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px;
   border-radius: 1px; background: currentColor;
 }
-body.theme-light .tbtn.active { color: var(--accent-dim); }
-body.theme-light .tools .tbtn.active b { color: var(--accent-dim); }
+/* On pale chrome the lightened accent text washes out; every light theme
+   takes the darker one. `light-chrome` is set beside the theme class by
+   RP.appearance from the catalog's `light` flag. */
+body.light-chrome .tbtn.active { color: var(--accent-dim); }
+body.light-chrome .tools .tbtn.active b { color: var(--accent-dim); }
 
 /* colour swatches */
 .swatches { display: flex; gap: 3px; align-items: center; }
@@ -479,7 +661,10 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 .zoom-box .zoom-caret svg { width: 11px; height: 11px; transform: rotate(90deg); }
 /* The chevron sprite points right; a dropdown affordance points down. */
 .tbtn .caret-down { transform: rotate(90deg); }
-#btnOpenRecent { width: 20px; padding: 0; }
+#btnOpenRecent, #btnSaveMore { width: 20px; padding: 0; }
+/* A dropdown that is also a labelled button carries its caret after the label. */
+.tbtn .caret-down.trailing { width: 10px; height: 10px; margin-left: -2px; color: var(--txt-2); }
+.ghost-btn .caret-down { width: 10px; height: 10px; margin-left: 5px; transform: rotate(90deg); vertical-align: -1px; }
 
 /* ==========================================================================
    Startup error banner
@@ -557,7 +742,7 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 .side-count { font-size: 11px; color: var(--txt-2); font-family: var(--mono); }
 
 .side-filters { display: flex; gap: 6px; padding: 0 12px 8px; }
-.side-filters input, .side-filters select, .opt input[type="text"], .opt select {
+.side-filters input, .side-filters select, .opt input[type="text"], .opt input[type="number"], .opt select {
   flex: 1; min-width: 0;
   height: 28px; padding: 0 8px;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
@@ -572,7 +757,10 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
 .side-filters + .side-filters { padding-top: 0; }
 
 .side-foot {
-  display: flex; gap: 6px; padding: 8px 12px;
+  /* Wraps because the row holds three exports now and the interface size is a
+     user setting: at the large density the third button would otherwise be
+     squeezed to its ellipsis rather than dropping to a second line. */
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px;
   border-top: 1px solid var(--line-soft);
 }
 
@@ -870,7 +1058,7 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
   flex: none;
   width: 18px; height: 18px;
   display: grid; place-items: center;
-  border: 0; border-radius: 4px;
+  border: 0; border-radius: var(--radius-sm);
   background: transparent; color: inherit;
   opacity: 0; cursor: pointer;
 }
@@ -1337,13 +1525,13 @@ body.panning .viewer * { cursor: grabbing !important; }
   padding: 34px 30px;
   background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-3);
 }
 .empty-icon {
   width: 54px; height: 54px; margin: 0 auto 14px;
   display: grid; place-items: center;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -1492,7 +1680,7 @@ body.panning .viewer * { cursor: grabbing !important; }
 .np-title { font-size: 11px; font-weight: 600; color: var(--txt-1); letter-spacing: .3px; }
 .np-close {
   width: 22px; height: 22px; display: grid; place-items: center;
-  background: none; border: 0; border-radius: 4px; color: var(--txt-2); cursor: pointer;
+  background: none; border: 0; border-radius: var(--radius-sm); color: var(--txt-2); cursor: pointer;
 }
 .np-close:hover { background: var(--bg-4); color: var(--txt-0); }
 .np-close svg { width: 13px; height: 13px; }
@@ -1635,7 +1823,7 @@ body.panning .viewer * { cursor: grabbing !important; }
   width: min(560px, 92vw); max-height: 84vh;
   display: flex; flex-direction: column;
   background: var(--bg-1); border: 1px solid var(--bg-4);
-  border-radius: 12px; box-shadow: var(--shadow-3);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-3);
   overflow: hidden;
 }
 .modal header {
@@ -1747,6 +1935,21 @@ body.panning .viewer * { cursor: grabbing !important; }
               0 0 0 4px var(--dot);
 }
 
+/* "Same as the accent" for the right-hand pane: no colour of its own, so a
+   hollow ring rather than a dot. */
+.accent-dot.same {
+  background: none;
+  box-shadow: 0 0 0 1.5px var(--txt-2) inset;
+}
+.accent-dot.same.on {
+  box-shadow: 0 0 0 1.5px var(--txt-2) inset, 0 0 0 2px var(--bg-1), 0 0 0 4px var(--txt-1);
+}
+/* The rows that only apply while the theme follows something. */
+.opt[hidden] { display: none; }
+.hours-row { display: flex; align-items: center; gap: 6px; }
+.hours-row span { display: inline; margin: 0; }
+.opt .hours-row input { flex: 0 0 58px; }
+
 /* Modal footer: actions pinned below the scrolling body, never scrolled away. */
 .modal-foot {
   display: flex; align-items: center; gap: 8px;
@@ -1827,19 +2030,26 @@ body.panning .viewer * { cursor: grabbing !important; }
 .ctx-item {
   text-align: left; padding: 6px 9px;
   background: none; border: 0; border-radius: var(--radius-sm);
-  color: var(--txt-1); font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--txt-1); font: inherit; font-size: calc(var(--ui-font) - 1px); cursor: pointer;
+  outline: none;
 }
-.ctx-item:hover { background: var(--bg-3); color: var(--txt-0); }
+.ctx-item:hover, .ctx-item:focus-visible, .ctx-parent.open { background: var(--bg-3); color: var(--txt-0); }
 .ctx-item.danger { color: var(--accent); }
-.ctx-item.danger:hover { background: var(--accent); color: #fff; }
+.ctx-item.danger:hover, .ctx-item.danger:focus-visible { background: var(--accent-wash); color: var(--accent-text); }
 .ctx-item { display: flex; align-items: center; gap: 18px; white-space: nowrap; }
 .ctx-item:disabled { opacity: .38; cursor: default; }
 .ctx-item:disabled:hover { background: none; color: var(--txt-1); }
 .ctx-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.ctx-hint { font-family: var(--mono); font-size: 10px; color: var(--txt-2); }
+.ctx-hint { font-family: var(--mono); font-size: calc(var(--ui-font) - 3px); color: var(--txt-2); }
 .ctx-item:hover .ctx-hint { color: var(--txt-1); }
-.ctx-item.danger:hover .ctx-hint { color: #fff; }
+.ctx-item.danger:hover .ctx-hint { color: var(--accent-text); }
+/* A row that opens a submenu: a chevron where the shortcut would be. */
+.ctx-chev { width: 10px; height: 10px; margin-right: -3px; flex: none; color: var(--txt-2); }
+.ctx-parent:hover .ctx-chev, .ctx-parent.open .ctx-chev { color: var(--txt-0); }
+.ctx-sub { z-index: 97; }
 .ctx-item.checked .ctx-label::before { content: "✓ "; color: var(--accent); }
+.ctx-item.checkable .ctx-label::before { content: "✓ "; color: var(--accent); visibility: hidden; }
+.ctx-item.checkable.checked .ctx-label::before { visibility: visible; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 /* A recents row in a menu carries its own pin/remove buttons, so the row is a
    flex container rather than a single button. */
